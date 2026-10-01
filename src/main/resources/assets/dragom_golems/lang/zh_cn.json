@@ -17,7 +17,7 @@
 
   "jei.dragom_golems.template.title": "大傀儡胚料",
   "jei.dragom_golems.template.desc": "在切石机里切成五个部件中的任意一个（双翼 / 头 / 身体 / 尾巴 / 四肢各一条配方，每条消耗一块胚料）。",
-  "jei.dragom_golems.template.source": "胚料本身目前没有合成配方，只能用其他途径取得。",
+  "jei.dragom_golems.template.source": "在合成台里把 1 个钻石放在 1 个铁块上方合成（价格是暂时的）。",
   "jei.dragom_golems.part.title": "巨龙傀儡部件",
   "jei.dragom_golems.part.howto": "在铁砧上把部件放左边、材料放右边，材料要一次给够 %s 个，才能把材料铸进部件。",
   "jei.dragom_golems.part.formula": "部件属性 = 材料数值 × 本部件权重（本家还会再乘一次种类的 magnifiers，龙这个种类没配，取默认 1）。",

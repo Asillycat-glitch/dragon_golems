@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "G": {
+      "item": "minecraft:diamond"
+    },
+    "I": {
+      "item": "minecraft:iron_block"
+    }
+  },
+  "pattern": [
+    " G ",
+    " I "
+  ],
+  "result": {
+    "item": "dragom_golems:dragon_golem_template"
+  },
+  "show_notification": true
+}
