@@ -184,6 +184,8 @@ public class DragonGolemModel extends HierarchicalModel<DragonGolemEntity>
         boolean speedInit;
         /** 张嘴程度（0 = 只有本家的拍翅开合，1 = 喷息时锁到最大张开）。 */
         float jawOpen;
+        /** 这条龙"身体部件"的材料 id：贴图没画对应皮肤时退回去用它，见 {@link #getTextureLocationInternal}。 */
+        ResourceLocation bodyMaterial;
     }
 
     /** 物品预览 / "展示用傀儡"共用的那一份状态（用负 key，不会和实体 id 撞）。 */
@@ -317,6 +319,11 @@ public class DragonGolemModel extends HierarchicalModel<DragonGolemEntity>
         holderPreview = false;
         // 每只龙（以及预览）各用一份状态：共用会被物品栏里的图标搅乱，见 AnimState 的说明
         AnimState st = this.state(keyOf(entity));
+        // 身体部件的材料 id：贴图门控要用（见 getTextureLocationInternal）。
+        // 必须在下面那个 DISPLAY_TAG 提前 return 之前取。
+        var mats = entity.getMaterials();
+        int bodyIndex = DragonGolemPartType.BODY.ordinal();
+        st.bodyMaterial = mats.size() > bodyIndex ? mats.get(bodyIndex).id() : null;
         st.bodyRoll = Mth.lerp(0.25F, st.bodyRoll, entity.getBodyRoll());
         // 俯冲/开火姿态：目标角度表在 DragonGolemEntity.pitchForPhase（那边算好、插值、同步），
         // 这里只做一点点帧间平滑 —— 关键是判定箱也读同一个值，模型和碰撞箱才不会再各走各的。
@@ -787,18 +794,31 @@ public class DragonGolemModel extends HierarchicalModel<DragonGolemEntity>
             textureCache.clear();
             cachedManager = rm;
         }
-        return textureCache.computeIfAbsent(material, DragonGolemModel::resolveTexture);
-    }
-
-    private static ResourceLocation resolveTexture(ResourceLocation material) {
         String path = material.getPath();
         ResourceLocation own = Dragom_golems.id(TEXTURE_PREFIX + path + ".png");
         if (path.endsWith("_emissive")) {
             // 发光层：本家会先问一次 "<材料>_emissive" 的贴图在不在，在才多渲染一遍。
-            // 这里绝不能走兜底，否则整条龙会被当成发光层再画一遍。
+            // 这里绝不能走兜底，否则整条龙会被当成发光层再画一遍。也不进缓存。
             return own;
         }
-        return exists(own) ? own : findFallback();
+        if (exists(own)) {
+            // 只缓存"确有其图"的命中：兜底结果依赖当前这条龙的身体材料，不能按材料 id 缓存。
+            return textureCache.computeIfAbsent(material,
+                    m -> Dragom_golems.id(TEXTURE_PREFIX + m.getPath() + ".png"));
+        }
+        // ---- 贴图门控：这个材料（或这件皮肤）我们没画 ----
+        // 本家的时装（curios 的 golem_skin 槽里的 golem_facade）会把<b>整条龙</b>的材料 id
+        // 换成皮肤那个材料 id（见本家 AbstractGolemRenderer.renderAllParts）；铸材料也可能铸上
+        // 一个我们没画贴图的材料。原来的行为是整条龙变成兜底灰，现在改成
+        // <b>退回它自己身体那份材料的贴图</b> —— 皮肤没画就不生效，龙看起来还是它自己的样子。
+        ResourceLocation body = this.current.bodyMaterial;
+        if (body != null && !body.equals(material)) {
+            ResourceLocation bodyTexture = Dragom_golems.id(TEXTURE_PREFIX + body.getPath() + ".png");
+            if (exists(bodyTexture)) {
+                return bodyTexture;
+            }
+        }
+        return findFallback();
     }
 
     private static ResourceLocation findFallback() {
