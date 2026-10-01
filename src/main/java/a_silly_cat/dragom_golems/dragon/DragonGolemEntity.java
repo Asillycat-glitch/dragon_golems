@@ -19,6 +19,8 @@ import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
@@ -1180,6 +1182,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
 
     /** 本家幽匿材料的 id（音波特判用）。 */
     private static final ResourceLocation SCULK_MATERIAL = new ResourceLocation("modulargolems", "sculk");
+    /** 龙息（普通 / 下界身体）的伤害类型，见 {@code data/dragom_golems/damage_type/dragon_breath.json}。 */
+    private static final ResourceLocation BREATH_DAMAGE_TYPE = Dragom_golems.id("dragon_breath");
+    /** 幽匿身体的音波龙息：额外穿护甲与附魔，见同目录的 {@code dragon_sonic.json} 与 {@code data/minecraft/tags/damage_type/}。 */
+    private static final ResourceLocation SONIC_DAMAGE_TYPE = Dragom_golems.id("dragon_sonic");
     /** 本家音波 modifier 的 id（必须按 id 取：第三方 mod 会把这条换成自己的实现）。 */
     private static final ResourceLocation SONIC_MODIFIER_ID = new ResourceLocation("modulargolems", "sonic_boom");
     /** 本家下界合金材料的 id（龙息附带凋零用）。 */
@@ -1233,9 +1239,16 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /**
      * 龙息的一跳伤害。
      *
-     * <p>普通 / 下界身体走 {@code mob_attack}（吃护甲、吃抗性、吃附魔）；
-     * <b>幽匿身体换成原版 {@code sonic_boom}</b> —— 穿护甲与附魔，但抗性药水仍然挡得住，
-     * 和 L2 音爆枪、MG 自带音波是同一条伤害类型。
+     * <p><b>走我们自己的伤害类型</b>（{@code data/dragom_golems/damage_type/}）：
+     * 普通 / 下界身体用 {@code dragon_breath}（吃护甲、吃抗性、吃附魔，和原版 {@code mob_attack} 同一档）；
+     * <b>幽匿身体用 {@code dragon_sonic}</b> —— 额外躺在 {@code bypasses_armor} / {@code bypasses_enchantments} 里，
+     * 穿护甲与附魔，但抗性药水仍然挡得住，和原版 {@code sonic_boom}、L2 音爆枪同一档。
+     *
+     * <p><b>为什么不用原版那两条：</b>原版的 {@code minecraft:bypasses_cooldown} 标签是<b>空的</b>
+     * （连 {@code sonic_boom} 自己都不免无敌帧），而这条通道每 10 tick 就打一次 ——
+     * 只要把目标顶进无敌帧，旁边的地面傀儡一拳上去就会被按差值削掉一截、甚至整个被吞。
+     * 我们自己那两条伤害类型都塞进了 {@code bypasses_cooldown}，再配 {@link #hurtWithoutFrames}
+     * 把目标原本的无敌帧原样放回去，于是"龙的持续输出"和"地面傀儡的单发重击"互不干扰。
      *
      * <p><b>不要改用 MG 的 {@code echo_attack}：</b>那条连抗性、药水效果、无敌帧都穿，
      * 放在"每 10 tick 跳一次"的常态群攻上会明显超模。{@link DragonSkill#SONIC} 那个大招才用它
@@ -1245,14 +1258,45 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      */
     public boolean breathDamage(LivingEntity target, float damageMult, double knockback) {
         float damage = (float) this.getAttributeValue(Attributes.ATTACK_DAMAGE) * damageMult;
-        if (!this.isSonicBody()) {
-            return this.performDamageTarget(target, damage, knockback);
-        }
+        DamageSource source = this.breathSource(this.isSonicBody() ? SONIC_DAMAGE_TYPE : BREATH_DAMAGE_TYPE);
         target.setLastHurtByMob(this);
-        boolean hurt = target.hurt(this.damageSources().sonicBoom(this), damage);
+        boolean hurt = this.hurtWithoutFrames(target, source, damage);
         if (hurt && knockback > 0.0D) {
             target.knockback(knockback, this.getX() - target.getX(), this.getZ() - target.getZ());
         }
+        return hurt;
+    }
+
+    /** 按 id 从动态注册表里取我们自己的伤害类型；数据包被改坏时退回原版，免得整条通道哑火。 */
+    private DamageSource breathSource(ResourceLocation type) {
+        try {
+            return new DamageSource(
+                    this.level().registryAccess().lookupOrThrow(Registries.DAMAGE_TYPE)
+                            .getOrThrow(ResourceKey.create(Registries.DAMAGE_TYPE, type)),
+                    this);
+        } catch (RuntimeException e) {
+            return this.damageSources().mobAttack(this);
+        }
+    }
+
+    /**
+     * 打一下，但<b>不把目标顶进无敌帧</b>。
+     *
+     * <p>原版 {@code LivingEntity.hurt} 只要命中成功就会把目标的 {@code invulnerableTime} 重置成 20 tick，
+     * 于是"每 10 tick 跳一次"的龙息会让目标长期处在无敌帧里：地面上的傀儡一拳上去，
+     * 要么被按差值削掉一截，要么直接吞掉。
+     *
+     * <p>所以这里把目标原本的 {@code invulnerableTime} 记下来、打完再放回去
+     * （{@code Entity.invulnerableTime} 是 public 字段，**不用 mixin**）。我们自己的伤害照样进得去
+     * （伤害类型在 {@code bypasses_cooldown} 里，不靠无敌帧判定），而且<b>不会替别人占住无敌帧</b>。
+     *
+     * <p>{@code lastHurt} 是 protected 改不了 —— 它只参与"无敌帧内的差值结算"，
+     * 而且我们的命中把它压低反而让后面的大伤害进得更完整，所以放着不管。
+     */
+    private boolean hurtWithoutFrames(LivingEntity target, DamageSource source, float damage) {
+        int saved = target.invulnerableTime;
+        boolean hurt = target.hurt(source, damage);
+        target.invulnerableTime = saved;
         return hurt;
     }
 
