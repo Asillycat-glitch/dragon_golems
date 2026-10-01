@@ -1,0 +1,9 @@
+# 换行符：仓库里统一按文本处理，但 gradlew 必须是 LF（不然 Linux/macOS 上一跑就报坏解释器），
+# 而 .bat 必须是 CRLF。
+* text=auto eol=lf
+gradlew text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.jar binary
+*.png binary
+*.ogg binary

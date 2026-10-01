@@ -1,0 +1,37 @@
+# Gradle / Forge
+.gradle/
+build/
+run/
+run-data/
+out/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+bin/
+
+# 本地依赖（本家与 l2 系列的成品 jar，flatDir 直接引用）：不进版本库，
+# 换机器时放回 libs/，或把 build.gradle 改成从 maven 拉。
+libs/
+
+# 本地参考资料，只在开发机上留着，不发布：
+#   dev/xkmc/          = Modular Golems 的反编译源码（第三方，不能发布）
+#   dev/               = 建模脚本与 bbmodel（属于 golems_arsenal 那边）
+#   来自golems_arsenal/ = 移植前的原件，留作命名空间对照
+dev/
+来自golems_arsenal/
+
+# 临时备份
+*.bak-previewfix
+*.bak
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
