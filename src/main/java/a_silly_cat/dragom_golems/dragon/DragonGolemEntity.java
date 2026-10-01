@@ -10,6 +10,8 @@ import dev.xkmc.modulargolems.content.entity.goals.TeleportToOwnerGoal;
 import dev.xkmc.modulargolems.content.entity.humanoid.weapon.GolemWeaponRegistry;
 import dev.xkmc.modulargolems.content.item.upgrade.IUpgradeItem;
 import dev.xkmc.modulargolems.content.modifier.base.GolemModifier;
+import dev.xkmc.modulargolems.content.modifier.special.BaseRangedAttackGoal;
+import dev.xkmc.modulargolems.content.modifier.special.SonicAttackGoal;
 import dev.xkmc.modulargolems.init.registrate.GolemTypes;
 import dev.xkmc.l2serial.serialization.SerialClass;
 import net.minecraft.core.BlockPos;
@@ -1067,6 +1069,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         if (this.level().isClientSide()) {
             return;
         }
+        // 本家刚把 modifier goal 重挂了一遍（modifierGoals 是 private，我们只能扫 goalSelector），
+        // 立刻摘掉不想要的那些 —— 否则最长要等 disableNativeGoals 那 20 tick 的兜底窗口，
+        // 期间本家近战（换手 / 读档时 reassessWeaponGoal 会把它加回优先级 3）会和龙的技能一起出手。
+        this.stripNativeGoals();
         // 先精确撤掉上一轮我们补挂的那些 goal（本家重算属性时会重建 modifier 表，这里跟着重建）
         for (Goal goal : this.sonicGoals) {
             this.goalSelector.removeGoal(goal);
@@ -1148,15 +1154,46 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             return;
         }
         this.meleeCheckTimer = 20;
+        this.stripNativeGoals();
+    }
+
+    /** 真正干活的那一半：把不想要的本家 goal 从选择器里摘掉（{@code updateAttributes} 会立刻复用一次）。 */
+    private void stripNativeGoals() {
         for (WrappedGoal wrapped : new ArrayList<>(this.goalSelector.getAvailableGoals())) {
-            if (wrapped.getGoal() instanceof GolemMeleeGoal
-                    || wrapped.getGoal() instanceof TeleportToOwnerGoal
+            Goal goal = wrapped.getGoal();
+            if (goal instanceof GolemMeleeGoal
+                    || goal instanceof TeleportToOwnerGoal
                     // 这两个会把 MOVE 通道占死，或者对悬停的龙没有意义，交给 DragonIdleGoal
-                    || wrapped.getGoal() instanceof FollowOwnerGoal
-                    || wrapped.getGoal() instanceof GolemRandomStrollGoal) {
-                this.goalSelector.removeGoal(wrapped.getGoal());
+                    || goal instanceof FollowOwnerGoal
+                    || goal instanceof GolemRandomStrollGoal
+                    || isForeignRangedGoal(goal)) {
+                this.goalSelector.removeGoal(goal);
             }
         }
+    }
+
+    /**
+     * 是不是本家（含 compat 材料）那一批<b>远程攻击 goal</b>。
+     *
+     * <p><b>为什么整批摘掉：</b>那批 goal 全是照"站在地上的傀儡"写的 ——
+     * {@code BaseRangedAttackGoal.canUse} 用三维 {@code distanceToSqr} 比固定射界
+     * （{@code near}/{@code far}，多数是 0~48），出手点在自身坐标（对龙来说是<b>身体中心</b>，
+     * 不是嘴），而且伤害走原版 {@code hurt}，<b>会把目标重新顶进无敌帧</b> ——
+     * 我们刚给龙息做完的"独立无敌帧"会被它们抵消掉。龙的判定箱、嘴部位置、悬停高度都跟它们对不上，
+     * 所以先整批摘掉；以后要放回来，得逐个改成"从 {@code mouthPosition()} 发射 + 射程按体型缩放"。
+     *
+     * <p>不在此列的：{@code PickupGoal}（捡东西）{@code setFlags} 为空、只扫自身 AABB，不影响我们；
+     * {@code EnderTeleportGoal}（末影传送）不是伤害技能，也留着。
+     */
+    private static boolean isForeignRangedGoal(Goal goal) {
+        // 本家自己的两个类能直接引用，按类型判
+        if (goal instanceof BaseRangedAttackGoal || goal instanceof SonicAttackGoal) {
+            return true;
+        }
+        // compat 的独立 goal 不能按类引用（那些 mod 不在我们的编译依赖里），按"包名 + 类名后缀"认：
+        // IgnisFireballAttackGoal / HarbingerDeathBeamAttackGoal / ScyllaLightningAttackGoal / BlazeAttackGoal …
+        String name = goal.getClass().getName();
+        return name.startsWith("dev.xkmc.modulargolems.") && name.endsWith("AttackGoal");
     }
 
     /**

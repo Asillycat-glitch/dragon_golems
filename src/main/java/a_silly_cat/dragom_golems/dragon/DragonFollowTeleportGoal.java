@@ -25,10 +25,24 @@ import java.util.EnumSet;
  */
 public class DragonFollowTeleportGoal extends Goal {
 
-    /** 水平超过这个距离才回位（再乘体型倍率）。 */
+    /** 水平超过这个距离才回位（再乘体型倍率，但有上限）。 */
     private static final double MAX_HORIZONTAL = 48.0D;
-    /** 垂直差超过这个才回位（被打上天 / 被留在悬崖下；再乘体型倍率）。 */
+    /** 垂直差超过这个才回位（被打上天 / 被留在悬崖下；再乘体型倍率，但有上限）。 */
     private static final double MAX_VERTICAL = 24.0D;
+    /**
+     * 回位距离的<b>上限</b>：不管体型多大，都不许在更远的地方待着。
+     *
+     * <p><b>为什么必须有：</b>本家傀儡收回杖的"潜行右键单体"是<b>射线
+     * {@code retrieveDistance}（默认 64 格）</b>，而"右键群收"只捞 {@code retrieveRange}（默认 20 格）内的。
+     * 而上面那两个阈值原本是 × 体型倍率的 —— 泰坦体型（地牢 +300% = 4 倍）下水平阈值会涨到
+     * <b>192 格</b>：龙在 100 格外还"没超限"，手杖射线够不到，表现就是<b>收不回来</b>。
+     *
+     * <p>上限 48 / 32 把最坏情况的三维距离压在 58 格以内，保证它永远在射线射程里；
+     * 同时又大于泰坦的环绕半径（约 37 格），所以打架时不会被一直往主人身边拉。
+     * 想更宽松就把这两个上限往上加 —— 但别超过本家配置里的 {@code retrieveDistance}。
+     */
+    private static final double MAX_HORIZONTAL_CAP = 48.0D;
+    private static final double MAX_VERTICAL_CAP = 32.0D;
     /** 落点搜索的基础半径（格，再乘体型倍率）：水平 ±3、垂直 ±1。 */
     private static final int SEARCH_RADIUS = 3;
     private static final int SEARCH_VERTICAL = 1;
@@ -71,12 +85,16 @@ public class DragonFollowTeleportGoal extends Goal {
             return false;
         }
         double scale = this.dragon.bodyScale();
+        // 阈值随体型放大，但压在上限之内（见 MAX_HORIZONTAL_CAP）：不然泰坦体型下龙要跑到
+        // 192 格外才回位，本家傀儡收回杖的射线（默认 64 格）根本够不到，就是"收不回来"。
+        double maxH = Math.min(MAX_HORIZONTAL * scale, MAX_HORIZONTAL_CAP);
+        double maxV = Math.min(MAX_VERTICAL * scale, MAX_VERTICAL_CAP);
         Vec3 target = this.dragon.getTargetPos();
         double dx = target.x - this.dragon.getX();
         double dy = target.y - this.dragon.getY();
         double dz = target.z - this.dragon.getZ();
-        return Math.sqrt(dx * dx + dz * dz) > MAX_HORIZONTAL * scale
-                || Math.abs(dy) > MAX_VERTICAL * scale
+        return Math.sqrt(dx * dx + dz * dz) > maxH
+                || Math.abs(dy) > maxV
                 || this.dragon.getY() < this.dragon.level().getMinBuildHeight() - 32;
     }
 
