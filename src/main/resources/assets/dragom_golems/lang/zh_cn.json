@@ -16,19 +16,19 @@
   "golem_part.dragon_golem.leg": "四肢: %s",
 
   "jei.dragom_golems.template.title": "大傀儡胚料",
-  "jei.dragom_golems.template.desc": "在切石机里切成巨龙傀儡的五个部件：双翼、头、身体、尾巴、四肢。",
+  "jei.dragom_golems.template.desc": "在切石机里切成五个部件中的任意一个（双翼 / 头 / 身体 / 尾巴 / 四肢各一条配方，每条消耗一块胚料）。",
   "jei.dragom_golems.template.source": "胚料本身目前没有合成配方，只能用其他途径取得。",
   "jei.dragom_golems.part.title": "巨龙傀儡部件",
   "jei.dragom_golems.part.howto": "在铁砧上把部件放左边、材料放右边，材料要一次给够 %s 个，才能把材料铸进部件。",
-  "jei.dragom_golems.part.formula": "成品属性 = 材料数值 × 本部件权重 × 龙倍率（生命 ×3、攻击 ×2）。",
-  "jei.dragom_golems.part.limit": "本家的铜锭 / 金锭 / 铁锭 / 下界合金锭 / 幽匿都能铸进龙部件（幽匿吃回响碎片），龙身上也能用其它傀儡材料。",
-  "jei.dragom_golems.part.weight.head": "权重：头部 1.0",
-  "jei.dragom_golems.part.weight.body": "权重：生命 0.4、质量 0.4",
-  "jei.dragom_golems.part.weight.wings": "权重：攻击 0.5、生命 0.3、质量 0.2、移速 0.4",
-  "jei.dragom_golems.part.weight.tail": "权重：生命 0.1、质量 0.1",
-  "jei.dragom_golems.part.weight.leg": "权重：攻击 0.5、生命 0.2、质量 0.3、移速 0.6",
+  "jei.dragom_golems.part.formula": "部件属性 = 材料数值 × 本部件权重（本家还会再乘一次种类的 magnifiers，龙这个种类没配，取默认 1）。",
+  "jei.dragom_golems.part.limit": "只有铜锭 / 金锭 / 铁锭 / 下界合金锭 / 幽匿这五种我们画了龙贴图（幽匿吃回响碎片）。别的傀儡材料一样能铸进去、属性照算，只是整条龙会退回兜底的那张灰贴图。",
+  "jei.dragom_golems.part.weight.head": "权重：攻击 1.0",
+  "jei.dragom_golems.part.weight.body": "权重：生命 1.0、质量 0.6、头部 1.0",
+  "jei.dragom_golems.part.weight.wings": "权重：生命 0.6、质量 0.4、移速 1.4",
+  "jei.dragom_golems.part.weight.tail": "权重：生命 0.4",
+  "jei.dragom_golems.part.weight.leg": "权重：攻击 1.0、移速 0.6",
   "jei.dragom_golems.holder.title": "巨龙傀儡",
   "jei.dragom_golems.holder.desc": "五个部件在装配台上摆成 W / HBT / L 合成（W 双翼、H 头、B 身体、T 尾巴、L 四肢）。",
   "jei.dragom_golems.holder.slot": "装备界面是犬型两格：头盔位与胸甲位。",
-  "jei.dragom_golems.holder.hover": "空中炮艇：模型最底面保持在离地 10 格以上悬停，用傀儡收回杖可以收回。"
+  "jei.dragom_golems.holder.hover": "空中炮艇：战斗时悬停在离地 10 格以上、待机巡航约 3 格，两者都随体型放大（× √体型）。用傀儡收回杖可以收回。"
 }
