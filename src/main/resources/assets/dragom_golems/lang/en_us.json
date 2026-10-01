@@ -17,7 +17,7 @@
 
   "jei.dragom_golems.template.title": "Large Golem Blank",
   "jei.dragom_golems.template.desc": "Cut it in a stonecutter into any one of the five dragon golem parts (one recipe each for wings / head / body / tail / limbs, each costing one blank).",
-  "jei.dragom_golems.template.source": "Craft it with one diamond above one iron block (price is temporary).",
+  "jei.dragom_golems.template.source": "Craft: fill the other seven slots with Modular Golems' metal golem template, with one diamond above one iron block in the middle column (price is temporary).",
   "jei.dragom_golems.part.title": "Dragon Golem Part",
   "jei.dragom_golems.part.howto": "On an anvil, put the part on the left and the material on the right. One stack must hold at least %s of that material.",
   "jei.dragom_golems.part.formula": "Part stats = material stats x this part's weight (Modular Golems also multiplies by the golem type's magnifiers; the dragon type defines none, so it defaults to 1).",
