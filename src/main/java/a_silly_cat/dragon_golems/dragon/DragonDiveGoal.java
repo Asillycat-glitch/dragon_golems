@@ -280,6 +280,8 @@ public class DragonDiveGoal extends Goal {
         this.dragon.setDiveVelocity(null);
         this.dragon.setDivePhase(DragonGolemEntity.DIVE_PHASE_NONE);
         this.dragon.setAggressive(false);
+        // 交回驾驶管线：这一轮骑手冲锋到此为止（标志必须在这里清，见 isRiderOrderedDive 的说明）
+        this.dragon.clearRiderDive();
         // 通知调度器：这一轮俯冲打完了（开始下一轮的间隔计时）
         this.dragon.onSkillFinished(DragonGolemEntity.DragonSkill.DIVE);
         if (DEBUG) {

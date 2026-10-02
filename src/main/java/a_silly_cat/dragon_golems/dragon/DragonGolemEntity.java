@@ -1128,6 +1128,9 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.pendingSkill = DragonSkill.DIVE;
         this.skillPendingTicks = 0;
         this.skillInProgress = false;
+        // 骑手冲锋标志：由 DiveGoal.stop() 清除，不跟 pendingSkill 同生共死
+        // （否则 stop() 里清掉 pendingSkill 会让 isRiderOrderedDive() 立刻变假，见它的说明）
+        this.riderDiveActive = true;
         // 开一个诊断窗口：接下来 40 tick 里 DiveGoal 的每次 canUse 判定都会被记录
         this.riderDiveTraceUntil = this.tickCount + 40;
         return true;
@@ -1168,17 +1171,30 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /**
      * 这一轮的俯冲是不是<b>骑手按 R 下命令</b>要的（而不是 AI 自己掷骰子抽中的）。
      *
-     * <p>用途只有一个：{@link DragonDiveGoal#canUse()} 里那条"有乘客就别起飞"的守卫
-     * 要放行骑手指令、但仍然挡掉 AI 自发的那一次（否则玩家一骑上去，AI 还在自己俯冲）。
+     * <p>用途：驾驶管线（{@code DragonRiderControl.tickBody/tickVertical}）与
+     * {@code DragonDiveGoal.canUse/canContinueToUse} 靠它判断"要不要给这条航线让路"。
      *
-     * <p>注意判据里的 {@code orderedSkill == SKILL_DIVE}：{@code orderDive} 会把
-     * {@code pendingSkill} 置成 DIVE，而 AI 掷骰子也会置成同一个值，两者靠这个字段区分。
-     * 另外还要求真的有人在骑 —— 骑手下龙之后这条指令就该失效。
+     * <p><b>★ 判据必须只看 {@link #riderDiveActive}，绝不能看 {@code pendingSkill}：</b>
+     * 后者会被 {@code stop() → onSkillFinished()} <b>自己清掉</b>，于是形成自我拆台的循环 ——
+     * goal 一停就 pendingSkill=null → 本方法变假 → 驾驶管线立刻恢复清目标/清速度 →
+     * 下一次 canContinueToUse 再凭"非骑手指令"砍一刀。
+     * 真机日志就是这条：{@code ordered=0 pending=null} 导致 canContinueToUse=false，
+     * 而 orderedSkill 明明还挂着（=玩家那条指令根本没被撤销）。
      */
     public boolean isRiderOrderedDive() {
-        return this.getControllingPassenger() != null
-                && this.orderedSkill == DragonSkillPacket.SKILL_DIVE
-                && this.pendingSkill == DragonSkill.DIVE;
+        return this.getControllingPassenger() != null && this.riderDiveActive;
+    }
+
+    /**
+     * "骑手冲锋正在执行"的标志，由 {@link #orderDive} 置位、{@link DragonDiveGoal#stop()} 清除。
+     *
+     * <p>它刻意<b>不</b>跟 {@code pendingSkill} 同生共死（见 {@link #isRiderOrderedDive()} 的说明）。
+     */
+    private boolean riderDiveActive;
+
+    /** 由 {@link DragonDiveGoal#stop()} 调用：这一轮骑手冲锋结束了，交回驾驶管线。 */
+    public void clearRiderDive() {
+        this.riderDiveActive = false;
     }
 
     /**
