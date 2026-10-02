@@ -413,6 +413,14 @@ public class DragonDiveGoal extends Goal {
             box = box.minmax(this.sweepBox);
         }
         this.sweepBox = this.contactBox();
+        // 诊断：每 10 tick 报一次接触盒的垂直范围，用来判断"掠过了但没有伤害"到底是
+        // 接触盒够不到目标（几何问题），还是目标被过滤掉了（判定问题）。
+        if (DragonDebug.RIDE && this.phaseTicks % 10 == 0) {
+            Dragon_golems.LOGGER.info("[dive] contactBox y={}..{} dragonY={} s={} damaged={}",
+                    String.format("%.1f", box.minY), String.format("%.1f", box.maxY),
+                    String.format("%.1f", this.dragon.getY()),
+                    String.format("%.1f", this.passS), this.damaged);
+        }
         for (LivingEntity other : this.dragon.level().getEntitiesOfClass(LivingEntity.class, box)) {
             if (other == this.dragon || !other.isAlive() || other.isSpectator()) {
                 continue;
@@ -420,13 +428,21 @@ public class DragonDiveGoal extends Goal {
             if (this.dragon.hasPassenger(other) || other.isPassengerOfSameVehicle(this.dragon)) {
                 continue;
             }
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[dive] candidate {} predicate={} canAttack={} y={}",
+                        other.getName().getString(), this.dragon.predicateTarget(other),
+                        this.dragon.canAttack(other), String.format("%.1f", other.getY()));
+            }
             if (!this.dragon.predicateTarget(other) || !this.dragon.canAttack(other)) {
                 continue;
             }
             int id = other.getId();
             this.damaged = true;
             if (this.impacted.add(id)) {
-                this.dragon.diveImpact(other, IMPACT_MULT, IMPACT_KNOCKBACK);
+                boolean hit = this.dragon.diveImpact(other, IMPACT_MULT, IMPACT_KNOCKBACK);
+                if (DragonDebug.RIDE) {
+                    Dragon_golems.LOGGER.info("[dive] IMPACT on {} hit={}", other.getName().getString(), hit);
+                }
                 this.nextHit.put(id, this.dragon.tickCount + HIT_COOLDOWN);
                 this.impactEffects(other);
                 continue;

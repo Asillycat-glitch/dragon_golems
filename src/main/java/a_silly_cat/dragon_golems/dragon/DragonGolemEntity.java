@@ -1,5 +1,6 @@
 package a_silly_cat.dragon_golems.dragon;
 
+import dev.xkmc.modulargolems.content.entity.common.AbstractGolemEntity;
 import dev.xkmc.modulargolems.content.entity.common.SweepGolemEntity;
 import a_silly_cat.dragon_golems.Dragon_golems;
 import a_silly_cat.dragon_golems.network.DragonSkillPacket;
@@ -86,7 +87,8 @@ import java.util.UUID;
  * </ul>
  */
 @SerialClass
-public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, DragonGolemPartType> {
+public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, DragonGolemPartType>
+        implements DragonTargetSource {
 
     /**
      * 龙的武器表。第一版是空表：只保留近战（近战走 {@code AbstractGolemEntity} 自己的
@@ -674,26 +676,61 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
-     * 座位只有玩家：龙的定位是"一个人开的空中炮艇"，让傀儡排队骑上来会让判定箱、座位
-     * 和驾驶权全部变复杂，第一版不做（理由见 docs/MOUNT.md）。
+     * 谁能坐在龙背上：<b>玩家当驾驶座，傀儡当炮台乘客</b>。
+     *
+     * <p>座位规则（1 + N）：
+     * <ul>
+     *   <li>第一个乘客 = 驾驶座。是玩家就由玩家驾驶（见 {@link DragonRiderControl}）；
+     *       是傀儡则退化为"纯乘客"，龙的 AI 继续自己飞（这正是"傀儡骑在龙身上当炮台"）；</li>
+     *   <li>其余座位给傀儡，数量上限 {@link #MAX_GOLEM_PASSENGERS}。</li>
+     * </ul>
+     *
+     * <p><b>为什么放开给傀儡不会破坏驾驶</b>：{@link #getControllingPassenger()} 只在
+     * 首个乘客是 {@code Player} 时才返回非 null，所以傀儡乘客不会顶掉玩家的驾驶权，
+     * 也不会让 AI 的"有乘客就别动手"那批守卫误判。
+     *
+     * <p>本家 {@code AbstractGolemEntity} 一个载客方法都没覆写（只有
+     * {@code DogGolemEntity} 有那六个），所以这里没有基类钩子可蹭，得自己写。
      */
     @Override
     protected boolean canAddPassenger(Entity passenger) {
-        return passenger instanceof Player && this.getPassengers().isEmpty();
+        if (passenger instanceof Player) {
+            // 玩家只能坐驾驶座，且只有第一个位置
+            return this.getPassengers().isEmpty();
+        }
+        if (passenger instanceof AbstractGolemEntity<?, ?>) {
+            // 傀儡：驾驶座被占了也能上来（那就是乘客位），但总数有上限
+            return this.getPassengers().size() < 1 + MAX_GOLEM_PASSENGERS;
+        }
+        return false;
     }
 
+    /** 驾驶座之外还能坐几个傀儡乘客。 */
+    private static final int MAX_GOLEM_PASSENGERS = 3;
+
     /**
-     * 乘客坐在背上。
+     * 乘客坐在背上：<b>沿机体轴向排座</b>。
      *
-     * <p>返回值必须相对 {@code this.getX()/getY()/getZ()}（实体原点是脚底），而模型的抬高量
-     * （{@code MODEL_LIFT + RENDER_LIFT}）本来就含在 {@link #rotateAndLift} 里。
+     * <p>这是本家狗的排座公式（{@code positionRider}）搬到龙身上：驾驶座（index 0）靠前、
+     * 其余乘客依次向后。区别只是改成沿龙的机体方向、并复用本类已有的
+     * {@link #rotateAndLift} 换算（所以龙低头/抬头时整排座位跟着转）。
+     *
+     * <p>返回值必须相对 {@code this.getX()/getY()/getZ()}（实体原点是脚底）。
      */
     @Override
     protected void positionRider(Entity passenger, Entity.MoveFunction setPos) {
         if (!this.hasPassenger(passenger)) {
             return;
         }
-        double[] upForward = this.rotateAndLift(RIDER_UP_PX, RIDER_FORWARD_PX, this.getBodyPitch());
+        int index = this.getPassengers().indexOf(passenger);
+        if (index < 0) {
+            return;
+        }
+        // 每往后一个座位，沿机体方向退 SPACING 像素（模型像素，再经 rotateAndLift 换算成格）
+        double forwardPx = RIDER_FORWARD_PX - index * RIDER_SEAT_SPACING_PX;
+        // 驾驶座再抬高一点：玩家的视线要越过龙背
+        double upPx = RIDER_UP_PX + (index == 0 ? 0.0D : RIDER_PASSENGER_UP_PX);
+        double[] upForward = this.rotateAndLift(upPx, forwardPx, this.getBodyPitch());
         double yaw = Math.toRadians(this.yBodyRot);
         double forwardX = -Math.sin(yaw);
         double forwardZ = Math.cos(yaw);
@@ -702,6 +739,11 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.getY() + upForward[0] + passenger.getMyRidingOffset(),
                 this.getZ() + forwardZ * upForward[1]);
     }
+
+    /** 相邻两个座位之间沿机体方向的距离（模型像素，1 格 = 16 像素）。 */
+    private static final double RIDER_SEAT_SPACING_PX = 9.0D;
+    /** 傀儡乘客比驾驶座再抬高多少（模型像素）：免得和玩家的腿重叠。 */
+    private static final double RIDER_PASSENGER_UP_PX = 3.0D;
 
     /**
      * 乘客跟着机体转 —— <b>但驾驶者的视角必须是自由的</b>。
@@ -733,11 +775,15 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return super.isMovable();
     }
 
-    /** 上龙时自动从"原地悬停待机"里醒过来（不然骑着一条贴地的龙会起不来）。 */
+    /**
+     * 上乘客要做两件事：把龙从"原地贴地待机"里叫醒（不然骑着一条贴地的龙会起不来），
+     * 以及重算"货舱模式"（傀儡上来 → 抑制盘旋，见 {@link #onPassengersChanged()}）。
+     */
     @Override
     protected void addPassenger(Entity passenger) {
         this.setIdleSettled(false);
         super.addPassenger(passenger);
+        this.onPassengersChanged();
     }
 
     /**
@@ -1068,6 +1114,28 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return this.orderedSkill >= 0;
     }
 
+    // ---- 给"背上的傀儡乘客"用的共享目标接口 ----
+    // 接口本体在 DragonTargetSource（顶层）：嵌在泛型类里会形成循环继承，javac 报 cyclic inheritance。
+
+    /**
+     * {@link DragonTargetSource} 的实现。
+     *
+     * <p>顺序：骑手指定的（{@code forcedTarget}，命令手杖写的）→ 本家目标槽。
+     */
+    @Override
+    public LivingEntity dragonCurrentTarget() {
+        if (this.forcedTarget != null && this.forcedTarget.isAlive()) {
+            return this.forcedTarget;
+        }
+        LivingEntity t = this.getTarget();
+        return t != null && t.isAlive() ? t : null;
+    }
+
+    @Override
+    public void dragonForceTarget(@Nullable LivingEntity target) {
+        this.setTargetRaw(target);
+    }
+
     /**
      * 这一轮的俯冲是不是<b>骑手按 R 下命令</b>要的（而不是 AI 自己掷骰子抽中的）。
      *
@@ -1136,11 +1204,49 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return (this.riderInputFlags & 2) != 0;
     }
 
-    /** 下龙时把按键状态清干净，免得松开的那一下没收到。 */
+    /** 下了乘客也要重算一次（傀儡全下去 → 解除货舱模式，恢复盘旋）。 */
     @Override
     protected void removePassenger(Entity passenger) {
         super.removePassenger(passenger);
         this.riderInputFlags = 0;
+        this.onPassengersChanged();
+    }
+
+    /**
+     * 有傀儡乘客时进入"货舱模式"：<b>龙悬停在原地、不再到处盘旋</b>。
+     *
+     * <p>为什么要抑制盘旋：傀儡在背上射击时，龙自己绕着圈飞会让射手永远瞄不稳
+     * （而且傀儡的弹道是按自己的朝向算的，龙一转就全歪了）。所以只要背上有傀儡，
+     * 就把龙切进"原地待机悬停"——它仍然会跟随主人（超过阈值会被拉回来）、照常索敌开火，
+     * 只是不再自己随机游走。
+     *
+     * <p>实现上直接复用现成的 {@code idleSettled} 机制（见 {@link DragonIdleGoal} 与
+     * {@link #hoverHeight()}）：置位后 {@code DragonIdleGoal} 不再采样游走目标点，
+     * 龙就停在原地悬停。玩家骑乘时这条不生效（驾驶权在玩家手里）。
+     */
+    private void onPassengersChanged() {
+        this.setIdleSettled(this.hasGolemPassenger());
+    }
+
+    /** 背上是不是有傀儡乘客（不含玩家）。 */
+    public boolean hasGolemPassenger() {
+        for (Entity passenger : this.getPassengers()) {
+            if (passenger instanceof AbstractGolemEntity<?, ?>) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 背上傀儡乘客的数量。 */
+    public int golemPassengerCount() {
+        int count = 0;
+        for (Entity passenger : this.getPassengers()) {
+            if (passenger instanceof AbstractGolemEntity<?, ?>) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**
@@ -2108,7 +2214,9 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 待机高度也跟着涨：那一档本来就是"给骑乘用的固定高度"，体型大了还贴 3 格等于钻地。
      */
     public double hoverHeight() {
-        double base = this.isParked() ? HOVER_HEIGHT_IDLE : HOVER_HEIGHT;
+        // 背上有傀儡乘客时也用待机高度：那是"停着让人打"的姿态，低一点更稳。
+        // （巡航作战高度 10 格是给"自己游走开火"用的，傀儡乘客要的是稳定平台。）
+        double base = this.isParked() || this.hasGolemPassenger() ? HOVER_HEIGHT_IDLE : HOVER_HEIGHT;
         return base * this.hoverHeightScale();
     }
 
