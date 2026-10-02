@@ -61,8 +61,6 @@ public final class DragonFlightAssist {
     private int rescueTicks = -1;
     /** 玩家打开的自由飞行开关。 */
     private boolean freeFlight;
-    /** 上一次 tick 记录的"水平方向是否被挡住"，供下一 tick 判断"一直在磨同一面墙"。 */
-    private boolean lastBlocked;
 
     /** 玩家打开/关闭自由飞行（穿墙）。 */
     public void setFreeFlight(boolean on) {
@@ -90,7 +88,16 @@ public final class DragonFlightAssist {
             return;
         }
         handleStuck(dragon);
-        this.lastBlocked = false;
+        // 诊断：每 40 tick 报一次飞行状态。排查"嵌在方块里 / 一直往上飞"必须同时看到
+        // 撞墙计数、当前位置塞不塞得下、有没有在脱困、以及竖直速度 —— 少一个就会猜错。
+        if (DragonDebug.RIDE && dragon.tickCount % 40 == 0) {
+            Dragon_golems.LOGGER.info(
+                    "[fly] stuck={} room={} rescue={} noPhysics={} dy={} hColl={} pos={}",
+                    this.stuckTicks, hasRoomFor(dragon, dragon.position()),
+                    this.rescueTicks, dragon.noPhysics,
+                    String.format("%.2f", dragon.getDeltaMovement().y),
+                    dragon.horizontalCollision, dragon.position());
+        }
     }
 
     /**
@@ -100,7 +107,10 @@ public final class DragonFlightAssist {
      */
     private void handleStuck(DragonGolemEntity dragon) {
         boolean blocked = dragon.horizontalCollision;
-        if (blocked) {
+        // "四面都塞不下"也是卡住的一种：嵌在方块里时 move() 可能因为 noPhysics
+        // 而不产生 horizontalCollision，只靠那个标志会漏判。
+        boolean trapped = !hasRoomFor(dragon, dragon.position()) && findOpenDirection(dragon) == null;
+        if (blocked || trapped) {
             this.stuckTicks++;
         } else {
             this.stuckTicks = 0;
@@ -158,7 +168,14 @@ public final class DragonFlightAssist {
      *
      * <p>原实现只有"蹭到就抬 0.15"，在地形复杂处不够用（一直贴着同一面墙磨）。
      * 这里的做法：撞墙时在一个扇面里（上、斜上左右、左右）找<b>第一个塞得下龙</b>的方向，
-     * 把速度往那个方向偏，并按卡住时长加大竖直分量。
+     * 把速度往那个方向偏。
+     *
+     * <p><b>★ 为什么竖直分量要"爬一段、平飞一段"交替</b>（真机踩到的问题）：
+     * 最早无条件给正竖直分量，于是龙在洞穴里被埋住时会<b>一直往上爬</b>，
+     * 钻进天花板、嵌进石头里，而且永远不出那个洞。
+     * 现在按 {@link #RISE_PHASE} / {@link #LEVEL_PHASE} 交替：
+     * 先爬 2 秒（脱离当前这层障碍），再平飞 2 秒（去找横向的出口）。
+     * 两者都保留"往开阔处偏"的方向修正，所以既不会原地磨，也不会一直顶天花板。
      *
      * @param want 目标水平速度（y 分量忽略）
      * @return 修正后的速度；没有障碍时原样返回 {@code want}
@@ -167,12 +184,14 @@ public final class DragonFlightAssist {
         if (!dragon.horizontalCollision) {
             return want;
         }
-        // 卡得越久，越倾向于"坚决往上爬"
         double stuckRatio = Mth.clamp(this.stuckTicks / (double) STUCK_LIMIT, 0.0D, 1.0D);
+        // 交替相位：爬一段、平飞一段
+        boolean risePhase = (this.stuckTicks / RISE_PHASE) % 2 == 0;
         Vec3 open = findOpenDirection(dragon);
         if (open == null) {
-            // 四周都堵死：至少往上顶，并保留一点原方向的水平分量（免得完全停住）
-            return new Vec3(want.x * 0.3D, 0.15D + 0.25D * stuckRatio, want.z * 0.3D);
+            // 四周都堵死：往上顶（这是唯一可能出去的方向），但保留一点原方向避免完全停住
+            double vy = risePhase ? 0.15D + 0.25D * stuckRatio : 0.06D;
+            return new Vec3(want.x * 0.3D, vy, want.z * 0.3D);
         }
         // 把"想去哪"和"哪里有空"混一混：优先往开阔处，但不要完全丢掉原方向
         Vec3 blended = open.add(want.normalize().scale(0.35D));
@@ -180,11 +199,17 @@ public final class DragonFlightAssist {
         if (len < 1.0E-4D) {
             return want;
         }
-        // 水平速度保持原样，方向按 blended 重排；竖直分量随卡住程度递增
+        // 水平速度保持原样，方向按 blended 重排
         double speed = want.horizontalDistance();
-        double vy = 0.12D + 0.30D * stuckRatio;
+        // 爬升相位给正的竖直分量；平飞相位给 0（不往上也不往下），把高度交给寻路/悬停
+        double vy = risePhase ? 0.12D + 0.30D * stuckRatio : 0.0D;
         return new Vec3(blended.x / len * speed, vy, blended.z / len * speed);
     }
+
+    /** 避障时"往上爬"持续的 tick 数（40 = 2 秒）。 */
+    private static final int RISE_PHASE = 40;
+    /** 避障时"平飞找横向出口"持续的 tick 数（40 = 2 秒）。 */
+    private static final int LEVEL_PHASE = 40;
 
     // ---- 空间查询 ----
 
