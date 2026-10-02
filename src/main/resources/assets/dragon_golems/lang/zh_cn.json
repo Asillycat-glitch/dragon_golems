@@ -38,5 +38,8 @@
   "key.dragon_golems.breath": "坐骑技能：龙息",
   "key.dragon_golems.blast": "坐骑技能：龙弹（幽匿身体为音爆）",
   "key.dragon_golems.descend": "坐骑：下降（Shift 是下车键，别绑 Shift）",
-  "key.dragon_golems.free_flight": "坐骑：自由飞行（穿墙开关）"
+  "key.dragon_golems.free_flight": "坐骑：自由飞行（穿墙开关）",
+
+  "advancements.dragon_golems.advancements.golems.kill_ender_dragon.title": "屠龙者",
+  "advancements.dragon_golems.advancements.golems.kill_ender_dragon.description": "让巨龙傀儡击杀末影龙"
 }

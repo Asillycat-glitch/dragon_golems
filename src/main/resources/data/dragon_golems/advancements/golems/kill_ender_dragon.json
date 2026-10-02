@@ -1,0 +1,32 @@
+{
+  "parent": "modulargolems:golems/root",
+  "criteria": {
+    "0": {
+      "conditions": {
+        "type": "minecraft:ender_dragon"
+      },
+      "trigger": "modulargolems:kill"
+    }
+  },
+  "display": {
+    "announce_to_chat": true,
+    "description": {
+      "translate": "advancements.dragon_golems.advancements.golems.kill_ender_dragon.description"
+    },
+    "frame": "challenge",
+    "hidden": false,
+    "icon": {
+      "item": "minecraft:dragon_head"
+    },
+    "show_toast": true,
+    "title": {
+      "translate": "advancements.dragon_golems.advancements.golems.kill_ender_dragon.title"
+    }
+  },
+  "requirements": [
+    [
+      "0"
+    ]
+  ],
+  "sends_telemetry_event": true
+}

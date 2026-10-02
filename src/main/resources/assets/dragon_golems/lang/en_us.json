@@ -38,5 +38,8 @@
   "key.dragon_golems.breath": "Mount Skill: Breath",
   "key.dragon_golems.blast": "Mount Skill: Fireball (Sonic for sculk bodies)",
   "key.dragon_golems.descend": "Mount: Descend (Shift is the dismount key, don't bind it)",
-  "key.dragon_golems.free_flight": "Mount: Free Flight (noclip toggle)"
+  "key.dragon_golems.free_flight": "Mount: Free Flight (noclip toggle)",
+
+  "advancements.dragon_golems.advancements.golems.kill_ender_dragon.title": "Dragonslayer",
+  "advancements.dragon_golems.advancements.golems.kill_ender_dragon.description": "Have a Dragon Golem slay an Ender Dragon"
 }
