@@ -228,10 +228,16 @@ public class DragonDiveGoal extends Goal {
      * <p>这里调用 {@link #finish()}（而不是直接 return false）是故意的：那条路会走到
      * {@link #stop()}，把 {@code diveVelocity}、姿态阶段清干净并上报 {@code onSkillFinished}，
      * 所以不会留下"悬在半空的俯冲状态"。
+     *
+     * <p><b>★ 这条守卫当初漏了一半：</b>它无条件中断"有乘客"的情况，于是把<b>玩家自己按 R 的冲锋</b>
+     * 也一起打断了 —— 表现是"canUse 通过、dive ordered 成功、冷却扣了 600，但龙一个 tick 就被中断、
+     * 完全不动"。真机日志（14:40:59~14:41:15）就是这个序列：骑着时指令受理但龙 flat 在 y=-44.50，
+     * 玩家一下龙它才真的冲下去。所以这里和 {@code canUse} 保持一致：
+     * <b>只中断 AI 自己抽中的那一次，放行骑手指令</b>。玩家随时可以按键取消/接管。
      */
     @Override
     public boolean canContinueToUse() {
-        if (this.dragon.getControllingPassenger() != null) {
+        if (this.dragon.getControllingPassenger() != null && !this.dragon.isRiderOrderedDive()) {
             this.finish();
             return false;
         }
