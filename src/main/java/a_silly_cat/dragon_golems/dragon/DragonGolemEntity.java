@@ -1264,12 +1264,77 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return (this.riderInputFlags & 2) != 0;
     }
 
-    /** 下了乘客也要重算一次（傀儡全下去 → 解除货舱模式，恢复盘旋）。 */
+    /**
+     * 下了乘客：重算货舱模式，并且<b>把玩家挪到一个真正站得住的地方</b>。
+     *
+     * <p>为什么要多这一步（真机 bug：骑上龙之后<b>下不来</b>）：原版
+     * {@code ServerLevel.removePassenger} 会把乘客放到
+     * "{@code move(-bbWidth, 0, -bbWidth)} 扫到的第一个水平不重叠的位置"，<b>只看水平</b>。
+     * 而这条龙的判定箱高 2.2 格、背上还有傀儡乘客，落点常常正好落在
+     * 龙自己的子碰撞箱或另一个乘客身上；原版找不到位置就<b>静默放弃</b>（日志里没有任何异常），
+     * 于是玩家按 Shift 毫无反应、一直挂在龙背上。
+     *
+     * <p>这里补一个"落下 + 向外挪"的兜底：先试脚下，再试四周，最后直接放到头顶。
+     * 只有在原版给的落点确实和实体相撞时才动手，正常情况不改变原版行为。
+     */
     @Override
     protected void removePassenger(Entity passenger) {
         super.removePassenger(passenger);
         this.riderInputFlags = 0;
+        // 骑手走了 → 冲锋标志必须一起放下。
+        // 否则（玩家在冲锋途中按 Shift 下龙）它会一直挂着，而 isRiderOrderedDive()
+        // 因为"没有乘客"已经开始返回 false，标志却仍是 true —— 状态不一致，
+        // 驾驶管线与 DiveGoal 的让路判断就会互相打架。这是"下不来"那次留下的最可疑线索。
+        if (passenger instanceof Player) {
+            this.riderDiveActive = false;
+            if (this.orderedSkill == DragonSkillPacket.SKILL_DIVE) {
+                this.orderedSkill = -1;
+                this.commandedAim = null;
+            }
+        }
         this.onPassengersChanged();
+        if (this.level() instanceof ServerLevel server && passenger instanceof Player player) {
+            this.placeDismountedPlayerSafely(server, player);
+        }
+    }
+
+    /**
+     * 下龙兜底：原版落点被占住时，把玩家挪到"脚下 / 四周 / 头顶"第一个不撞的地方。
+     *
+     * <p>用 {@code noCollision} 判定，它会同时考虑方块和实体（含龙自己的子碰撞箱）。
+     */
+    private void placeDismountedPlayerSafely(ServerLevel server, Player player) {
+        if (server.noCollision(player, player.getBoundingBox())) {
+            // 原版给的落点本来就站得住，不动它
+            return;
+        }
+        double baseY = player.getY();
+        // 候选：先向下找地面，再向四周，最后向上（宁可落在龙背上也不要下不来）
+        double[][] offsets = {
+                {0.0D, 0.0D}, {1.5D, 0.0D}, {-1.5D, 0.0D}, {0.0D, 1.5D}, {0.0D, -1.5D},
+                {2.5D, 0.0D}, {-2.5D, 0.0D}, {0.0D, 2.5D}, {0.0D, -2.5D}, {0.0D, 0.0D},
+        };
+        double[] dy = {0.0D, -0.5D, -1.0D, -1.5D, -2.0D, -2.5D, 0.5D, 1.0D, 1.5D, 2.0D};
+        for (int i = 0; i < offsets.length; i++) {
+            double y = baseY + dy[i];
+            // 别把玩家塞进世界底部
+            if (y < server.getMinBuildHeight()) {
+                continue;
+            }
+            AABB box = player.getBoundingBox().move(offsets[i][0], dy[i], offsets[i][1]);
+            if (!server.noCollision(player, box)) {
+                continue;
+            }
+            player.moveTo(player.getX() + offsets[i][0], y, player.getZ() + offsets[i][1],
+                    player.getYRot(), player.getXRot());
+            // 落点在半空时别让这一下算成摔落
+            player.fallDistance = 0.0F;
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[ride] 下龙兜底：原版落点被占，已挪到 offset=({}, {})",
+                        offsets[i][0], dy[i]);
+            }
+            return;
+        }
     }
 
     /**
