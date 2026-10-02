@@ -42,7 +42,6 @@ import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.control.FlyingMoveControl;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.ai.goal.WrappedGoal;
-import net.minecraft.world.entity.ai.navigation.FlyingPathNavigation;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
 import net.minecraft.world.entity.player.Player;
@@ -71,7 +70,8 @@ import java.util.UUID;
  * 注解的类。少了它，实体就存不进档、收不回物品、主人 UUID 也会在重载后丢失。
  * 以后往这个类里加需要持久化的字段，记得同时加 {@code @SerialClass.SerialField}。
  *
- * <p>飞行沿用原版"悦灵/蜜蜂"那一套（{@link FlyingMoveControl} + {@link FlyingPathNavigation} 三维寻路），
+ * <p>飞行沿用原版"悦灵/蜜蜂"那一套（{@link FlyingMoveControl} + 我们自己的
+ * {@link DragonFlyingNavigation}（继承自 {@code FlyingPathNavigation}）三维寻路），
  * 另外在 {@link #aiStep()} 里补上"离地 N 格"的悬停高度（见 {@link #applyHover()}）。这里没有搬末影龙的
  * {@code DragonPhaseManager}——那套 phase AI 会和傀儡的跟随/指令系统打架。
  *
@@ -2603,7 +2603,12 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
 
     @Override
     protected PathNavigation createNavigation(Level level) {
-        FlyingPathNavigation nav = new FlyingPathNavigation(this, level);
+        // 用我们自己的飞行寻路：按体型放宽路径点容忍度、并让"卡住时重算"真的生效。
+        // 原版 FlyingPathNavigation 有两个坑（详见 DragonFlyingNavigation 的类注释）：
+        //   1. maxDistanceToWaypoint 默认 0.75 格，几格宽的龙永远"够不到"路径点，不切下一个；
+        //   2. recomputePath() 自带 20 tick 节流，超出就只置一个没人消费的标记 →
+        //      "撞墙了赶紧重算"这个请求被静默丢弃。
+        DragonFlyingNavigation nav = new DragonFlyingNavigation(this, level);
         nav.setCanOpenDoors(false);
         nav.setCanFloat(true);
         nav.setCanPassDoors(true);

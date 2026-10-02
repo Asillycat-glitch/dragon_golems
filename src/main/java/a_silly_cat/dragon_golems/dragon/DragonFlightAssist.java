@@ -44,6 +44,10 @@ public final class DragonFlightAssist {
 
     /** 连续撞墙多少 tick 之后判定"卡住了"。20 tick = 1 秒。 */
     private static final int STUCK_LIMIT = 20;
+    /** 判定卡住后，再等多少 tick 才去强制重算路径（先给它一个自己走通的机会）。 */
+    private static final int REROUTE_AFTER = STUCK_LIMIT + 10;
+    /** 还是走不通时，每隔多少 tick 再重算一次（每次都按"现在在哪"重新规划）。 */
+    private static final int REROUTE_EVERY = 15;
     /** 单次自动脱困最多持续多少 tick（3 秒）；到点还没出来就放弃，免得永久幽灵。 */
     private static final int RESCUE_MAX = 60;
     /** 脱困时的飞行速度（格/tick），比正常巡航快，好尽快离开死路。 */
@@ -114,6 +118,21 @@ public final class DragonFlightAssist {
             this.stuckTicks++;
         } else {
             this.stuckTicks = 0;
+        }
+
+        // ★ 卡住就强制重算路径。
+        //   这条才是"撞墙后不会重新找路线"的正解：原版只在 goal 需要新路径时才 createPath，
+        //   Mob 里没有"撞墙就重算"的调用，所以龙会一直朝同一个路径点推、直到当前路径走完。
+        //   而原版 recomputePath() 自带 20 tick 节流（超出就只置一个没人消费的标记），
+        //   光调它没用 —— 所以我们的 DragonFlyingNavigation 把节流去掉了。
+        if (this.stuckTicks == REROUTE_AFTER) {
+            dragon.getNavigation().recomputePath();
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[fly] 卡住 {} tick → 强制重算路径", this.stuckTicks);
+            }
+        } else if (this.stuckTicks > REROUTE_AFTER && this.stuckTicks % REROUTE_EVERY == 0) {
+            // 还是出不去就持续重算（每次重算都会按"当前所在位置"重新规划）
+            dragon.getNavigation().recomputePath();
         }
 
         if (this.rescueTicks >= 0) {
