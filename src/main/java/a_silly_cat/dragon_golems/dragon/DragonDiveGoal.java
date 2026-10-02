@@ -238,8 +238,15 @@ public class DragonDiveGoal extends Goal {
     @Override
     public boolean canContinueToUse() {
         if (this.dragon.getControllingPassenger() != null && !this.dragon.isRiderOrderedDive()) {
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[dive] canContinueToUse=false: 有乘客且非骑手指令 (ordered={} pending={})",
+                        this.dragon.riderOrderedSkill(), this.dragon.pendingSkill());
+            }
             this.finish();
             return false;
+        }
+        if (this.finished && DragonDebug.RIDE) {
+            Dragon_golems.LOGGER.info("[dive] canContinueToUse=false: finished");
         }
         return !this.finished;
     }
@@ -247,6 +254,10 @@ public class DragonDiveGoal extends Goal {
     @Override
     public void start() {
         this.finished = false;
+        if (DragonDebug.RIDE) {
+            Dragon_golems.LOGGER.info("[dive] start(): riderOrdered={} target={} pos={}",
+                    this.dragon.isRiderOrderedDive(), this.dragon.getTarget(), this.dragon.position());
+        }
         // 告诉调度器"这一轮真的开打了"：俯冲整套（LINEUP→DIVE→PLOW→CLIMB）远超 60 tick 的重掷窗口
         this.dragon.onSkillStarted(DragonGolemEntity.DragonSkill.DIVE);
         this.impacted.clear();
@@ -262,6 +273,10 @@ public class DragonDiveGoal extends Goal {
 
     @Override
     public void stop() {
+        if (DragonDebug.RIDE) {
+            Dragon_golems.LOGGER.info("[dive] stop(): phase={} phaseTicks={} riderOrdered={} target={}",
+                    this.phase, this.phaseTicks, this.dragon.isRiderOrderedDive(), this.dragon.getTarget());
+        }
         this.dragon.setDiveVelocity(null);
         this.dragon.setDivePhase(DragonGolemEntity.DIVE_PHASE_NONE);
         this.dragon.setAggressive(false);
@@ -535,6 +550,12 @@ public class DragonDiveGoal extends Goal {
 
     private void finish() {
         this.finished = true;
+        if (DragonDebug.RIDE) {
+            // 谁把它结束的、当时目标还在不在 —— 骑手冲锋被"瞬时中断"时必须看到这两样
+            Dragon_golems.LOGGER.info("[dive] finish(): phase={} phaseTicks={} riderOrdered={} target={} pos={}",
+                    this.phase, this.phaseTicks, this.dragon.isRiderOrderedDive(),
+                    this.dragon.getTarget(), this.dragon.position());
+        }
         this.stop();
     }
 
