@@ -930,6 +930,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * @return 是否受理
      */
     public boolean onRiderCommand(Player player, int skill, double x, double y, double z) {
+        if (DragonDebug.RIDE) {
+            Dragon_golems.LOGGER.info("[ride] server got skill={} from={} riding={}", skill,
+                    player.getName().getString(), player.getVehicle());
+        }
         if (this.level().isClientSide() || player != this.getControllingPassenger()) {
             return false;
         }
@@ -939,6 +943,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         if (this.riderCooldowns[skill] > 0) {
             // 冷却中：给个咔哒声提示，不然玩家会以为按键没生效
             this.playSound(SoundEvents.NOTE_BLOCK_HAT.get(), 0.6F, 0.6F);
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[ride] skill={} rejected by cooldown ({})",
+                        skill, this.riderCooldowns[skill]);
+            }
             return false;
         }
         Vec3 aim = new Vec3(x, y, z);
@@ -1011,9 +1019,17 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      */
     public void onRiderInput(Player player, int flags) {
         if (this.level().isClientSide() || player != this.getControllingPassenger()) {
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[ride] server DROPPED input flags={} (client={} controlling={})",
+                        flags, this.level().isClientSide(), this.getControllingPassenger());
+            }
             return;
         }
         this.riderInputFlags = flags;
+        if (DragonDebug.RIDE) {
+            Dragon_golems.LOGGER.info("[ride] server got input flags={} up={} down={}",
+                    flags, this.riderWantsUp(), this.riderWantsDown());
+        }
     }
 
     /** 骑手是不是按着上升键。 */

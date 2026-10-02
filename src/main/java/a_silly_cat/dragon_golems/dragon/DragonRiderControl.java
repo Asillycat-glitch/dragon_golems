@@ -1,5 +1,7 @@
 package a_silly_cat.dragon_golems.dragon;
 
+import a_silly_cat.dragon_golems.Dragon_golems;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Player;
@@ -158,6 +160,9 @@ public final class DragonRiderControl {
         dragon.setRiderPitch(Mth.lerp(RIDER_PITCH_LERP, riderPitch(dragon), wantPitch));
     }
 
+    /** 诊断用：{@code loggedVertical} 保证"读到升降键"这条只打一次，不刷屏。 */
+    private static boolean loggedVertical;
+
     /**
      * 竖直方向：上升键 / 下降键。
      *
@@ -178,6 +183,12 @@ public final class DragonRiderControl {
             want = RIDER_VERTICAL;
         } else if (dragon.riderWantsDown()) {
             want = -RIDER_VERTICAL;
+        }
+        // 诊断：第一次真的读到"上升/下降"时打一行，确认服务端这侧的数据是通的
+        if (DragonDebug.RIDE && want != 0.0D && !loggedVertical) {
+            loggedVertical = true;
+            Dragon_golems.LOGGER.info("[ride] server applying vertical want={} (up={} down={})",
+                    want, dragon.riderWantsUp(), dragon.riderWantsDown());
         }
         want = clampVertical(dragon, want);
         Vec3 current = dragon.getDeltaMovement();

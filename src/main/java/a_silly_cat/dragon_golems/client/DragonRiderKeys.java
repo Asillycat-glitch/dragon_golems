@@ -1,6 +1,7 @@
 package a_silly_cat.dragon_golems.client;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
+import a_silly_cat.dragon_golems.dragon.DragonDebug;
 import a_silly_cat.dragon_golems.dragon.DragonGolemEntity;
 import a_silly_cat.dragon_golems.network.DragonNetwork;
 import a_silly_cat.dragon_golems.network.DragonRideInputPacket;
@@ -8,6 +9,7 @@ import a_silly_cat.dragon_golems.network.DragonSkillPacket;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
@@ -116,6 +118,13 @@ public final class DragonRiderKeys {
             if (mc.player == null || mc.level == null) {
                 return;
             }
+            // 诊断：骑着龙的时候每 40 tick 报一次当前读到的按键状态，
+            // 用来区分"Tick 处理器根本没跑"和"跑了但读不到按键"
+            if (DragonDebug.RIDE && mc.player.getVehicle() instanceof DragonGolemEntity && mc.player.tickCount % 40 == 0) {
+                Dragon_golems.LOGGER.info("[ride] heartbeat flags={} screen={} vehicle={}",
+                        readFlags(mc), mc.screen != null,
+                        mc.player.getVehicle().getClass().getSimpleName());
+            }
             // 骑着龙时：每 tick 把"升降键状态"的变化发出去（只在变化时发，按住不会刷包）
             if (mc.player.getVehicle() instanceof DragonGolemEntity) {
                 sendInput(mc);
@@ -145,25 +154,64 @@ public final class DragonRiderKeys {
         /** 上一次发出去的升降状态（bit0 上升 / bit1 下降），用来做"只在变化时发包"。 */
         private static int lastSentFlags;
 
-        private static void sendInput(Minecraft mc) {
+        /**
+         * 读升降键状态。<b>优先读 {@code player.input}，而不是 {@code KeyMapping}。</b>
+         *
+         * <p>{@code LocalPlayer.input} 才是原版真正在用的那份输入
+         * （{@code Input.jumping} / {@code Input.shiftKeyDown}，由 {@code KeyboardInput.tick()}
+         * 每 tick 刷新）；{@code KeyMapping.isDown()} 是"原始按键有没有按住"，
+         * 在装了按键重绑类 mod（整合包里就有 Controlling）时可能和实际输入不一致。
+         * 两边都读、任一为真就算按下，最稳。
+         */
+        private static int readFlags(Minecraft mc) {
+            boolean up = false;
+            boolean down = false;
+            if (mc.player instanceof LocalPlayer) {
+                // 不写 var local = (LocalPlayer) mc.player：var 局部变量在语言层面是隐式 final，
+                // 而模式变量也是隐式 final，两者撞在一起 javac 会报"模式变量不是最终变量"。
+                var input = mc.player.input;
+                if (input != null) {
+                    up = input.jumping;
+                    down = input.shiftKeyDown;
+                }
+            }
+            if (!up && mc.options.keyJump.isDown()) {
+                up = true;
+            }
+            if (!down && DESCEND.isDown()) {
+                down = true;
+            }
             int flags = 0;
-            // 上升：沿用原版跳跃键。它虽然也会被原版同步，但这里统一走一个来源，服务端逻辑更简单
-            if (mc.options.keyJump.isDown()) {
+            if (up) {
                 flags |= 1;
             }
-            if (DESCEND.isDown()) {
+            if (down) {
                 flags |= 2;
             }
+            return flags;
+        }
+
+        private static void sendInput(Minecraft mc) {
+            int flags = readFlags(mc);
             if (flags == lastSentFlags) {
                 return;
             }
             lastSentFlags = flags;
             DragonNetwork.CHANNEL.sendToServer(new DragonRideInputPacket(flags));
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[ride] client send input flags={} up={} down={}",
+                        flags, (flags & 1) != 0, (flags & 2) != 0);
+            }
         }
 
         private static void send(Minecraft mc, int skill) {
             Vec3 aim = computeAim(mc);
             DragonNetwork.CHANNEL.sendToServer(new DragonSkillPacket(skill, aim.x, aim.y, aim.z));
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[ride] client send skill={} aim=({}, {}, {})", skill,
+                        String.format("%.1f", aim.x), String.format("%.1f", aim.y),
+                        String.format("%.1f", aim.z));
+            }
         }
     }
 
