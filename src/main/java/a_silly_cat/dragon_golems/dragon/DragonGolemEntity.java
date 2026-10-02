@@ -1101,6 +1101,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.pendingSkill = DragonSkill.DIVE;
         this.skillPendingTicks = 0;
         this.skillInProgress = false;
+        // 开一个诊断窗口：接下来 40 tick 里 DiveGoal 的每次 canUse 判定都会被记录
+        this.riderDiveTraceUntil = this.tickCount + 40;
         return true;
     }
 
@@ -1150,6 +1152,21 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return this.getControllingPassenger() != null
                 && this.orderedSkill == DragonSkillPacket.SKILL_DIVE
                 && this.pendingSkill == DragonSkill.DIVE;
+    }
+
+    /**
+     * 骑手指令受理之后的一段"诊断窗口"（tick）。
+     *
+     * <p>给 {@link DragonDiveGoal#canUse()} 用：它要记录"指令受理后每一次判定走到哪一步"。
+     * 不能用"每 N tick 采样"——{@code pendingSkill} 只存活一 tick，采样窗口几乎不可能撞上，
+     * 实测结果是<b>一条日志都没打出来</b>。所以改成事件驱动：受理那一刻开一个 40 tick 的窗，
+     * 窗内每 tick 都记录。
+     */
+    private int riderDiveTraceUntil = -1;
+
+    /** 现在是不是在"骑手冲锋诊断窗口"内。 */
+    public boolean inRiderDiveTraceWindow() {
+        return this.riderDiveTraceUntil >= 0 && this.tickCount <= this.riderDiveTraceUntil;
     }
 
     /** 当前骑手指令的技能序号；没有则 -1。 */

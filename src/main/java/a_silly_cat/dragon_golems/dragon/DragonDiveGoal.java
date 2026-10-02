@@ -167,11 +167,11 @@ public class DragonDiveGoal extends Goal {
 
     @Override
     public boolean canUse() {
-        // 诊断：只要有一轮 DIVE 还挂着没执行，就每 20 tick 报一次"走到哪一步被挡了"。
-        // 之前只打了"最终结果"，结果"受理成功但 canUse 一直 false"这种情况完全查不出来
-        // —— 必须逐个退出点都留痕。
-        boolean trace = DragonDebug.RIDE && this.dragon.pendingSkill() == DragonGolemEntity.DragonSkill.DIVE
-                && this.dragon.tickCount % 20 == 0;
+        // 诊断：<b>事件窗口</b>而不是时间采样。
+        // 之前写成 `tickCount % 20 == 0`，但 pendingSkill 只存活一 tick（goal 一被选中就被清），
+        // 那个窗口和"每 20 tick"撞上的概率极低 —— 结果一条日志都没打出来，等于没诊断。
+        // 现在改成"从骑手指令被受理的那一刻起，记录 40 tick 内每一次 canUse 的判定"。
+        boolean trace = DragonDebug.RIDE && this.dragon.inRiderDiveTraceWindow();
         // 只有"这一轮被骰子抽中"时才上（冷却由实体统一管，见 DragonGolemEntity.tickSkillRoll）。
         // 骑手指令（按 R）也是走这条：DragonGolemEntity.onRiderCommand → orderDive() 会把
         // pendingSkill 手动置成 DIVE，所以这里同样能过。
@@ -209,11 +209,11 @@ public class DragonDiveGoal extends Goal {
         double dist = this.horizontalDistance(this.dragon.getX(), this.dragon.getZ(), target.getX(), target.getZ());
         boolean ok = dist >= this.dragon.diveMinH() && dist <= this.dragon.diveMaxH();
         if (trace) {
-            Dragon_golems.LOGGER.info("[dive] canUse={} dist={} allowed={}..{} riderOrdered={}",
+            Dragon_golems.LOGGER.info("[dive] canUse={} dist={} allowed={}..{} riderOrdered={} target={}",
                     ok, String.format("%.1f", dist),
                     String.format("%.1f", this.dragon.diveMinH()),
                     String.format("%.1f", this.dragon.diveMaxH()),
-                    this.dragon.isRiderOrderedDive());
+                    this.dragon.isRiderOrderedDive(), target.getName().getString());
         }
         return ok;
     }
