@@ -191,6 +191,15 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      */
     private static final EntityDataAccessor<Float> DATA_BODY_PITCH =
             SynchedEntityData.defineId(DragonGolemEntity.class, EntityDataSerializers.FLOAT);
+    /**
+     * 骑乘俯仰（度，正 = 低头）：玩家驾驶时跟着视角，模型和子碰撞箱一起读它。
+     *
+     * <p>和 {@code DATA_BODY_PITCH} 分开是因为语义不同：那个是"俯冲/喷息姿态"（由
+     * {@link #pitchForPhase} 推出来），这个是"玩家视角"。{@link #getBodyPitch()} 会按
+     * 有没有被驾驶挑一个返回，所以判定箱和模型不需要知道区别。
+     */
+    private static final EntityDataAccessor<Float> DATA_RIDER_PITCH =
+            SynchedEntityData.defineId(DragonGolemEntity.class, EntityDataSerializers.FLOAT);
 
     // ---- 子碰撞箱几何（照抄原版末影龙的思路，数值按我们自己的模型换算）----
     // 这几个数字必须和 DragonGolemModel 的 MODEL_SCALE / FRONT_NECK / NECK_STEP 保持一致
@@ -773,8 +782,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.entityData.define(DATA_DIVE_PHASE, DIVE_PHASE_NONE);
         this.entityData.define(DATA_BODY_ROLL, 0.0F);
         this.entityData.define(DATA_BODY_PITCH, 0.0F);
-        // 骑乘俯仰（玩家驾驶时跟着视角）：和侧倾一样是"服务端算、两端读"
-        DragonRiderControl.defineSynchedData(this.entityData);
+        // 骑乘俯仰（玩家驾驶时跟着视角）：同样"服务端算、两端读"
+        this.entityData.define(DATA_RIDER_PITCH, 0.0F);
     }
 
     /**
@@ -847,6 +856,23 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /** 机身侧倾（度）：客户端渲染用。 */
     public float getBodyRoll() {
         return this.entityData.get(DATA_BODY_ROLL);
+    }
+
+    /**
+     * 骑乘俯仰（度，正 = 低头）：玩家驾驶时跟着视角，模型和判定箱一起低头/抬头。
+     *
+     * <p><b>这个 EntityDataAccessor 为什么必须声明在实体类里：</b>{@code SynchedEntityData.defineId}
+     * 要求"定义者和被定义者必须是同一个类"，否则每次加载都会刷一条
+     * {@code defineId called for: class ... from class ...} 警告（对，会一直刷）。
+     * 原来它写在 {@link DragonRiderControl} 里，日志里就出现了这条警告，
+     * 所以挪到这里、并在那里只留读写方法。
+     */
+    public float getRiderPitch() {
+        return this.entityData.get(DATA_RIDER_PITCH);
+    }
+
+    public void setRiderPitch(float pitch) {
+        this.entityData.set(DATA_RIDER_PITCH, pitch);
     }
 
     /** 调试用：把本体与各子碰撞箱（头/尾/双翼）打成一个字符串，排查"判定箱到底在哪"。 */

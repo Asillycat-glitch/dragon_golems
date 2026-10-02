@@ -1,9 +1,6 @@
 package a_silly_cat.dragon_golems.dragon;
 
 import net.minecraft.core.BlockPos;
-import net.minecraft.network.syncher.EntityDataAccessor;
-import net.minecraft.network.syncher.EntityDataSerializers;
-import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -74,21 +71,14 @@ public final class DragonRiderControl {
     /** 俯仰平滑系数（每 tick 朝玩家视角靠这么多）。 */
     private static final float RIDER_PITCH_LERP = 0.25F;
 
-    /** 骑乘姿态的机体俯仰（度，正 = 低头）：服务端算好同步给客户端渲染与子碰撞箱。 */
-    private static final EntityDataAccessor<Float> DATA_RIDER_PITCH =
-            SynchedEntityData.defineId(DragonGolemEntity.class, EntityDataSerializers.FLOAT);
+    /** 骑乘俯仰的同步字段声明在 {@link DragonGolemEntity}（{@code DATA_RIDER_PITCH}）。 */
 
     private DragonRiderControl() {
     }
 
-    /** 注册同步字段（由 {@code DragonGolemEntity.defineSynchedData} 调用）。 */
-    static void defineSynchedData(SynchedEntityData data) {
-        data.define(DATA_RIDER_PITCH, 0.0F);
-    }
-
     /** 当前骑乘俯仰（度，正 = 低头）。没人骑时恒为 0。 */
     public static float riderPitch(DragonGolemEntity dragon) {
-        return dragon.getEntityData().get(DATA_RIDER_PITCH);
+        return dragon.getRiderPitch();
     }
 
     /** 正在驾驶这条龙的玩家，没有就返回 null。 */
@@ -165,8 +155,7 @@ public final class DragonRiderControl {
         // 注意这里<b>不动实体自己的 xRot</b>：乘客的相机姿态是客户端拿乘客自己的 xRot 算的，
         // 服务端改它会白白搅乱那一份平滑状态。龙的抬头低头只走 DATA_RIDER_PITCH。
         float wantPitch = Mth.clamp(player.getXRot(), -RIDER_PITCH_MAX, RIDER_PITCH_MAX);
-        dragon.getEntityData().set(DATA_RIDER_PITCH,
-                Mth.lerp(RIDER_PITCH_LERP, riderPitch(dragon), wantPitch));
+        dragon.setRiderPitch(Mth.lerp(RIDER_PITCH_LERP, riderPitch(dragon), wantPitch));
     }
 
     /**
@@ -230,6 +219,6 @@ public final class DragonRiderControl {
             return;
         }
         float next = Mth.lerp(0.2F, current, 0.0F);
-        dragon.getEntityData().set(DATA_RIDER_PITCH, Math.abs(next) < 0.05F ? 0.0F : next);
+        dragon.setRiderPitch(Math.abs(next) < 0.05F ? 0.0F : next);
     }
 }
