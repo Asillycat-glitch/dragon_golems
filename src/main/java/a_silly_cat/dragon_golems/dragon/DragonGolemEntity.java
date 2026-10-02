@@ -667,6 +667,17 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      */
     @Override
     public boolean isControlledByLocalInstance() {
+        // ★ 骑手冲锋期间让出位置权威。
+        //   真机症状："按 R 之后龙一动不动，玩家一下龙它就冲出去了"。
+        //   机制：骑着时这里返回 true → 位置由客户端模拟；而客户端不跑 goal
+        //   （DragonDiveGoal.tick 在服务端分支里），所以它根本不知道在冲锋，
+        //   只跑 applyHover()（悬停）——客户端的悬停位置压过服务端写进 diveVelocity 的
+        //   俯冲速度。玩家一下龙，这里变假、位置改由服务端裁定，俯冲就"突然能用"了。
+        //   所以冲锋期间必须返回 false：让服务端推位置、客户端跟随。
+        //   判据用<b>同步</b>的 isRiderDiveSynced()，两端一致（普通字段客户端看不到）。
+        if (this.isRiderDiveSynced()) {
+            return false;
+        }
         if (this.getControllingPassenger() instanceof Player) {
             return true;
         }
@@ -910,7 +921,13 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.entityData.define(DATA_BODY_PITCH, 0.0F);
         // 骑乘俯仰（玩家驾驶时跟着视角）：同样"服务端算、两端读"
         this.entityData.define(DATA_RIDER_PITCH, 0.0F);
+        // 骑手冲锋是否在进行中 —— <b>必须同步</b>，见 isRiderOrderedDive() 的说明。
+        this.entityData.define(DATA_RIDER_DIVE, false);
     }
+
+    /** 同步字段：骑手冲锋进行中。客户端据此让出位置权威（见 isControlledByLocalInstance）。 */
+    private static final EntityDataAccessor<Boolean> DATA_RIDER_DIVE =
+            SynchedEntityData.defineId(DragonGolemEntity.class, EntityDataSerializers.BOOLEAN);
 
     /**
      * 当前机体俯仰（度，正 = 低头）。判定箱摆位和客户端模型都读它。
@@ -1154,6 +1171,9 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         // 骑手冲锋标志：由 DiveGoal.stop() 清除，不跟 pendingSkill 同生共死
         // （否则 stop() 里清掉 pendingSkill 会让 isRiderOrderedDive() 立刻变假，见它的说明）
         this.riderDiveActive = true;
+        // 同步给客户端：冲锋期间它必须让出位置权威，否则它的悬停会压过我们的俯冲速度
+        // （"骑着不动、下龙才冲"的根因，见 isRiderDiveSynced 的说明）
+        this.setRiderDiveSynced(true);
         // 开一个诊断窗口：接下来 40 tick 里 DiveGoal 的每次 canUse 判定都会被记录
         this.riderDiveTraceUntil = this.tickCount + 40;
         return true;
@@ -1209,6 +1229,32 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
+     * 骑手冲锋的<b>同步</b>镜像：{@link #isRiderOrderedDive()} 只在服务端算得对
+     * （{@code riderDiveActive} 是普通字段），但下面这个方法<b>两端</b>都必须给出一致答案。
+     *
+     * <p><b>★ 这是"骑着时冲锋不动、下龙才冲出去"的机制性原因：</b>
+     * 骑着时 {@link #isControlledByLocalInstance()} 返回 true，位置由<b>客户端</b>模拟；
+     * 而客户端不跑 goal（{@code DragonDiveGoal.tick} 在服务端分支里），
+     * 于是客户端<b>根本不知道在冲锋</b>，只跑 {@code applyHover()}（悬停）——
+     * 客户端的悬停位置压过服务端写进 {@code diveVelocity} 的俯冲速度。玩家一下龙，
+     * {@code isControlledByLocalInstance()} 变假、位置改由服务端裁定，俯冲就"突然能用"了。
+     *
+     * <p>所以冲锋期间要让客户端<b>让出位置权威</b>（{@code isControlledByLocalInstance()} 返回 false），
+     * 而那个判断必须两端一致 —— 因此这条状态走 {@code entityData} 同步，而不是普通字段。
+     *
+     * <p>注意同步有一两 tick 延迟：起手那两 tick 可能仍有客户端预测，属于可接受的抖动；
+     * 冲锋持续十几到几十 tick，主体部分走的是服务端权威。
+     */
+    public boolean isRiderDiveSynced() {
+        return this.entityData.get(DATA_RIDER_DIVE);
+    }
+
+    /** 服务端专用：写同步位（{@code orderDive} / {@code clearRiderDive} 里调）。 */
+    private void setRiderDiveSynced(boolean active) {
+        this.entityData.set(DATA_RIDER_DIVE, active);
+    }
+
+    /**
      * "骑手冲锋正在执行"的标志，由 {@link #orderDive} 置位、{@link DragonDiveGoal#stop()} 清除。
      *
      * <p>它刻意<b>不</b>跟 {@code pendingSkill} 同生共死（见 {@link #isRiderOrderedDive()} 的说明）。
@@ -1218,6 +1264,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /** 由 {@link DragonDiveGoal#stop()} 调用：这一轮骑手冲锋结束了，交回驾驶管线。 */
     public void clearRiderDive() {
         this.riderDiveActive = false;
+        // 同步位一起放下：客户端要把位置权威交还给驾驶管线
+        this.setRiderDiveSynced(false);
     }
 
     /**
