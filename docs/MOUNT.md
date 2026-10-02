@@ -232,6 +232,56 @@ return count <= Math.min(size * 2 - 1, 3) && total <= getBbWidth() + 1e-3;
 - 座位：`canAddPassenger` 只收玩家、且只收一个（第一版不做"傀儡骑龙"）；
   `positionRider` 把玩家放在前颈根部（背上），换算和龙头/龙嘴同一套
   （`rotateAndLift`），所以龙俯仰时座位跟着一起转。
+- **注意 mgdp 也做了同一件事**：`mgdp` 的 `RiderWandItemMixin` 在
+  `RiderWandItem.interactLivingEntity` 的返回处注入，对任何非犬型 `AbstractGolemEntity` 直接
+  `player.startRiding(golem, false)`。我们的 handler 在更早的时机（实体交互之前）就把交互吃掉了，
+  所以**现在生效的是我们这套**（多了一条"只能骑停着的龙"的限制）。想交还给 mgdp 就把
+  `startRidingFrom` 里的 `isParked()` 判断去掉。
+
+### 骑手技能键（R / G / V）
+
+| 键 | 技能 | 冷却 |
+|---|---|---|
+| **R** | 冲锋（俯冲） | 30 秒 |
+| **G** | 龙息锥 | 3 秒 |
+| **V** | 龙弹；身体是幽匿的龙换成音爆 | 3 秒 |
+
+三个键都能在"控制"里改，且**只在骑着龙时响应**（平时不占键）。
+
+**为什么要加一个自定义网络包。** 原版只把"跳跃"和"潜行"两个按键状态同步到服务端
+（升降键用的就是这两个），R/G/V 在服务端根本看不见。所以：客户端按 → 发包 → 服务端执行。
+链路是 `DragonRiderKeys`（按键 + 算瞄准点）→ `DragonSkillPacket` → `DragonNetwork`（通道）
+→ `DragonGolemEntity.onRiderCommand`（校验）→ `DragonRiderSkillGoal`（执行）。
+包体里带**客户端算好的瞄准点**，因为服务端拿不到玩家的准星；
+服务端会重新校验（是不是真骑着、序号合法、冷却、距离），**不信任客户端**。
+
+**瞄准点怎么算：** 先 `level.clip` 打方块截断射线，再在射线上找实体，都没中就取射线终点。
+注意**不能**用 `player.pick(range, ...)`——那个方法内部用玩家属性 `forge:entity_reach`
+（默认 3 格）当实体距离闸门，传 48 进去也只打得到 3 格内的东西。
+
+**"骑手指令"和 `PASSIVE` 的关系（这里有个绕不开的矛盾）。**
+装坐骑升级的龙带 `GolemFlags.PASSIVE`，本家 `canAttackType` 返回 `!PASSIVE`，而它同时被
+"能不能打"和"能不能被当敌人"复用 —— 于是被动龙的 `setTarget` 全被挡、`getTarget()` 永远是 null，
+AI 那套"有目标才开火"在驾驶时完全用不上；可没有目标就没有任何伤害管线。
+
+解法是给龙加一个**只在执行骑手指令期间为真**的开关 `riderCombat`：
+
+```java
+canAttackType(type) → riderCombat || super.canAttackType(type)
+canBeSeenAsEnemy()  → riderCombat || super.canBeSeenAsEnemy()
+```
+
+于是装了坐骑升级的龙：**平时依旧完全被动**（不索敌、不被当敌人，和升级说明一致），
+**只有玩家按键的那几秒**才真有攻击性，指令一结束立刻收回。
+
+**为什么单独写一个 `DragonRiderSkillGoal`，不复用 AI 那三个 goal：**
+① AI 的重心是"追着索敌到的目标打"，而这里根本没有目标；② AI 的冷却挂在 `pendingSkill` /
+`diveCooldown` 上、和"这一轮抽中了谁"绑死，玩家按键不该去搅那套调度
+（否则按一下 G 会把 AI 的大招 CD 也吃掉一颗）；③ 混在一起就得处处判断
+"这个目标是玩家给的还是索敌来的"，很容易写出"骑着龙它还自己俯冲"这类 bug。
+共用的只有表现与结算那几层（`breathDamage` / `applyBreathEffects` / `mouthPosition`），
+以及**冲锋直接复用 `DragonDiveGoal`**——那套航线 + 撞击结算是实测过的，重写只会引入手感差异
+（骑手按下 R 时由 `orderDive()` 手动把 DIVE 排进调度，因为驾驶期间掷骰子那条路被乘客挡住了）。
 
 ### 已知遗留
 

@@ -2,6 +2,7 @@ package a_silly_cat.dragon_golems.dragon;
 
 import dev.xkmc.modulargolems.content.entity.common.SweepGolemEntity;
 import a_silly_cat.dragon_golems.Dragon_golems;
+import a_silly_cat.dragon_golems.network.DragonSkillPacket;
 import dev.xkmc.modulargolems.content.config.GolemMaterial;
 import dev.xkmc.modulargolems.content.entity.goals.FollowOwnerGoal;
 import dev.xkmc.modulargolems.content.entity.goals.GolemMeleeGoal;
@@ -25,6 +26,7 @@ import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
@@ -874,6 +876,147 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.entityData.set(DATA_DIVE_PHASE, phase);
     }
 
+    // ---- 骑手技能指令（客户端按键 → 包 → 这里） ----
+
+    /** 骑手指定的技能；{@code -1} = 没有。取值见 {@code DragonSkillPacket.SKILL_*}。 */
+    private int orderedSkill = -1;
+    /** 骑手指定的瞄准点（世界坐标）。 */
+    @Nullable
+    private Vec3 commandedAim;
+    /**
+     * 本 tick 是不是"正在执行骑手指令"。
+     *
+     * <p>它是 {@link #canAttackType()} / {@link #canBeSeenAsEnemy()} 唯一的开关：
+     * 装了坐骑升级的龙带 {@code PASSIVE}，平时必须保持被动；而玩家按键让它开火的那几秒
+     * 又必须能真的打到人（本家的攻击管线到处都要过 {@code canAttack}，绕不过去）。
+     * 所以只有这一小段时间解除被动，指令一结束立刻收回。
+     */
+    private boolean riderCombat;
+    /** 三个技能各自的冷却（tick），索引即 {@code SKILL_*}。 */
+    private final int[] riderCooldowns = new int[3];
+
+    /** 冲锋的冷却（tick）：30 秒。比 AI 的俯冲冷却宽松一点，因为这是玩家主动付出手感的技能。 */
+    private static final int RIDER_DIVE_CD = 600;
+    /** 龙息 / 龙弹的冷却（tick）：3 秒。够玩家连喷，又不至于一秒一发刷屏。 */
+    private static final int RIDER_BLAST_CD = 60;
+    /**
+     * 瞄准点允许的最大距离（格）：比客户端算的 48 稍宽，留出网络延迟期间玩家往前飞的那一段。
+     * 超过就<b>夹到射程内</b>而不是拒绝——拒绝会让"飞得快时按键没反应"变得很难解释。
+     */
+    private static final double RIDER_AIM_MAX = 64.0D;
+
+    /**
+     * 接一条骑手的技能指令（服务端）。<b>这里做全部校验，不信任客户端。</b>
+     *
+     * <p>校验项：发指令的人确实骑着这条龙、技能序号合法、冷却好了、瞄准点在合理距离内。
+     * 瞄准点离嘴太近（比如贴脸）就沿视角方向推远一点，免得锥体长度算出来是负的。
+     *
+     * @return 是否受理
+     */
+    public boolean onRiderCommand(Player player, int skill, double x, double y, double z) {
+        if (this.level().isClientSide() || player != this.getControllingPassenger()) {
+            return false;
+        }
+        if (skill < 0 || skill > DragonSkillPacket.SKILL_MAX) {
+            return false;
+        }
+        if (this.riderCooldowns[skill] > 0) {
+            // 冷却中：给个咔哒声提示，不然玩家会以为按键没生效
+            this.playSound(SoundEvents.NOTE_BLOCK_HAT.get(), 0.6F, 0.6F);
+            return false;
+        }
+        Vec3 aim = new Vec3(x, y, z);
+        Vec3 mouth = this.mouthPosition();
+        double dist = mouth.distanceTo(aim);
+        if (dist > RIDER_AIM_MAX) {
+            aim = mouth.add(aim.subtract(mouth).normalize().scale(RIDER_AIM_MAX));
+        } else if (dist < 2.0D) {
+            // 贴脸（或者瞄准点就在自己身上）：沿"龙的机头方向"推开，别让方向退化成随机值
+            double yaw = Math.toRadians(this.getYRot());
+            aim = mouth.add(-Math.sin(yaw), 0.0D, Math.cos(yaw)).scale(2.0D);
+        }
+        this.orderedSkill = skill;
+        this.commandedAim = aim;
+        this.riderCooldowns[skill] = skill == DragonSkillPacket.SKILL_DIVE ? RIDER_DIVE_CD : RIDER_BLAST_CD;
+        this.getLookControl().setLookAt(aim.x, aim.y, aim.z);
+        if (skill == DragonSkillPacket.SKILL_DIVE) {
+            this.orderDive();
+        }
+        return true;
+    }
+
+    /**
+     * 把"冲锋"排进俯冲调度，交给 {@link DragonDiveGoal} 去飞那套航线。
+     *
+     * <p>为什么不自己实现一遍俯冲：那套航线（LINEUP → DIVE → PLOW → CLIMB）连同撞击结算、
+     * 无敌帧处理都已经调好并实测过了，重写只会引入新的手感差异。
+     *
+     * <p>这里做的是"手动置票"：正常流程由 {@link #tickSkillRoll} 掷骰子写 {@code pendingSkill}，
+     * 而驾驶期间那条调度是被乘客挡住的，所以骑手的指令得自己写进去，
+     * 顺便把"待办超时"的计数清零，免得它把这一轮当成"掷出来却一直没执行"给清掉。
+     */
+    private void orderDive() {
+        this.pendingSkill = DragonSkill.DIVE;
+        this.skillPendingTicks = 0;
+        this.skillInProgress = false;
+    }
+
+    /** 有没有等着执行的骑手指令。 */
+    public boolean hasRiderOrder() {
+        return this.orderedSkill >= 0;
+    }
+
+    /** 当前骑手指令的技能序号；没有则 -1。 */
+    public int riderOrderedSkill() {
+        return this.orderedSkill;
+    }
+
+    /** 骑手指定的瞄准点；没有则 null。 */
+    @Nullable
+    public Vec3 riderAim() {
+        return this.commandedAim;
+    }
+
+    /** 骑手技能 goal 收工时调用（清指令；冷却在 {@link #onRiderCommand} 里起步、每 tick 递减）。 */
+    public void clearRiderOrder() {
+        this.orderedSkill = -1;
+        this.commandedAim = null;
+    }
+
+    /**
+     * 绕开 {@code PASSIVE} 把骑手指定的目标塞进本家的目标槽。
+     *
+     * <p>为什么需要这个后门：装了坐骑升级的龙带 {@code GolemFlags.PASSIVE}，本家的
+     * {@code AbstractGolemEntity.setTarget} 会走 {@code canAttack → canAttackType → !PASSIVE}
+     * 直接拒绝，于是 {@code getTarget()} 永远是 null，俯冲那套"有目标才飞航线"的判定也起不来。
+     * 但这里的目的是"玩家让它打谁"，不是"它自己发现敌人"，所以可以绕过索敌权限
+     * —— 只允许从 {@link #onRiderCommand} 这条链路上调用。
+     */
+    public void setRiderTarget(@Nullable LivingEntity target) {
+        super.setTarget(target);
+    }
+
+    /**
+     * {@code PASSIVE} 只用来关掉"它自己索敌"，<b>不该挡玩家让它打谁</b>。
+     *
+     * <p>本家 {@code canAttackType} 直接返回 {@code !hasFlag(PASSIVE)}，而它同时被"能不能打"和
+     * "能不能被当敌人"复用（见 {@code canAttack} 的最后一行）。龙这边<b>只有在执行骑手指令的那几秒</b>
+     * 才解除这条限制（{@link #riderCombat}），其余时候交回本家的判定——所以装了坐骑升级的龙
+     * 平时依旧是完全被动的（不索敌、不被当敌人），只有玩家按键那一下才真有攻击性。
+     */
+    @Override
+    public boolean canAttackType(EntityType<?> type) {
+        return this.riderCombat || super.canAttackType(type);
+    }
+
+    /**
+     * 同理：被人骑着下命令时要能被别的 mob 当作敌人，平时（被动）不行。
+     */
+    @Override
+    public boolean canBeSeenAsEnemy() {
+        return this.riderCombat || super.canBeSeenAsEnemy();
+    }
+
     @Override
     protected void registerGoals() {
         super.registerGoals();
@@ -892,6 +1035,9 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         // 必须比远程（3）高：这一轮抽中的是音爆时，要把 MOVE 从龙息/靠拢那里抢过来。
         // 同一优先级不会打架：whose canUse() 只看 wantsSkill(自己的技能)，而 pendingSkill 只有一个值。
         this.goalSelector.addGoal(2, new DragonSonicGoal(this));
+        // 骑手按键技能：优先级同样是 2（前排），但它的 canUse 只看"有没有骑手指令"，
+        // 所以和上面几个不会互相抢 —— 有指令时它必然拿到 MOVE，没指令时它压根不上。
+        this.goalSelector.addGoal(2, new DragonRiderSkillGoal(this));
     }
 
     /**
@@ -910,6 +1056,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      */
     @Override
     public void aiStep() {
+        // 骑手指令的"解除被动"窗口：有指令、或者冲锋正在飞（pendingSkill 还挂着）时才算。
+        // 放在最前面，因为本 tick 里 goal 的 canUse/setTarget 都会问 canAttackType。
+        this.riderCombat = this.getControllingPassenger() != null
+                && (this.orderedSkill >= 0 || this.pendingSkill == DragonSkill.DIVE);
         // 玩家在开：水平方向交给原版骑乘管线（travel → travelRidden → getRiddenInput/Speed，
         // 见 DragonRiderControl 的类注释），这里只负责"没人在开"时的收尾。
         Player rider = DragonRiderControl.rider(this);
@@ -987,6 +1137,12 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         }
         if (this.blastCooldown > 0) {
             this.blastCooldown--;
+        }
+        // 骑手技能的冷却：和 AI 的那两条完全分开，驾驶期间互不影响
+        for (int i = 0; i < this.riderCooldowns.length; i++) {
+            if (this.riderCooldowns[i] > 0) {
+                this.riderCooldowns[i]--;
+            }
         }
         if (target == null || !target.isAlive()) {
             this.pendingSkill = null;
