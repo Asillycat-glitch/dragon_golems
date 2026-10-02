@@ -195,10 +195,18 @@ return count <= Math.min(size * 2 - 1, 3) && total <= getBbWidth() + 1e-3;
 
 | 操作 | 效果 |
 |---|---|
-| **空格** | 上升（原版只把"跳跃"和"潜行"两个状态同步到服务端，所以高度键只能用这两个） |
-| **Shift** | 下降（贴到地面就停住，不会钻进地形；头顶有方块也不会硬顶） |
+| **空格** | 上升 |
+| **左 Ctrl** | 下降（贴到地面就停住，不会钻进地形；头顶有方块也不会硬顶） |
 | **W / A / S / D** | 沿<b>机头朝向</b>前后飞 + 左右平移（`player.zza` / `player.xxa`，联机同样有效） |
 | **鼠标** | 左右 = 机头转过去（6°/tick 起，按转弯半径放大，不会瞬间掉头）；上下 = 机体俯仰（±35°），模型和子碰撞箱一起低头/抬头 |
+
+> **下降键为什么是左 Ctrl 而不是 Shift**：原版 `Player.wantsToStopRiding()` 直接返回
+> `isShiftKeyDown()`，而它在 `Player.baseTick` 里一旦为真就 `stopRiding()` ——
+> **Shift 是"下车键"**，拿它做下降只会让人从龙背上掉下去（第一版就是这么写的）。
+> 这个方法在 `Player` 上是 `protected` 且不是 `Entity`/`LivingEntity` 的方法，**龙覆写不了**
+> （试过，编译不过），所以下降键只能另绑一个客户端自己发。
+> 又因为 Ctrl 这类键服务端根本看不见，所以升降状态走自定义包
+> （`DragonRideInputPacket`），而不是读玩家身上的状态。
 
 要点：
 
@@ -210,15 +218,22 @@ return count <= Math.min(size * 2 - 1, 3) && total <= getBbWidth() + 1e-3;
   `moveRelative(getRiddenInput × getRiddenSpeed)` 重写一遍，前面写的会被覆盖成 0。
   （悬停/俯冲能直接写速度，是因为那条路上没有玩家操控、走的是另一条分支。）
 - **唯一写在 `super.aiStep()` 之后的是"升降"**：原版骑乘不给竖直输入，而 `noGravity` 下没人写
-  Y 速度就永远是 0，所以空格/Shift 那一笔在移动结算完之后补 Y，和悬停是同一个套路。
+  Y 速度就永远是 0，所以空格/Ctrl 那一笔在移动结算完之后补 Y，和悬停是同一个套路。
+- **竖直速度的三个来源必须互斥**：骑手 / 技能接管（`diveVelocity`）/ 悬停（`applyHover`）。
+  悬停分支会按"回到目标高度"覆盖 Y，所以**有骑手时那两个分支都不能走** ——
+  否则就是"按空格反而被压回待机高度 3 格"（这个 bug 真机确认过）。
 - **服务端权威**。原版只在 `isControlledByLocalInstance()` 为真时才算骑乘输入，而这个方法在
   服务端默认返回 false（它不是客户端、也没有 `isEffectiveAi`），所以龙覆写了它
   （有玩家操控时返回 true）。不覆写的话单机看着正常、联机时所有操作都会被服务端退回。
 - **驾驶期间不打人**：`setTarget` 拒收、掷出来的技能作废、俯冲姿态清零 —— 玩家在操作时被自己龙的
-  技能抢走控制权会很难受。
-- `jumping` 是 `LivingEntity` 的 **protected** 字段，而且 Java 的 protected 规则不允许
-  "用别的子类实例去读"（`player.jumping` 写在龙或驾驶类里都编译不过），原版也没有 getter，
-  所以走了一次带缓存的反射读取（见 `DragonGolemEntity.jumpKeyDown`），失败就恒返回 false。
+  技能抢走控制权会很难受。**但玩家自己按的技能是例外**，见下面"骑手技能键"。
+- 按键状态的读取源是 **`LocalPlayer.input`**（`Input.jumping` / `Input.shiftKeyDown`）优先，
+  `KeyMapping.isDown()` 兜底 —— 前者才是原版真正在用的输入，装了按键重绑类 mod
+  （比如 Controlling）时后者可能不一致。
+- 龙覆写了 `isMovable()`：`hasDriverSeatOccupied()`（玩家或傀儡在座）为真就一律视为可动。
+  **不能只看 `getControllingPassenger()`** —— 傀儡不在其中，那会让"龙先落进停止模式、
+  再让傀儡上背"这条最自然的路径上 `isMovable()` 恒为 false，三个攻击 goal 全部 `canUse()=false`
+  （真机表现就是"傀儡坐在龙背上，龙却完全不袭击"）。
 
 ### 上龙入口
 
@@ -229,14 +244,34 @@ return count <= Math.min(size * 2 - 1, 3) && total <= getBbWidth() + 1e-3;
   `return true` —— 手杖判定"成功"、人却没上去。所以加了 `DragonRideHandler`
   （Forge 的 `PlayerInteractEvent.EntityInteract`，它在实体交互之前派发），
   **不改别人的代码、不开 mixin**。
-- 座位：`canAddPassenger` 只收玩家、且只收一个（第一版不做"傀儡骑龙"）；
-  `positionRider` 把玩家放在前颈根部（背上），换算和龙头/龙嘴同一套
-  （`rotateAndLift`），所以龙俯仰时座位跟着一起转。
+- 座位：`positionRider` 沿机体轴向排座（驾驶座在前、傀儡乘客依次向后），换算和龙头/龙嘴同一套
+  （`rotateAndLift`），所以龙俯仰时整排座位跟着一起转。
 - **注意 mgdp 也做了同一件事**：`mgdp` 的 `RiderWandItemMixin` 在
   `RiderWandItem.interactLivingEntity` 的返回处注入，对任何非犬型 `AbstractGolemEntity` 直接
   `player.startRiding(golem, false)`。我们的 handler 在更早的时机（实体交互之前）就把交互吃掉了，
   所以**现在生效的是我们这套**（多了一条"只能骑停着的龙"的限制）。想交还给 mgdp 就把
   `startRidingFrom` 里的 `isParked()` 判断去掉。
+
+### 傀儡乘客（炮台）
+
+龙背上除了驾驶座还能坐傀儡（`MAX_GOLEM_PASSENGERS = 3`）。**怎么让傀儡上去**：手持骑乘手杖
+右键龙即可（这条走上游 mgdp 的 `RiderWandItemMixin`，不用我们额外做入口）。
+
+- **傀儡不会顶掉驾驶权**：`getControllingPassenger()` 只在首个乘客是 `Player` 时返回非 null。
+  傀儡刻意不算 —— 它没有输入源（不像本家狗那样能读 `AbstractGolemEntity` 的意图），
+  算成驾驶者会让 `travelRidden` 整条管线空转、龙反而动不了。
+- **货舱模式**：背上有傀儡且没有玩家驾驶时，龙悬停原地、不再随机游走
+  （傀儡在背上射击时龙自己绕圈会让射手永远瞄不稳）。它仍然跟随主人、照常索敌开火。
+  **注意不能靠 `setIdleSettled` 实现** —— 那个字段的正常管理者是 `DragonIdleGoal`，
+  它每 tick 都会重算并覆盖，别处置位活不过一 tick；所以改成在 `aiStep` 开头每 tick 维护。
+- **目标共享接口 `DragonTargetSource`**：`dragonCurrentTarget()`（顺序：命令手杖写的
+  `forcedTarget` → 本家目标槽）/ `dragonForceTarget(t)`（走本家 `setTargetRaw`，
+  绕开 `PASSIVE` 限制）。给背上的傀儡用 —— **龙负责索敌、傀儡负责开火**。
+  抽成顶层接口的原因：嵌进 `DragonGolemEntity` 会形成"接口引用外层泛型参数"的循环继承，
+  javac 直接报 `cyclic inheritance`。
+- **未实测**：本家傀儡的攻击 goal 在它作为乘客时是否仍然运行（`AbstractGolemEntity.tick()`
+  里没有任何"是不是乘客"的检查，看起来会跑；但 vanilla 对乘客的移动类 AI 有特殊处理）。
+  这是"傀儡能不能在龙背上开火"的前提。
 
 ### 骑手技能键（R / G / V）
 
@@ -285,6 +320,20 @@ canBeSeenAsEnemy()  → riderCombat || super.canBeSeenAsEnemy()
 
 ### 已知遗留
 
+0. **★ 玩家冲锋（R）骑着时失效**（2026-10 实测，尚未修复；AI 自发的俯冲正常，勿动）。
+   现象：骑着按 R → goal 启动、姿态会变（`dive` 1→7）、冷却照扣，但**龙的位置一动不动**；
+   **玩家一下龙就立刻能冲出去**。真机日志的分界线极其干净：每次撞击结算时都是 `rider=false`。
+   最可能的根因：`isControlledByLocalInstance()` 在有玩家驾驶时返回 true（当初为修联机），
+   于是骑乘期间位置由客户端模拟，而客户端跑的是 `applyHover()`（悬停）；
+   `diveVelocity` 只是服务端 goal 里的普通 Java 字段（不是 `entityData`、也没有 `@SerialClass`），
+   **客户端的悬停位置压过了服务端的俯冲速度**。姿态能变而位置不能变，正因为姿态走 `entityData`（有同步）。
+   修复方向：冲锋期间让服务端接管位置（`isRiderOrderedDive()` 时 `isControlledByLocalInstance()` 返回 false），
+   并注意确认不引起画面抖动/回弹。
+   **这条 bug 一共五层叠加，前四层已修**（分别是：goal 从未被给过目标 / `canUse`+`canContinueToUse`
+   的"有乘客别起飞"守卫把骑手指令也挡了 / `tickBody`+`tickVertical` 每 tick 抹掉速度姿态目标 /
+   冲锋标志依赖会被 `stop()` 自己清掉的 `pendingSkill` / 回位传送把冲锋中的龙拽回来）。
+   第五层修完后现象才从"完全没动静"变成"骑着不动、下龙立刻动"，从而暴露出本层。
+   **任何一层单独修都看不到效果**，所以排查时每修一层都像"没变化" —— 这是这条 bug 花了很多轮的原因。
 1. **子碰撞箱整体偏高约 2.4 格**（这是"手杖难指"的根因，尚未改动）。
    实测换算（1 倍体型）：躯干箱中心在 `y + 2.86`，而**可见的龙身中心渲染在 `y + 0.42`**
    —— 也就是玩家看着龙身瞄准时，准星其实穿在判定箱<b>下方</b>的空气里。原因在
