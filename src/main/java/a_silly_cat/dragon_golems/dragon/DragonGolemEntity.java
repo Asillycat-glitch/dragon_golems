@@ -1245,6 +1245,19 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
+     * 末地水晶治疗器：每 30 秒一轮、每轮最多认 12 块水晶（见 {@link DragonCrystalHeal}）。
+     *
+     * <p>为什么不像原版末影龙那样"附近有水晶就无限回"：那样基地里放一块水晶的龙就
+     * 打不死了。这里把水晶当消耗品、按轮结算，给了一个明确的总量上限。
+     */
+    private final DragonCrystalHeal crystalHeal = new DragonCrystalHeal();
+
+    /** 水晶治疗器（给展示/调试用）。 */
+    public DragonCrystalHeal crystalHeal() {
+        return this.crystalHeal;
+    }
+
+    /**
      * 开关"自由飞行"（穿墙）。
      *
      * <p>真正的幽灵模式：走原版 {@code Entity.noPhysics}，{@code move()} 会跳过所有方块碰撞。
@@ -1573,6 +1586,14 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         // 飞行辅助：撞墙计数、自动脱困的进出、noPhysics 的唯一写入口。
         // 必须在上面那段之后 —— 那里才刚决定本 tick 的速度。
         this.flightAssist.tick(this);
+        // 末地水晶治疗：每 30 秒一轮、每轮最多 12 个可用水晶，详见 DragonCrystalHeal 的说明。
+        // 放在这里（服务端 tick 收尾）而不是 goal 里：它是"被动光环"，不该和 AI 决策抢调度。
+        if (!this.level().isClientSide) {
+            float healed = this.crystalHeal.tick(this);
+            if (healed > 0.0F) {
+                this.setHealth(Math.min(this.getMaxHealth(), this.getHealth() + healed));
+            }
+        }
         // 诊断：定期报一次"竖直相关的全部状态"。排查"按了上升却不动"必须同时看到
         // y / 竖直速度 / 重力 / 目标高度 / 各模式标志 —— 只看其中一两个会一直猜错。
         if (DragonDebug.RIDE && !this.level().isClientSide && this.tickCount % 40 == 0) {
