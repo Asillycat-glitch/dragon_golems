@@ -3,6 +3,7 @@ package a_silly_cat.dragon_golems.client;
 import a_silly_cat.dragon_golems.Dragon_golems;
 import a_silly_cat.dragon_golems.dragon.DragonDebug;
 import a_silly_cat.dragon_golems.dragon.DragonGolemEntity;
+import a_silly_cat.dragon_golems.network.DragonFreeFlightPacket;
 import a_silly_cat.dragon_golems.network.DragonNetwork;
 import a_silly_cat.dragon_golems.network.DragonRideInputPacket;
 import a_silly_cat.dragon_golems.network.DragonSkillPacket;
@@ -69,6 +70,19 @@ public final class DragonRiderKeys {
             InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_LEFT_CONTROL, CATEGORY);
 
     /**
+     * 自由飞行（穿墙）开关。默认 <b>H</b>。
+     *
+     * <p>为什么需要它：龙的判定箱是 {@code bodyScale × (2.6 宽 × 2.2 高)}，
+     * 而原版寻路是按"一格宽的实体"假设的 —— 它以为能过的缝，龙其实挤不过去。
+     * 在矿洞、走廊、树丛里表现为概率性撞墙甚至卡死。与其做一堆半吊子的
+     * "只穿树叶不穿石头"，不如给一个明确的开关，外加服务端的自动脱困兜底
+     * （见 {@code DragonFlightAssist}）。
+     */
+    public static final KeyMapping FREE_FLIGHT = new KeyMapping(
+            "key.dragon_golems.free_flight", KeyConflictContext.IN_GAME,
+            InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_H, CATEGORY);
+
+    /**
      * 瞄准射程（格）。取 48：龙弹的射程是 44（{@code SKILL_ROCKET}），
      * 瞄准点没必要比最远的技能还远。
      */
@@ -92,6 +106,7 @@ public final class DragonRiderKeys {
             event.register(BREATH);
             event.register(BLAST);
             event.register(DESCEND);
+            event.register(FREE_FLIGHT);
         }
     }
 
@@ -155,6 +170,28 @@ public final class DragonRiderKeys {
             }
             if (BLAST.consumeClick()) {
                 send(mc, DragonSkillPacket.SKILL_BLAST);
+            }
+            if (FREE_FLIGHT.consumeClick()) {
+                // 目标状态从"龙当前的实际状态"取反，而不是自己维护一个本地布尔：
+                // 服务端可能因为自动脱困/其它原因改过它，读实体才不会和实际相反。
+                toggleFreeFlight(mc);
+            }
+        }
+
+        /**
+         * 切换自由飞行（穿墙）。
+         *
+         * <p>读的是实体自己的 {@code isFreeFlight()}（服务端会把它同步回来），
+         * 所以本地不需要再存一份状态、也就不存在"两边不一致"的问题。
+         */
+        private static void toggleFreeFlight(Minecraft mc) {
+            if (!(mc.player.getVehicle() instanceof DragonGolemEntity dragon)) {
+                return;
+            }
+            boolean want = !dragon.isFreeFlight();
+            DragonNetwork.CHANNEL.sendToServer(new DragonFreeFlightPacket(want));
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[fly] client 请求自由飞行 = {}", want);
             }
         }
 

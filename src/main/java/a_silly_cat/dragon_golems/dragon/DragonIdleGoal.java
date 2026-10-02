@@ -252,7 +252,12 @@ public class DragonIdleGoal extends Goal {
             vy = Math.max(vy, 0.15D);
         }
 
-        this.dragon.setDiveVelocity(new Vec3(vx, vy, vz));
+        // 主动避障：撞墙时不再只是"往上顶 0.15"，而是在扇面里找真正塞得下龙的方向。
+        // 原实现只有上面那一行，在矿洞/树丛里表现为"贴着同一面墙磨很久"
+        // （龙判定箱 2.6 格宽，寻路按一格宽假设，它以为能过的缝其实挤不过去）。
+        Vec3 want = new Vec3(vx, vy, vz);
+        Vec3 adjusted = this.dragon.flightAssist().avoidance(this.dragon, want);
+        this.dragon.setDiveVelocity(adjusted);
     }
 
     @Override

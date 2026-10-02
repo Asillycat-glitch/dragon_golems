@@ -37,5 +37,6 @@
   "key.dragon_golems.charge": "坐骑技能：冲锋",
   "key.dragon_golems.breath": "坐骑技能：龙息",
   "key.dragon_golems.blast": "坐骑技能：龙弹（幽匿身体为音爆）",
-  "key.dragon_golems.descend": "坐骑：下降（Shift 是下车键，别绑 Shift）"
+  "key.dragon_golems.descend": "坐骑：下降（Shift 是下车键，别绑 Shift）",
+  "key.dragon_golems.free_flight": "坐骑：自由飞行（穿墙开关）",
 }

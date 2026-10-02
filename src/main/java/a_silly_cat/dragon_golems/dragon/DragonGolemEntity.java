@@ -1229,6 +1229,41 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.commandedAim = null;
     }
 
+    // ---- 飞行辅助（穿墙 / 脱困 / 避障） ----
+
+    /**
+     * 飞行辅助：自由穿墙开关 + 卡住自动脱困 + 主动避障。
+     *
+     * <p>状态是"行为"而不是"外观"，所以放在普通字段里、不走 {@code entityData} 同步：
+     * 服务端是权威，客户端顶多差一两 tick 的表现。
+     */
+    private final DragonFlightAssist flightAssist = new DragonFlightAssist();
+
+    /** 飞行辅助（goal 拿它做避障修正，按键拿它开关自由飞行）。 */
+    public DragonFlightAssist flightAssist() {
+        return this.flightAssist;
+    }
+
+    /**
+     * 开关"自由飞行"（穿墙）。
+     *
+     * <p>真正的幽灵模式：走原版 {@code Entity.noPhysics}，{@code move()} 会跳过所有方块碰撞。
+     * 给玩家一个显式开关，是因为"判定箱 2.6 格宽"在某些地形里物理上就进不去；
+     * 与其做一堆半吊子的"只穿树叶"逻辑，不如给一个明确的能力 + 一个自动兜底
+     * （后者见 {@link DragonFlightAssist} 的自动脱困）。
+     */
+    public void setFreeFlight(boolean on) {
+        this.flightAssist.setFreeFlight(on);
+        // noPhysics 是 Entity 上的 public 字段，没有 setter（javap 查过）
+        this.noPhysics = on || this.flightAssist.isRescuing();
+    }
+
+    public boolean isFreeFlight() {
+        // 直接读 noPhysics：它是原版同步字段（SharedFlags bit 2），服务端设完客户端就能看到。
+        // 不另做同步 —— 少一个包、也少一处"两边不一致"的可能。
+        return this.noPhysics;
+    }
+
     // ---- 骑手升降键（客户端 DragonRideInputPacket） ----
 
     /** bit0 = 按着上升键；bit1 = 按着下降键。由包每 tick 同步（只在变化时发包）。 */
@@ -1506,16 +1541,28 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             } else if (this.diveVelocity != null) {
                 // 俯冲 / 拉升阶段：技能直接接管速度，悬停必须让位（它只会往上顶）。
                 this.setNoGravity(true);
-                this.setDeltaMovement(this.diveVelocity);
+                Vec3 vel = this.diveVelocity;
+                // 避障只作用在"自己飞"的场合：俯冲那套航线是刻意贴着地形掠过的，
+                // 给它加避障会把航线扯歪（撞墙时航线本来就该自己结束，见 DragonDiveGoal）。
+                this.setDeltaMovement(vel);
                 this.fallDistance = 0.0F;
                 if (this.keepAimThisTick) {
                     // 开火中：朝向由 goal 的 aimAt 管（绕圈喷息时运动方向是切线，不能拿来当朝向）
                     this.keepAimThisTick = false;
                 } else {
                     // 我们自己写速度就没有 move control 帮忙转向了，这里补上"朝向 = 运动方向"
-                    this.faceMovement(this.diveVelocity);
+                    this.faceMovement(vel);
                 }
                 this.diveVelocity = null;
+            } else if (this.flightAssist.isRescuing()) {
+                // 卡在方块里（自动脱困中）：交给飞行辅助往开阔处飞，别让悬停把它按回墙里
+                this.setNoGravity(true);
+                Vec3 escape = this.flightAssist.rescueVelocity(this);
+                if (escape != null) {
+                    this.setDeltaMovement(escape);
+                    this.faceMovement(escape);
+                }
+                this.fallDistance = 0.0F;
             } else {
                 this.keepAimThisTick = false;
                 // 这条路上没人写速度、也就没人更新侧倾，把它慢慢收平（否则会留着上一次的压弯角度）
@@ -1523,6 +1570,9 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.applyHover();
             }
         }
+        // 飞行辅助：撞墙计数、自动脱困的进出、noPhysics 的唯一写入口。
+        // 必须在上面那段之后 —— 那里才刚决定本 tick 的速度。
+        this.flightAssist.tick(this);
         // 诊断：定期报一次"竖直相关的全部状态"。排查"按了上升却不动"必须同时看到
         // y / 竖直速度 / 重力 / 目标高度 / 各模式标志 —— 只看其中一两个会一直猜错。
         if (DragonDebug.RIDE && !this.level().isClientSide && this.tickCount % 40 == 0) {
