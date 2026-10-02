@@ -621,15 +621,39 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     private static final double RIDER_FORWARD_PX = 6.0D;
 
     /**
-     * 谁在开这条龙：第一个乘客是玩家就由他操控，否则交回 AI。
+     * 谁在开这条龙：<b>只有第一个乘客是玩家时</b>才由他操控，否则交回 AI。
      *
-     * <p>只看玩家，不支持"傀儡骑龙"：龙的座位和判定箱都是照人调的，让傀儡骑上来还要处理
-     * 傀儡自己的 AI 抢 MOVE 通道，第一版不做（见 docs/MOUNT.md）。
+     * <p>傀儡乘客刻意不在这里返回 —— 傀儡没有输入源（不像本家狗那样能读
+     * {@code AbstractGolemEntity} 的意图），把它算成"驾驶者"会让
+     * {@code travelRidden} 整条管线空转、龙反而动不了。
+     * 傀儡在背上时的正确形态是"龙自己飞/自己打，傀儡当炮台"。
      */
     @Nullable
     @Override
     public LivingEntity getControllingPassenger() {
         return this.getFirstPassenger() instanceof Player player ? player : null;
+    }
+
+    /**
+     * 驾驶位上有没有"占用者"——<b>玩家或傀儡乘客都算</b>。
+     *
+     * <p>和 {@link #getControllingPassenger()} 的区别很重要：那个回答"谁在操控"，
+     * 这个回答"驾驶位是否已被占用 / 背上是不是有人"。
+     *
+     * <p><b>为什么必须分开：</b>{@link #isMovable()} 原来用
+     * {@code getControllingPassenger() != null} 当判据，而傀儡不在其中 ——
+     * 于是"龙先切停止模式落地 → 让傀儡上背"这条最自然的操作路径上，
+     * {@code isMovable()} 返回 false，<b>所有攻击 goal（俯冲/龙息/音爆）的
+     * {@code canUse()} 全部返回 false</b>，表现就是"傀儡坐在龙背上，龙却完全不袭击"。
+     */
+    public boolean hasDriverSeatOccupied() {
+        return !this.getPassengers().isEmpty();
+    }
+
+    /** 背上坐着的第一个乘客（可能是玩家，也可能是傀儡）。 */
+    @Nullable
+    public Entity firstPassengerOrNull() {
+        return this.getFirstPassenger();
     }
 
     /**
@@ -769,7 +793,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      */
     @Override
     public boolean isMovable() {
-        if (this.getControllingPassenger() != null) {
+        // 驾驶位有人（玩家在开，或者背上驮着傀儡当炮台）就一律视为可动。
+        // 不能只看 getControllingPassenger()：傀儡不在其中，那会让 STAND 模式下的
+        // "龙+傀儡"组合彻底打不了架（见 hasDriverSeatOccupied 的说明）。
+        if (this.hasDriverSeatOccupied()) {
             return true;
         }
         return super.isMovable();
@@ -828,7 +855,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         if (this.level().isClientSide()) {
             return true;
         }
-        if (this.getControllingPassenger() != null || !this.canAddPassenger(player)) {
+        if (this.hasDriverSeatOccupied() || !this.canAddPassenger(player)) {
             return false;
         }
         if (!this.isParked()) {
