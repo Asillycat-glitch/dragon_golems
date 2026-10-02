@@ -167,14 +167,19 @@ public class DragonDiveGoal extends Goal {
 
     @Override
     public boolean canUse() {
-        // 只有"这一轮被骰子抽中"时才上（冷却由实体统一管，见 DragonGolemEntity.tickSkillRoll）
+        // 只有"这一轮被骰子抽中"时才上（冷却由实体统一管，见 DragonGolemEntity.tickSkillRoll）。
+        // 骑手指令（按 R）也是走这条：DragonGolemEntity.onRiderCommand → orderDive() 会把
+        // pendingSkill 手动置成 DIVE，所以这里同样能过。
         if (!this.dragon.wantsSkill(DragonGolemEntity.DragonSkill.DIVE)) {
             return false;
         }
         if (!this.dragon.isMovable() || this.dragon.isInSittingPose()) {
             return false;
         }
-        if (this.dragon.getControllingPassenger() != null) {
+        // ★ 有人骑着时：只放行"骑手指令的冲锋"，仍然挡掉 AI 自己抽中的那一次。
+        //   原来这里无条件 return false，把按 R 的冲锋也一起挡死了 ——
+        //   表现就是"服务端受理了指令、冷却也扣了，但龙一动不动"。
+        if (this.dragon.getControllingPassenger() != null && !this.dragon.isRiderOrderedDive()) {
             return false;
         }
         LivingEntity target = this.dragon.getTarget();
@@ -182,7 +187,19 @@ public class DragonDiveGoal extends Goal {
             return false;
         }
         double dist = this.horizontalDistance(this.dragon.getX(), this.dragon.getZ(), target.getX(), target.getZ());
-        return dist >= this.dragon.diveMinH() && dist <= this.dragon.diveMaxH();
+        boolean ok = dist >= this.dragon.diveMinH() && dist <= this.dragon.diveMaxH();
+        if (!ok && DragonDebug.RIDE && this.dragon.isRiderOrderedDive()) {
+            // 骑手指令但距离不合适：明确告诉他为什么没起飞（这个距离闸门是原设计，不是 bug）
+            Dragon_golems.LOGGER.info("[ride] dive blocked by range: dist={} allowed={}..{}",
+                    String.format("%.1f", dist),
+                    String.format("%.1f", this.dragon.diveMinH()),
+                    String.format("%.1f", this.dragon.diveMaxH()));
+        }
+        if (ok && DragonDebug.RIDE && this.dragon.isRiderOrderedDive()) {
+            Dragon_golems.LOGGER.info("[ride] dive goal ACCEPTED the rider order (dist={})",
+                    String.format("%.1f", dist));
+        }
+        return ok;
     }
 
     /**

@@ -1068,6 +1068,22 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return this.orderedSkill >= 0;
     }
 
+    /**
+     * 这一轮的俯冲是不是<b>骑手按 R 下命令</b>要的（而不是 AI 自己掷骰子抽中的）。
+     *
+     * <p>用途只有一个：{@link DragonDiveGoal#canUse()} 里那条"有乘客就别起飞"的守卫
+     * 要放行骑手指令、但仍然挡掉 AI 自发的那一次（否则玩家一骑上去，AI 还在自己俯冲）。
+     *
+     * <p>注意判据里的 {@code orderedSkill == SKILL_DIVE}：{@code orderDive} 会把
+     * {@code pendingSkill} 置成 DIVE，而 AI 掷骰子也会置成同一个值，两者靠这个字段区分。
+     * 另外还要求真的有人在骑 —— 骑手下龙之后这条指令就该失效。
+     */
+    public boolean isRiderOrderedDive() {
+        return this.getControllingPassenger() != null
+                && this.orderedSkill == DragonSkillPacket.SKILL_DIVE
+                && this.pendingSkill == DragonSkill.DIVE;
+    }
+
     /** 当前骑手指令的技能序号；没有则 -1。 */
     public int riderOrderedSkill() {
         return this.orderedSkill;

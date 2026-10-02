@@ -120,10 +120,17 @@ public final class DragonRiderKeys {
             }
             // 诊断：骑着龙的时候每 40 tick 报一次当前读到的按键状态，
             // 用来区分"Tick 处理器根本没跑"和"跑了但读不到按键"
-            if (DragonDebug.RIDE && mc.player.getVehicle() instanceof DragonGolemEntity && mc.player.tickCount % 40 == 0) {
+            if (DragonDebug.RIDE && mc.player.getVehicle() instanceof DragonGolemEntity
+                    && mc.player.tickCount % 40 == 0) {
                 Dragon_golems.LOGGER.info("[ride] heartbeat flags={} screen={} vehicle={}",
                         readFlags(mc), mc.screen != null,
                         mc.player.getVehicle().getClass().getSimpleName());
+            }
+            // 原始输入读数：只在骑着龙、且至少按住了一个键的时候每 20 tick 打一次
+            // （不然一直刷屏；这样"按住 Ctrl 时到底读到了什么"就能直接看到）
+            if (DragonDebug.RIDE && mc.player.getVehicle() instanceof DragonGolemEntity
+                    && mc.player.tickCount % 20 == 0 && readFlags(mc) != 0) {
+                logRawInput(mc);
             }
             // 骑着龙时：每 tick 把"升降键状态"的变化发出去（只在变化时发，按住不会刷包）
             if (mc.player.getVehicle() instanceof DragonGolemEntity) {
@@ -178,6 +185,9 @@ public final class DragonRiderKeys {
             if (!up && mc.options.keyJump.isDown()) {
                 up = true;
             }
+            // 下降键只认我们注册的那一个（放在"控制"里可改）。
+            // 注意 <b>不要</b>再回退去读玩家身上的潜行状态：原版 Shift 是下车键，
+            // 把"潜行"当成下降会让玩家一按 Shift 就从龙背上掉下去。
             if (!down && DESCEND.isDown()) {
                 down = true;
             }
@@ -189,6 +199,39 @@ public final class DragonRiderKeys {
                 flags |= 2;
             }
             return flags;
+        }
+
+        /**
+         * 诊断：每 20 tick 把"升降键的原始读数"打出来。
+         *
+         * <p>排查"按了键但没反应"必须看到<b>原始输入</b>（{@code input.jumping} /
+         * {@code input.shiftKeyDown} / 我们自己的 {@code DESCEND} 键是否按下、
+         * 以及它到底绑在哪个键上）——只看合成后的 flags 分不清是"键没读到"还是"逻辑没生效"。
+         */
+        private static void logRawInput(Minecraft mc) {
+            String descendKey = "?";
+            try {
+                descendKey = DESCEND.getKey().getDisplayName().getString();
+            } catch (RuntimeException ignored) {
+                // 取不到就算了，不影响诊断的主体
+            }
+            String jumpKey = "?";
+            try {
+                jumpKey = mc.options.keyJump.getKey().getDisplayName().getString();
+            } catch (RuntimeException ignored) {
+            }
+            // 不用 `x instanceof LocalPlayer lp` 再赋给 boolean：模式变量是隐式 final，
+            // 只要它在 lambda/三元里被再赋值就会报错（这里两次引用都是这个原因）。
+            boolean rawJump = false;
+            boolean rawSneak = false;
+            var input = mc.player.input;
+            if (input != null) {
+                rawJump = input.jumping;
+                rawSneak = input.shiftKeyDown;
+            }
+            Dragon_golems.LOGGER.info(
+                    "[ride] raw input.jumping={} input.shiftKeyDown={} DESCEND.isDown={} jumpKey={} descendKey={} flags={}",
+                    rawJump, rawSneak, DESCEND.isDown(), jumpKey, descendKey, readFlags(mc));
         }
 
         private static void sendInput(Minecraft mc) {
