@@ -90,6 +90,19 @@ public class DragonFollowTeleportGoal extends Goal {
         if (this.dragon.isRiderOrderedDive()) {
             return false;
         }
+        // ★ 任何"已经排进调度但还没飞完"的技能期间都不回位。
+        //   真机症状（泰坦体型）："总是在执行俯冲但完不成 —— 总是冲出传送范围被拽回来"。
+        //   原因是俯冲的入口点在<b>目标后方</b>（passBack = 4 × 体型；泰坦体型下最多 64 格），
+        //   体型越大、speedScale 越大，LINEUP 那一段越长 —— 而传送阈值只按 bodyScale 放大、
+        //   还有 MAX_HORIZONTAL_CAP 封顶（见下），于是"还没飞到入口就被判定离主人太远 → 拽回"，
+        //   拽回后重掷又抽中俯冲，无限循环。
+        //   判据用 pendingSkill（排队中）或 skillInProgress（已开打）：两者任一都说明
+        //   "这一轮攻击正在占用它"，此时回位等于把攻击打断。
+        //   注意 pendingSkill 由 tickSkillRoll 管、skillInProgress 由 onSkillStarted 管，
+        //   所以"掷出来却一直没执行"的超时清空仍然会把这两个标志放下（见 tickSkillRoll 的看门狗）。
+        if (this.dragon.pendingSkill() != null || this.dragon.isSkillInProgress()) {
+            return false;
+        }
         // 俯冲/冲刺动作中也不回位（AI 自发的俯冲走这条：那时 DIVE_PHASE 已经离开 NONE）
         if (this.dragon.getDivePhase() != DragonGolemEntity.DIVE_PHASE_NONE) {
             return false;

@@ -1876,6 +1876,16 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
+     * 有没有一轮技能"已经开打"（{@code onSkillStarted} 之后、{@code onSkillFinished} 之前）。
+     *
+     * <p>给 {@link DragonFollowTeleportGoal} 用：那一轮攻击正在占用它，此时回位等于把攻击打断。
+     * 泰坦体型的真机症状就是"一直执行俯冲但完不成、总被传送拽回来"。
+     */
+    public boolean isSkillInProgress() {
+        return this.skillInProgress;
+    }
+
+    /**
      * 某个 goal <b>真正开始执行</b>这一轮的技能时调用（龙息前摇 / 龙弹瞄准 / 俯冲 LINEUP）。
      *
      * <p>作用是把"待办超时重掷"暂停掉：一轮龙息 20+60+10 = 90 tick &gt;
