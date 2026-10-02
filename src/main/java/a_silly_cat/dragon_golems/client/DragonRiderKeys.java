@@ -242,6 +242,13 @@ public final class DragonRiderKeys {
         Predicate<Entity> filter = candidate -> candidate != player
                 && candidate.isPickable()
                 && candidate instanceof LivingEntity
+                // ★ 必须排除"玩家自己骑着的坐骑（含它的子碰撞箱）"：
+                //   龙的头部/前颈子碰撞箱本来就伸在玩家正前方，不排除的话准星射线会先命中
+                //   龙自己，于是"瞄准点"变成龙头、"命中实体"变成这条龙本身 ——
+                //   按 R 冲锋时目标就是自己，整套动作自然起不来。
+                //   用 getRootVehicle() 而不是 getVehicle()：真被拖挂在别的载具上时也一并排掉。
+                && !candidate.isPassengerOfSameVehicle(player)
+                && candidate != player.getRootVehicle()
                 && !candidate.isSpectator();
         EntityHitResult entityHit = ProjectileUtil.getEntityHitResult(
                 mc.level, player, eye, rayEnd, search, filter, (float) AIM_PICK_PADDING);
@@ -249,6 +256,11 @@ public final class DragonRiderKeys {
             // 命中实体就瞄它的判定箱中心，别瞄"射线与它的交点"——那个点会随着视角抖。
             // 同时把实体 id 带回去：冲锋（俯冲）那条航线必须有目标才能起飞，见 DragonSkillPacket.entityId。
             Vec3 center = entityHit.getEntity().getBoundingBox().getCenter();
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[ride] aim hit entity={} class={}",
+                        entityHit.getEntity().getName().getString(),
+                        entityHit.getEntity().getClass().getSimpleName());
+            }
             return new Aim(new Vec3(center.x, center.y, center.z), entityHit.getEntity().getId());
         }
         return new Aim(rayEnd, -1);

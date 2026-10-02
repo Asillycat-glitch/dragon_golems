@@ -606,12 +606,17 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      *   <li>{@link #RIDER_UP_PX} 调大 = 人坐得更高（贴着脖子/翅膀根）、调小 = 更贴近龙背；</li>
      *   <li>{@link #RIDER_FORWARD_PX} 调大 = 往<b>前</b>挪（靠近颈根）、调小 = 往后挪到翅膀之间。</li>
      * </ul>
-     * 现在这组值（12 / 20）是"坐在背中前、翅膀根前面一点"的位置。
-     * 上一版是 18 / 0，也就是几乎在身体几何中心的正上方、又偏高，
-     * 玩家反馈"位置不对"（人能顶到天花板、相机容易穿进脖子）。
+     * 现在这组值（12 / 6）是"坐在肩背上、头颈后面"的位置。调过一次：
+     * 上一版是 12 / 20，玩家反馈"坐在脖颈第一节和第二节之间的<b>上方一格</b>"——
+     * 也就是 <b>太靠前</b>了，所以把 FORWARD 从 20 收到 6（20 像素 ≈ 往前 2.1 格，
+     * 6 像素 ≈ 0.6 格，正好从颈根退到肩背）。UP 保持不变。
+     *
+     * <p>往前挪还会撞上另一件事：<b>龙的头部子碰撞箱就伸在玩家正前方</b>，
+     * 坐得太靠前时准星射线会先命中自己这条龙（客户端瞄准那侧已经加了"排除坐骑"的过滤，
+     * 但座椅靠后能让视锥更干净、也能少一点贴脸时的镜头穿模）。
      */
     private static final double RIDER_UP_PX = 12.0D;
-    private static final double RIDER_FORWARD_PX = 20.0D;
+    private static final double RIDER_FORWARD_PX = 6.0D;
 
     /**
      * 谁在开这条龙：第一个乘客是玩家就由他操控，否则交回 AI。
@@ -1017,7 +1022,12 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             AABB box = new AABB(aim, aim).inflate(6.0D);
             double best = Double.MAX_VALUE;
             for (LivingEntity candidate : this.level().getEntitiesOfClass(LivingEntity.class, box)) {
-                if (!this.predicateTarget(candidate) || candidate == this.getControllingPassenger()) {
+                if (!this.predicateTarget(candidate)) {
+                    continue;
+                }
+                // 别把自己人（骑手 / 同一载具上的乘客）当成目标
+                if (candidate == this.getControllingPassenger()
+                        || candidate.isPassengerOfSameVehicle(this)) {
                     continue;
                 }
                 double d = candidate.position().distanceToSqr(aim);
