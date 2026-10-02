@@ -889,6 +889,20 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         if (target != null && this.isRiderControlled()) {
             return;
         }
+        // 诊断：骑手冲锋途中目标被清空，整个航线就废了（真机症状：phase=LINEUP 卡 37 tick
+        // 然后 finish(target=null)）。目标被谁都可能清，光看"结果"分不出是谁，
+        // 所以这里在"骑手冲锋期间把非 null 目标清成 null"时打一行**调用栈**。
+        if (DragonDebug.RIDE && target == null && this.getTarget() != null && this.isRiderOrderedDive()) {
+            StringBuilder trace = new StringBuilder();
+            for (StackTraceElement el : new Throwable().getStackTrace()) {
+                if (el.getClassName().startsWith("a_silly_cat.dragon_golems")) {
+                    trace.append(el.getClassName().substring(el.getClassName().lastIndexOf('.') + 1))
+                            .append('.').append(el.getMethodName()).append(':').append(el.getLineNumber())
+                            .append(" <- ");
+                }
+            }
+            Dragon_golems.LOGGER.info("[dive] 目标被清空！调用链: {}", trace);
+        }
         super.setTarget(target);
     }
 
@@ -2594,9 +2608,13 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 待机高度也跟着涨：那一档本来就是"给骑乘用的固定高度"，体型大了还贴 3 格等于钻地。
      */
     public double hoverHeight() {
-        // 背上有傀儡乘客时也用待机高度：那是"停着让人打"的姿态，低一点更稳。
-        // （巡航作战高度 10 格是给"自己游走开火"用的，傀儡乘客要的是稳定平台。）
-        double base = this.isParked() || this.hasGolemPassenger() ? HOVER_HEIGHT_IDLE : HOVER_HEIGHT;
+        // ★ 有傀儡乘客时<b>不再</b>降到待机高度。
+        //   第一版写的是 `isParked() || hasGolemPassenger()` → 待机高度 3 格，
+        //   理由当时是"停着让人打更稳"。真机反馈把这个理由推翻了：
+        //     "傀儡乘坐时龙只能贴地，无法飞到 15 格（无论停止还是跟随）"——
+        //   背着炮台的龙贴地飞，炮台的射界全被地形挡掉，"空中炮艇"这个定位就没了。
+        //   所以货舱模式只保留"不随机游走"（见 tickGolemPassengerMode），高度回到正常档。
+        double base = this.isParked() ? HOVER_HEIGHT_IDLE : HOVER_HEIGHT;
         return base * this.hoverHeightScale();
     }
 
