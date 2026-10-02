@@ -2,6 +2,7 @@ package a_silly_cat.dragon_golems.dragon;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
@@ -10,14 +11,12 @@ import java.util.List;
  *
  * <h2>机制（用户定义）</h2>
  * <ol>
- *   <li><b>判定（每 {@link #CHECK_INTERVAL} = 30 秒一次）</b>：只有当场上存在
- *       <b>受伤的龙傀儡</b>、且它 {@link #RADIUS} 格内有末地水晶时，才算"判定通过"。</li>
- *   <li><b>回血</b>：判定通过后，只要水晶还在、龙还没满血，就<b>持续</b>按原版末影龙的节律
- *       回血（每 {@link #HEAL_INTERVAL} = 10 tick 回 {@link #HEAL_AMOUNT} = 1 点）。</li>
- *   <li><b>不叠加</b>：同一只龙旁边不管放几块水晶，回血速度都是 10 tick / 1 点
- *       （一块水晶就够治）。多放水晶的意义在于"覆盖范围"——能同时照顾到更多龙。</li>
- *   <li><b>没有上限池</b>：水晶不被消耗，也不需要 12 块的额度。30 秒那道判定就是全部的闸门 ——
- *       判定没通过（龙满血、或者附近没水晶）就整轮不回；一旦通过，这一轮里水晶一直有效。</li>
+ *   <li><b>判定周期 {@link #CHECK_INTERVAL} = 30 秒</b>：若这只龙<b>受伤了</b>、
+ *       且它 {@link #RADIUS} 格内有存活的末地水晶，判定通过 → 本轮可以回血。</li>
+ *   <li><b>回血</b>：判定通过后，只要水晶还在、龙还没满血，就按原版末影龙的节律
+ *       <b>持续</b>回血（每 {@link #HEAL_INTERVAL} = 10 tick 回 {@link #HEAL_AMOUNT} = 1 点）。</li>
+ *   <li><b>不叠加</b>：同一只龙旁边放几块水晶都一样快（一块就够治）；多放的意义是覆盖更多龙。</li>
+ *   <li>水晶<b>不被消耗</b>，没有额度上限；30 秒那道判定就是全部的闸门。</li>
  * </ol>
  *
  * <h2>原版末影龙是怎么做的（javap 查的字节码，不是印象）</h2>
@@ -28,17 +27,21 @@ import java.util.List;
  *   if (random.nextInt(10) == 0)
  *       nearestCrystal = 最近的 level.getEntitiesOfClass(EndCrystal.class, bb.inflate(32.0));
  * </pre>
- * 我们沿用它的"10 tick / 1 点 / 32 格"，差别只在<b>加了一道 30 秒的判定闸门</b>：
- * 原版是"有水晶就无限回"，这里必须"场上有一只受伤的龙 + 它附近有水晶"才开闸，
- * 而且每轮重新判一次。
+ * 我们沿用它的"10 tick / 1 点 / 32 格"，差别只在多了那道 30 秒的判定闸门。
  *
- * <h2>性能</h2>
- * 每只龙每 30 秒只做一次实体搜索（原版是平均每 10 tick 一次），比原版省得多。
- * 没通过的轮次直接跳过，不做任何查询。
+ * <h2>★ 一个被真机暴露出来的设计缺陷（已修）</h2>
+ * 第一版是"判定成功后把计时器归零"。于是龙满血那一刻判定失败
+ * （满血不算"受伤"，所以判定不过），计时器却已经因为上一轮成功而接近阈值 ——
+ * <b>结果：龙满血后再被打伤，要白等将近 30 秒才开始回血</b>。
+ * 玩家的原话是"傀儡似乎会断掉回血（满血后需要 30s 后再回血？）"，就是这个。
+ *
+ * <p>现在改成：<b>计时器只在判定成功时清零</b>。满血时的判定失败<b>不</b>清零，
+ * 所以时钟一直在走 —— 龙一受伤就会被立刻接管（"上次判定已经过去 30 秒了"这个条件早已满足），
+ * 既保留了"30 秒最多开局一次"的限制，又没有任何人工等待。
  */
 public final class DragonCrystalHeal {
 
-    /** 判定间隔（tick）。600 tick = 30 秒。 */
+    /** 判定周期（tick）。600 tick = 30 秒。 */
     private static final int CHECK_INTERVAL = 600;
     /** 回血间隔（tick）。和原版一致：10 tick = 0.5 秒。 */
     private static final int HEAL_INTERVAL = 10;
@@ -48,15 +51,15 @@ public final class DragonCrystalHeal {
     private static final double RADIUS = 32.0D;
 
     /**
-     * 本只龙的计数器：既用来数"距离下次判定还有多久"，也用来对 {@link #HEAL_INTERVAL} 取模。
+     * 距离上一次"判定成功"过了多少 tick。
      *
-     * <p>不复用 {@code dragon.tickCount}：那个是实体的总寿命，两个周期的公倍数会在
-     * "判定刚通过"和"该回血"之间产生不该有的相位关系（判定通过那一 tick 恰好不回血之类）。
+     * <p>不复用 {@code dragon.tickCount}：600 和 10 的公倍数会让"判定刚通过"和"该回血"
+     * 之间产生不该有的相位关系。也不在判定失败时清零，原因见类注释里的缺陷说明。
      */
-    private int ticks;
+    private int ticksSinceCheck = CHECK_INTERVAL;
     /** 本轮判定是否通过（通过 = 允许回血）。 */
     private boolean active;
-    /** 判定通过的瞬间记下水晶数量，只用于日志/展示。 */
+    /** 最近一次判定看到的水晶数量（日志/展示用）。 */
     private int crystalCount;
 
     /** 本轮判定是否通过。 */
@@ -72,97 +75,97 @@ public final class DragonCrystalHeal {
     /**
      * 每 tick 调一次（服务端）。
      *
-     * @return 本 tick 实际回了多少血（0 = 没回）。调用方负责加血 ——
-     * "怎么加血"留在实体里，"什么时候能回"留在这里，职责清楚。
+     * @return 本 tick 用来回血的水晶（{@code null} = 本 tick 不回血）。调用方负责
+     * <b>加血 + 生成光效</b> —— "什么时候能回、用哪块水晶"留在这里，
+     * "怎么表现"留在实体/客户端，职责清楚。
      */
-    public float tick(DragonGolemEntity dragon) {
+    @Nullable
+    public EndCrystal tick(DragonGolemEntity dragon) {
         if (dragon.level().isClientSide()) {
-            return 0.0F;
+            return null;
         }
-        this.ticks++;
+        // 时钟一直在走：满血时不清零（见类注释的缺陷说明）
+        if (this.ticksSinceCheck < CHECK_INTERVAL) {
+            this.ticksSinceCheck++;
+        }
 
-        // ---- 30 秒判定 ----
-        if (this.ticks >= CHECK_INTERVAL) {
-            this.ticks = 0;
+        // ---- 判定：上次判定成功之后满 30 秒才做下一次 ----
+        if (this.ticksSinceCheck >= CHECK_INTERVAL) {
+            // check() 成功时会把 ticksSinceCheck 清零；失败时留着（时钟继续走）
             this.check(dragon);
         }
 
         // ---- 判定没过：整轮不回 ----
         if (!this.active) {
-            return 0.0F;
+            return null;
         }
         // ---- 回血节律：每 10 tick 一点，且不满血 ----
-        if (this.ticks % HEAL_INTERVAL != 0) {
-            return 0.0F;
+        if (this.ticksSinceCheck % HEAL_INTERVAL != 0) {
+            return null;
         }
         if (dragon.getHealth() >= dragon.getMaxHealth()) {
-            return 0.0F;
+            return null;
         }
-        return this.healIfStillLit(dragon);
+        return this.findLiveCrystal(dragon);
     }
 
     /**
-     * 判定：<b>这只龙自己受伤了、且它 32 格内有末地水晶</b>才算通过。
+     * 判定：<b>这只龙受伤了、且它 32 格内有存活的末地水晶</b>才算通过。
      *
-     * <p>"受伤了"是判定的前提之一：满血的龙不需要治疗，也就没必要把这个闸门打开
-     * （否则一轮里它一直"激活"着，等它受伤时那道 30 秒的延迟就白等了）。
-     *
-     * <p>每次判定都重新搜一遍，所以水晶被拆掉之后最多 30 秒就会失效；
-     * 但<b>轮内</b>不复查 —— 这正是"判定通过后可以持续回血"的含义。
-     * 不过被打掉的水晶会被 {@link EndCrystal#isRemoved()} 排除，见下面的复查。
+     * <p>成功时把计时器清零（下一次判定要再等 30 秒）；失败时<b>不动</b>它 ——
+     * 这正是上面说的缺陷修复点。
      */
     private void check(DragonGolemEntity dragon) {
         if (dragon.getHealth() >= dragon.getMaxHealth()) {
-            this.deactivate();
+            this.deactivate("龙是满血");
             return;
         }
+        int alive = this.countLiveCrystals(dragon);
+        if (alive == 0) {
+            this.deactivate(RADIUS + " 格内没有存活的水晶");
+            return;
+        }
+        this.active = true;
+        this.crystalCount = alive;
+        this.ticksSinceCheck = 0;
+        if (DragonDebug.RIDE) {
+            Dragon_golems.LOGGER.info("[heal] 判定通过：{} 格内有 {} 块水晶，本轮持续回血", RADIUS, alive);
+        }
+    }
+
+    private void deactivate(String why) {
+        if (this.active && DragonDebug.RIDE) {
+            Dragon_golems.LOGGER.info("[heal] 本轮回血结束（{}）", why);
+        }
+        this.active = false;
+        this.crystalCount = 0;
+    }
+
+    /** 找一块存活的水晶（用来发光效）；没有就返回 null。 */
+    @Nullable
+    private EndCrystal findLiveCrystal(DragonGolemEntity dragon) {
         List<EndCrystal> found = dragon.level().getEntitiesOfClass(EndCrystal.class,
                 dragon.getBoundingBox().inflate(RADIUS));
-        // 只认还活着的：区块卸载/已摧毁的要排掉
+        for (EndCrystal crystal : found) {
+            if (!crystal.isRemoved() && crystal.isAlive()) {
+                return crystal;
+            }
+        }
+        // 轮途中水晶被拆掉了：立刻停手（否则"打掉水晶"这个反制要等最长 30 秒才生效）
+        this.deactivate("水晶已不在");
+        return null;
+    }
+
+    /** 数一下范围内有几块存活的水晶。 */
+    private int countLiveCrystals(DragonGolemEntity dragon) {
+        List<EndCrystal> found = dragon.level().getEntitiesOfClass(EndCrystal.class,
+                dragon.getBoundingBox().inflate(RADIUS));
         int alive = 0;
         for (EndCrystal crystal : found) {
             if (!crystal.isRemoved() && crystal.isAlive()) {
                 alive++;
             }
         }
-        if (alive == 0) {
-            this.deactivate();
-            return;
-        }
-        this.active = true;
-        this.crystalCount = alive;
-        if (DragonDebug.RIDE) {
-            Dragon_golems.LOGGER.info("[heal] 判定通过：{} 格内有 {} 块水晶，本轮持续回血", RADIUS, alive);
-        }
-    }
-
-    private void deactivate() {
-        if (this.active && DragonDebug.RIDE) {
-            Dragon_golems.LOGGER.info("[heal] 判定未通过：本轮不回血（满血或附近无水晶）");
-        }
-        this.active = false;
-        this.crystalCount = 0;
-    }
-
-    /**
-     * 轮内复查：回血这一下之前确认"附近还有活水晶"。
-     *
-     * <p>为什么需要（对用户给的机制做的一处加固）：机制说是"每 30 秒判定一次"，
-     * 严格照做的话，水晶在这 30 秒中间被打掉，龙还会继续回血到本轮结束 ——
-     * 而战斗中 30 秒足够决定胜负了，那会让"打掉水晶"这个反制失效。
-     * 所以每次真回血之前顺手确认一次。代价是"只在真要回血时才做"的一次小范围查询
-     * （每次最多返回一块，见下面的 limit）。
-     */
-    private float healIfStillLit(DragonGolemEntity dragon) {
-        // 不用带过滤器的 getEntitiesOfClass 重载：它的形参是 EntitySelector（Predicate<? super T>），
-        // lambda 里推断出的类型容易和通配符打架（javac 会报无法推断）。列表很短，自己挑更省事也更清楚。
-        List<EndCrystal> found = dragon.level().getEntitiesOfClass(EndCrystal.class,
-                dragon.getBoundingBox().inflate(RADIUS));
-        for (EndCrystal crystal : found) {
-            if (!crystal.isRemoved() && crystal.isAlive()) {
-                return HEAL_AMOUNT;
-            }
-        }
-        return 0.0F;
+        return alive;
     }
 }

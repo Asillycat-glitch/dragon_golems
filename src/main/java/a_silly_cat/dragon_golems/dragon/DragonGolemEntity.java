@@ -29,6 +29,7 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
@@ -43,6 +44,7 @@ import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.ai.goal.WrappedGoal;
 import net.minecraft.world.entity.ai.navigation.FlyingPathNavigation;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
+import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
@@ -1239,6 +1241,45 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      */
     private final DragonFlightAssist flightAssist = new DragonFlightAssist();
 
+    /** 每次回血回复的血量。和原版末影龙一致：1 点 = 半颗心。 */
+    private static final float CRYSTAL_HEAL_AMOUNT = 1.0F;
+
+    /** 治疗光效的节流：每 N 次回血才放一次光束与音效（回血是 0.5 秒一次，每 4 次 = 2 秒）。 */
+    private static final int CRYSTAL_FX_INTERVAL = 4;
+    /** 治疗光效的计数器。 */
+    private int crystalFxTicks;
+
+    /**
+     * 水晶治疗的光效。
+     *
+     * <p><b>为什么得自己做：</b>原版<b>没有</b>回血特效 —— javap 查过 {@code EnderDragon}
+     * 和 {@code EndCrystal}，治疗那条路上一个 {@code addParticle} 都没有
+     * （水晶到龙的那道光束纯粹是渲染层读 {@code DATA_BEAM_TARGET} 画出来的）。
+     * 所以"看不见在回血"是必然的，得自己补。
+     *
+     * <p>表现设计：从<b>正在治疗的那块水晶</b>到龙之间拉一串末地烛粒子，
+     * 再在龙身上撒一圈"幸福村民"（绿色十字）——前者交代"能量从哪来"，后者交代"谁在被治"。
+     * 每 {@link #CRYSTAL_FX_INTERVAL} 次回血放一次（2 秒），避免刷屏。
+     */
+    private void crystalHealEffects(EndCrystal crystal) {
+        if (++this.crystalFxTicks < CRYSTAL_FX_INTERVAL) {
+            return;
+        }
+        this.crystalFxTicks = 0;
+        if (!(this.level() instanceof ServerLevel server)) {
+            return;
+        }
+        Vec3 from = crystal.position().add(0.0D, 0.6D, 0.0D);
+        Vec3 to = this.position().add(0.0D, this.getBbHeight() * 0.5D, 0.0D);
+        // 线宽 0.4：不需要原版死亡光束那么粗，太密反而看不清龙
+        server.sendParticles(ParticleTypes.END_ROD, from.x, from.y, from.z,
+                0, to.x - from.x, to.y - from.y, to.z - from.z, 0.4D);
+        server.sendParticles(ParticleTypes.HAPPY_VILLAGER, to.x, to.y, to.z,
+                6, this.getBbWidth() * 0.3D, this.getBbHeight() * 0.3D, this.getBbWidth() * 0.3D, 0.0D);
+        server.playSound(null, this.blockPosition(), SoundEvents.AMETHYST_BLOCK_CHIME,
+                SoundSource.NEUTRAL, 0.9F, 1.4F);
+    }
+
     /** 飞行辅助（goal 拿它做避障修正，按键拿它开关自由飞行）。 */
     public DragonFlightAssist flightAssist() {
         return this.flightAssist;
@@ -1589,9 +1630,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         // 末地水晶治疗：每 30 秒一轮、每轮最多 12 个可用水晶，详见 DragonCrystalHeal 的说明。
         // 放在这里（服务端 tick 收尾）而不是 goal 里：它是"被动光环"，不该和 AI 决策抢调度。
         if (!this.level().isClientSide) {
-            float healed = this.crystalHeal.tick(this);
-            if (healed > 0.0F) {
-                this.setHealth(Math.min(this.getMaxHealth(), this.getHealth() + healed));
+            EndCrystal usedCrystal = this.crystalHeal.tick(this);
+            if (usedCrystal != null) {
+                this.setHealth(Math.min(this.getMaxHealth(), this.getHealth() + CRYSTAL_HEAL_AMOUNT));
+                this.crystalHealEffects(usedCrystal);
             }
         }
         // 诊断：定期报一次"竖直相关的全部状态"。排查"按了上升却不动"必须同时看到
