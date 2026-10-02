@@ -159,19 +159,26 @@ public final class DragonRiderControl {
     }
 
     /**
-     * 竖直方向：空格上升、Shift 下降。
+     * 竖直方向：上升键 / 下降键。
      *
      * <p><b>必须在 {@code super.aiStep()} 之后调</b>：原版骑乘只管水平（{@code moveRelative}
      * 的输入向量里 y 分量没人给），而 {@code noGravity} 下没人写 Y 速度就等于永远不升降；
      * 写早了又会被 {@code travelRidden} 里那一步冲掉。
      *
-     * <p>按键状态读的是"乘客身上同步过来的那两个"：原版只把"跳跃"和"潜行"同步到服务端，
-     * 所以联机也一样有效（{@code jumping} 是 protected 且没有 getter，读取见
-     * {@link DragonGolemEntity#jumpKeyDown}）。
+     * <p><b>这两个键的状态为什么不能直接读玩家身上的 {@code jumping} / {@code isShiftKeyDown}：</b>
+     * Shift 是原版的<b>下车键</b>——{@code Player.wantsToStopRiding()} 直接返回
+     * {@code isShiftKeyDown()}，一按就 {@code stopRiding()}，拿去当下降会让人从龙背上掉下去；
+     * 而 {@code Player} 上的那个方法是 protected、龙覆写不了（试过，编译不过）。
+     * 所以升降状态改由客户端通过 {@code DragonRideInputPacket} 发过来，
+     * 上升键默认仍绑原版跳跃键、下降键默认绑左 Ctrl。
      */
     public static void tickVertical(DragonGolemEntity dragon, Player player) {
-        double want = DragonGolemEntity.jumpKeyDown(player) ? RIDER_VERTICAL
-                : (player.isShiftKeyDown() ? -RIDER_VERTICAL : 0.0D);
+        double want = 0.0D;
+        if (dragon.riderWantsUp()) {
+            want = RIDER_VERTICAL;
+        } else if (dragon.riderWantsDown()) {
+            want = -RIDER_VERTICAL;
+        }
         want = clampVertical(dragon, want);
         Vec3 current = dragon.getDeltaMovement();
         double vy = Mth.lerp(RIDER_VERTICAL_LERP, current.y, want);

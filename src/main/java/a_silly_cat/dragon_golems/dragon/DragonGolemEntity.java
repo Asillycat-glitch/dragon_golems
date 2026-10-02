@@ -51,7 +51,6 @@ import net.minecraftforge.entity.PartEntity;
 import net.minecraft.util.Mth;
 import org.jetbrains.annotations.Nullable;
 
-import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.UUID;
 
@@ -593,13 +592,24 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     // {@link #startRidingFrom(Player)}（兜住直接右键那条路）。
 
     /**
-     * 乘客坐在哪儿（模型像素，正 = 上）：前颈根部再往后收一点，也就是"背上"。
+     * 乘客坐在背上的位置（模型像素，正 = 上/前）：<b>这两个数是调"人坐在哪儿"的唯一旋钮。</b>
      *
-     * <p>比 {@code HEAD_UP_PX}(20) 略低、比躯干箱(16)略高：正好落在脖子根和身体之间那块背上。
-     * 换算走 {@link #rotateAndLift}，和头部件、{@link #mouthPosition()} 一模一样，
-     * 所以龙低头/抬头时座位跟着一起转，不会出现"龙俯冲、人还水平吊在空中"。
+     * <p>换算走 {@link #rotateAndLift}，和头部件、{@link #mouthPosition()} 是同一套，
+     * 所以龙低头/抬头时座位会跟着一起转，不会出现"龙俯冲、人还水平吊在空中"。
+     * 返回值必须相对 {@code this.getX()/getY()/getZ()}（实体原点是脚底），
+     * 模型的抬高量（{@code MODEL_LIFT + RENDER_LIFT}）本来就含在 rotateAndLift 里。
+     *
+     * <p><b>怎么调：</b>
+     * <ul>
+     *   <li>{@link #RIDER_UP_PX} 调大 = 人坐得更高（贴着脖子/翅膀根）、调小 = 更贴近龙背；</li>
+     *   <li>{@link #RIDER_FORWARD_PX} 调大 = 往<b>前</b>挪（靠近颈根）、调小 = 往后挪到翅膀之间。</li>
+     * </ul>
+     * 现在这组值（12 / 20）是"坐在背中前、翅膀根前面一点"的位置。
+     * 上一版是 18 / 0，也就是几乎在身体几何中心的正上方、又偏高，
+     * 玩家反馈"位置不对"（人能顶到天花板、相机容易穿进脖子）。
      */
-    private static final double RIDER_UP_PX = 18.0D;
+    private static final double RIDER_UP_PX = 12.0D;
+    private static final double RIDER_FORWARD_PX = 20.0D;
 
     /**
      * 谁在开这条龙：第一个乘客是玩家就由他操控，否则交回 AI。
@@ -676,7 +686,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         if (!this.hasPassenger(passenger)) {
             return;
         }
-        double[] upForward = this.rotateAndLift(RIDER_UP_PX, 0.0D, this.getBodyPitch());
+        double[] upForward = this.rotateAndLift(RIDER_UP_PX, RIDER_FORWARD_PX, this.getBodyPitch());
         double yaw = Math.toRadians(this.yBodyRot);
         double forwardX = -Math.sin(yaw);
         double forwardZ = Math.cos(yaw);
@@ -687,20 +697,33 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
-     * 乘客跟着机头转。
+     * 乘客跟着机体转 —— <b>但驾驶者的视角必须是自由的</b>。
      *
-     * <p>不处理的话玩家会一直面朝自己鼠标看的方向，而龙是按转速转的，表现就是"人挂在龙身上
-     * 横着飘"。这里把乘客的 yaw 直接扳到和龙一致（{@code yRotO} 一起改，免得橡皮筋拉扯）。
+     * <p>原来这里连驾驶者的 {@code yRot} 一起扳到龙的朝向，结果就是<b>骑着龙左右转不了鼠标</b>：
+     * 视角每 tick 被强行拉回机头方向。原版的做法是相反的 —— 船的 {@code onPassengerTurned}
+     * <b>只夹非驾驶座</b>的乘客（驾驶者自己就是掌舵的人，凭什么限制他看哪）。
+     *
+     * <p>所以现在只做一件事：让乘客的<b>身体</b>朝向跟着龙走，{@code yRot}（也就是视角）不动。
+     * 非驾驶座乘客（以后如果开放多座位）仍然会被限制，照本家的做法。
      */
     @Override
     public void onPassengerTurned(Entity passenger) {
-        if (passenger != this.getControllingPassenger()) {
-            return;
-        }
         passenger.setYBodyRot(this.getYRot());
-        float delta = Mth.wrapDegrees(passenger.getYRot() - this.getYRot());
-        passenger.yRotO -= delta;
-        passenger.setYRot(passenger.getYRot() - delta);
+    }
+
+    /**
+     * "停住"（{@code GolemModes.STAND}）时不许动 —— 但**玩家在开的时候必须放开**。
+     *
+     * <p>原来直接返回 {@code getMode().isMovable() && !isInSittingPose()}，而"停留"的命令
+     * 正好把 {@code movable} 设成 false。于是"停着才能骑、骑上却动不了"：玩家骑上去之后
+     * WASD 一点反应都没有。有人驾驶时一律视为可动，控制权交给玩家。
+     */
+    @Override
+    public boolean isMovable() {
+        if (this.getControllingPassenger() != null) {
+            return true;
+        }
+        return super.isMovable();
     }
 
     /** 上龙时自动从"原地悬停待机"里醒过来（不然骑着一条贴地的龙会起不来）。 */
@@ -819,39 +842,6 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /** {@link #isRiderControlled()} 的缓存值与本 tick 的 tickCount（-1 = 还没算过）。 */
     private boolean riderControlled;
     private int riderControlledTick = -1;
-
-    /**
-     * 乘客是不是按着"跳跃"键（空格）——驾驶时的<b>上升键</b>。
-     *
-     * <p>为什么要绕反射：{@code LivingEntity.jumping} 是 <b>protected</b> 字段，而 Java 的
-     * protected 访问规则是"子类只能用<b>自己这个类型</b>（或它的子类）的引用去访问"
-     * —— {@code player.jumping} 写在 {@link DragonGolemEntity} 里同样<b>编译不过</b>
-     * （接收者类型 {@code Player} 既不是本类也不是本类的子类）。
-     * 本家 {@code DogGolemEntity} 能直接读，是因为它把这段写在了 {@code tickRidden}
-     * 自己那个子类的方法体里、接收者还是同一个类；我们的驾驶逻辑在
-     * {@link DragonRiderControl} 里，两个条件都不满足。
-     *
-     * <p>原版没有公开的 getter（只有 {@code setJumping(boolean)}），所以这里取一次
-     * {@code Field} 缓存住，失败就恒返回 false —— 驾驶只是少一个上升键，不会崩。
-     * 这个字段名来自 official 映射，和类里其它访问原版成员的地方同一套命名。
-     */
-    public static boolean jumpKeyDown(Player player) {
-        try {
-            Field field = JUMPING_FIELD;
-            if (field == null) {
-                field = LivingEntity.class.getDeclaredField("jumping");
-                field.setAccessible(true);
-                JUMPING_FIELD = field;
-            }
-            return field.getBoolean(player);
-        } catch (ReflectiveOperationException | RuntimeException e) {
-            return false;
-        }
-    }
-
-    /** {@link #jumpKeyDown} 用的缓存字段；{@code null} = 还没解析过。 */
-    @Nullable
-    private static Field JUMPING_FIELD;
 
     /** 机身侧倾（度）：客户端渲染用。 */
     public float getBodyRoll() {
@@ -1007,6 +997,40 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     public void clearRiderOrder() {
         this.orderedSkill = -1;
         this.commandedAim = null;
+    }
+
+    // ---- 骑手升降键（客户端 DragonRideInputPacket） ----
+
+    /** bit0 = 按着上升键；bit1 = 按着下降键。由包每 tick 同步（只在变化时发包）。 */
+    private int riderInputFlags;
+
+    /**
+     * 接一条骑手的升降键状态（服务端）。
+     *
+     * <p>只认"当前确实骑着这条龙"的人，其它一律忽略（防止伪造包）。
+     */
+    public void onRiderInput(Player player, int flags) {
+        if (this.level().isClientSide() || player != this.getControllingPassenger()) {
+            return;
+        }
+        this.riderInputFlags = flags;
+    }
+
+    /** 骑手是不是按着上升键。 */
+    public boolean riderWantsUp() {
+        return (this.riderInputFlags & 1) != 0;
+    }
+
+    /** 骑手是不是按着下降键。 */
+    public boolean riderWantsDown() {
+        return (this.riderInputFlags & 2) != 0;
+    }
+
+    /** 下龙时把按键状态清干净，免得松开的那一下没收到。 */
+    @Override
+    protected void removePassenger(Entity passenger) {
+        super.removePassenger(passenger);
+        this.riderInputFlags = 0;
     }
 
     /**

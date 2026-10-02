@@ -31,10 +31,11 @@
   "jei.dragon_golems.holder.desc": "五个部件在装配台上摆成 W / HBT / L 合成（W 双翼、H 头、B 身体、T 尾巴、L 四肢）。",
   "jei.dragon_golems.holder.slot": "装备界面是犬型两格：头盔位与胸甲位。",
   "jei.dragon_golems.holder.hover": "空中炮艇：战斗时悬停在离地 10 格以上、待机巡航约 3 格，两者都随体型放大（× √体型）。用傀儡收回杖可以收回。",
-  "jei.dragon_golems.holder.ride": "骑着飞：用骑乘手杖右键龙（点身体、头颈、尾巴、翅膀都算）。骑上后空格上升、Shift 下降、WASD 前后左右，鼠标决定机头朝向与俯仰。",
+  "jei.dragon_golems.holder.ride": "骑着飞：用骑乘手杖右键龙（点身体、头颈、尾巴、翅膀都算）。骑上后空格上升、左 Ctrl 下降、WASD 前后左右，鼠标决定机头朝向与俯仰；R/G/V 放冲锋/龙息/龙弹。注意 Shift 是原版的下车键，不要拿它下降。",
 
   "key.categories.dragon_golems": "巨龙傀儡",
   "key.dragon_golems.charge": "坐骑技能：冲锋",
   "key.dragon_golems.breath": "坐骑技能：龙息",
-  "key.dragon_golems.blast": "坐骑技能：龙弹（幽匿身体为音爆）"
+  "key.dragon_golems.blast": "坐骑技能：龙弹（幽匿身体为音爆）",
+  "key.dragon_golems.descend": "坐骑：下降（Shift 是下车键，别绑 Shift）"
 }

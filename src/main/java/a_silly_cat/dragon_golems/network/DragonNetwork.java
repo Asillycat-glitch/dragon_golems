@@ -50,5 +50,10 @@ public final class DragonNetwork {
                 .decoder(DragonSkillPacket::new)
                 .consumerMainThread(DragonSkillPacket::handle)
                 .add();
+        CHANNEL.messageBuilder(DragonRideInputPacket.class, id++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(DragonRideInputPacket::write)
+                .decoder(DragonRideInputPacket::new)
+                .consumerMainThread(DragonRideInputPacket::handle)
+                .add();
     }
 }

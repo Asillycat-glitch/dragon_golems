@@ -3,6 +3,7 @@ package a_silly_cat.dragon_golems.client;
 import a_silly_cat.dragon_golems.Dragon_golems;
 import a_silly_cat.dragon_golems.dragon.DragonGolemEntity;
 import a_silly_cat.dragon_golems.network.DragonNetwork;
+import a_silly_cat.dragon_golems.network.DragonRideInputPacket;
 import a_silly_cat.dragon_golems.network.DragonSkillPacket;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.KeyMapping;
@@ -53,6 +54,17 @@ public final class DragonRiderKeys {
     public static final KeyMapping BLAST = new KeyMapping(
             "key.dragon_golems.blast", KeyConflictContext.IN_GAME,
             InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_V, CATEGORY);
+    /**
+     * 下降键。
+     *
+     * <p><b>默认给左 Ctrl，而不是 Shift。</b>原版 {@code Player.wantsToStopRiding()} 直接返回
+     * {@code isShiftKeyDown()}，而 {@code Player.baseTick} 一看到它为真就 {@code stopRiding()}
+     * —— <b>Shift 是"下车键"</b>，拿它做下降只会让玩家从龙背上掉下去。
+     * 上升键仍然沿用原版跳跃键（那个在服务端本来就有同步）。
+     */
+    public static final KeyMapping DESCEND = new KeyMapping(
+            "key.dragon_golems.descend", KeyConflictContext.IN_GAME,
+            InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_LEFT_CONTROL, CATEGORY);
 
     /**
      * 瞄准射程（格）。取 48：龙弹的射程是 44（{@code SKILL_ROCKET}），
@@ -77,6 +89,7 @@ public final class DragonRiderKeys {
             event.register(CHARGE);
             event.register(BREATH);
             event.register(BLAST);
+            event.register(DESCEND);
         }
     }
 
@@ -103,12 +116,19 @@ public final class DragonRiderKeys {
             if (mc.player == null || mc.level == null) {
                 return;
             }
-            // 只在骑着龙的时候吃这三个键
-            if (!(mc.player.getVehicle() instanceof DragonGolemEntity)) {
+            // 骑着龙时：每 tick 把"升降键状态"的变化发出去（只在变化时发，按住不会刷包）
+            if (mc.player.getVehicle() instanceof DragonGolemEntity) {
+                sendInput(mc);
+            } else if (lastSentFlags != 0) {
+                // 下龙/换乘之后补一包"全松开"，免得服务端以为键还按着
+                lastSentFlags = 0;
+                DragonNetwork.CHANNEL.sendToServer(new DragonRideInputPacket(0));
+            }
+            // 开着界面（背包/聊天）时下面三个技能键不算
+            if (mc.screen != null) {
                 return;
             }
-            // 开着界面（背包/聊天）时不算
-            if (mc.screen != null) {
+            if (!(mc.player.getVehicle() instanceof DragonGolemEntity)) {
                 return;
             }
             if (CHARGE.consumeClick()) {
@@ -120,6 +140,25 @@ public final class DragonRiderKeys {
             if (BLAST.consumeClick()) {
                 send(mc, DragonSkillPacket.SKILL_BLAST);
             }
+        }
+
+        /** 上一次发出去的升降状态（bit0 上升 / bit1 下降），用来做"只在变化时发包"。 */
+        private static int lastSentFlags;
+
+        private static void sendInput(Minecraft mc) {
+            int flags = 0;
+            // 上升：沿用原版跳跃键。它虽然也会被原版同步，但这里统一走一个来源，服务端逻辑更简单
+            if (mc.options.keyJump.isDown()) {
+                flags |= 1;
+            }
+            if (DESCEND.isDown()) {
+                flags |= 2;
+            }
+            if (flags == lastSentFlags) {
+                return;
+            }
+            lastSentFlags = flags;
+            DragonNetwork.CHANNEL.sendToServer(new DragonRideInputPacket(flags));
         }
 
         private static void send(Minecraft mc, int skill) {

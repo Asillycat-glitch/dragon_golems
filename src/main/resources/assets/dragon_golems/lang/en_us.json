@@ -31,10 +31,11 @@
   "jei.dragon_golems.holder.desc": "Assemble the five parts in the golem assembly table: W / HBT / L (W wings, H head, B body, T tail, L limbs).",
   "jei.dragon_golems.holder.slot": "Equipment screen is dog-typed: two slots, helmet and chestplate.",
   "jei.dragon_golems.holder.hover": "Gunship: hovers 10+ blocks above the ground in combat and around 3 blocks while idling, both scaling with body size (x sqrt(size)). Retrieve it with a golem retrieval wand.",
-  "jei.dragon_golems.holder.ride": "Riding: right-click the dragon with a rider wand (body, head, neck, tail or wings all count). Then Space ascends, Shift descends, WASD flies forward/back and sideways, and the mouse steers the nose and pitch.",
+  "jei.dragon_golems.holder.ride": "Riding: right-click the dragon with a rider wand (body, head, neck, tail or wings all count). Then Space ascends, Left Ctrl descends, WASD flies forward/back and sideways, and the mouse steers the nose and pitch; R/G/V fire charge / breath / fireball. Note Shift is vanilla's dismount key - do not bind it to descend.",
 
   "key.categories.dragon_golems": "Dragon Golems",
   "key.dragon_golems.charge": "Mount Skill: Charge",
   "key.dragon_golems.breath": "Mount Skill: Breath",
-  "key.dragon_golems.blast": "Mount Skill: Fireball (Sonic for sculk bodies)"
+  "key.dragon_golems.blast": "Mount Skill: Fireball (Sonic for sculk bodies)",
+  "key.dragon_golems.descend": "Mount: Descend (Shift is the dismount key, don't bind it)"
 }
