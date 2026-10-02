@@ -175,6 +175,23 @@ public final class DragonRiderControl {
     private static boolean loggedVertical;
 
     /**
+     * 诊断：每 40 tick 打一行骑乘竖直控制的全貌。
+     *
+     * <p>原来那条"server applying vertical"带 {@code !loggedVertical} 只打一次，
+     * 于是排查"按 Ctrl 不降反升"时看不到任何后续数据 —— 只能猜。
+     * 这行把"玩家要什么 / 我准备写什么 / 实际写进去什么 / 是不是被削平了 / 结果撞没撞"
+     * 一次全摆出来，覆盖所有可能的覆盖点。
+     */
+    private static void logVertical(DragonGolemEntity dragon, double want, double sourceY, double written) {
+        Dragon_golems.LOGGER.info(
+                "[rider] vy up={} down={} want={} srcY={} written={} vColl={} pos={}",
+                dragon.riderWantsUp(), dragon.riderWantsDown(),
+                String.format("%.3f", want), String.format("%.3f", sourceY),
+                String.format("%.3f", written),
+                dragon.verticalCollision, dragon.position());
+    }
+
+    /**
      * 竖直方向：上升键 / 下降键。
      *
      * <p><b>必须在 {@code super.aiStep()} 之后调</b>：原版骑乘只管水平（{@code moveRelative}
@@ -201,12 +218,6 @@ public final class DragonRiderControl {
         } else if (dragon.riderWantsDown()) {
             want = -RIDER_VERTICAL;
         }
-        // 诊断：第一次真的读到"上升/下降"时打一行，确认服务端这侧的数据是通的
-        if (DragonDebug.RIDE && want != 0.0D && !loggedVertical) {
-            loggedVertical = true;
-            Dragon_golems.LOGGER.info("[ride] server applying vertical want={} (up={} down={})",
-                    want, dragon.riderWantsUp(), dragon.riderWantsDown());
-        }
         want = clampVertical(dragon, want);
         Vec3 current = dragon.getDeltaMovement();
         // ★ 把"不是玩家给的"异常竖直速度削掉，再插值。
@@ -225,6 +236,11 @@ public final class DragonRiderControl {
             vy = 0.0D;
         }
         dragon.setDeltaMovement(current.x, vy, current.z);
+        // 诊断：每 40 tick 一行，把"玩家要什么 / 削平前是多少 / 实际写进去多少"全摆出来。
+        // 排查"按 Ctrl 不降反升"必须看到这三者 —— 原来那条只打一次，等于没有数据。
+        if (DragonDebug.RIDE && dragon.tickCount % 40 == 0) {
+            logVertical(dragon, want, sourceY, vy);
+        }
         // 自己写速度 → 必须告诉原版"我不在下落"，否则骑乘时会被判摔落伤害
         dragon.fallDistance = 0.0F;
     }

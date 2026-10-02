@@ -65,6 +65,22 @@ public final class DragonFlightAssist {
     private int rescueTicks = -1;
     /** 玩家打开的自由飞行开关。 */
     private boolean freeFlight;
+    /** 连续多少次"重算路径之后目标点还是同一个"。 */
+    private int repathAttempts;
+    /** 上一次重算后看到的路径点（用来判断"重算有没有换目标"）。 */
+    @Nullable
+    private BlockPos lastRepathNode;
+    /** 强制回退还剩多少 tick；> 0 时避障会朝"背离当前路径点"的方向走。 */
+    private int retreatTicks;
+    /**
+     * 同一个路径点重算多少次仍不通就强制回退。
+     *
+     * <p>真机反馈"遇到死角（凹陷处）不会回头，或者回头概率小"：凹陷的几何不变，
+     * 重算出来的候选点经常还是同一个，于是"重算 → 还是那个点 → 又撞"死循环。
+     */
+    private static final int REPATH_GIVE_UP = 3;
+    /** 强制回退持续多少 tick（1.5 秒）。 */
+    private static final int RETREAT_TICKS = 30;
     /**
      * 上一 tick 是否"当前位置塞不下龙"（嵌在方块里）。
      *
@@ -148,10 +164,33 @@ public final class DragonFlightAssist {
         //   Mob 里没有"撞墙就重算"的调用，所以龙会一直朝同一个路径点推、直到当前路径走完。
         //   而原版 recomputePath() 自带 20 tick 节流（超出就只置一个没人消费的标记），
         //   光调它没用 —— 所以我们的 DragonFlyingNavigation 把节流去掉了。
+        //
+        //   ★ 真机补充："遇到死角（凹陷处）不会回头（或者回头概率小）"。
+        //   原因是重算出来的候选点经常还是同一个（凹陷的几何没变），于是无限重复
+        //   "重算 → 还是那个点 → 撞" 。所以这里加一条兜底：如果连着 REPATH_GIVE_UP 次
+        //   重算都指向同一个路径点，就强制"往回退"一段时间（见 retreatTicks），
+        //   先脱离死角再重新规划 —— 这比原地重算有用得多。
         if (this.stuckTicks == REROUTE_AFTER) {
+            this.repathAttempts++;
+            BlockPos node = this.currentPathNode(dragon);
+            if (node != null && node.equals(this.lastRepathNode)) {
+                // 重算之后目标点没变 —— 说明这条路真的走不通
+                if (this.repathAttempts >= REPATH_GIVE_UP) {
+                    this.retreatTicks = RETREAT_TICKS;
+                    this.repathAttempts = 0;
+                    if (DragonDebug.RIDE) {
+                        Dragon_golems.LOGGER.info("[fly] 同一个路径点重算 {} 次仍不通 → 强制回退 {} tick",
+                                REPATH_GIVE_UP, RETREAT_TICKS);
+                    }
+                }
+            } else {
+                this.repathAttempts = 1;
+                this.lastRepathNode = node;
+            }
             dragon.getNavigation().recomputePath();
             if (DragonDebug.RIDE) {
-                Dragon_golems.LOGGER.info("[fly] 卡住 {} tick → 强制重算路径", this.stuckTicks);
+                Dragon_golems.LOGGER.info("[fly] 卡住 {} tick → 强制重算路径（第 {} 次）", this.stuckTicks,
+                        this.repathAttempts);
             }
         } else if (this.stuckTicks > REROUTE_AFTER && this.stuckTicks % REROUTE_EVERY == 0) {
             // 还是出不去就持续重算（每次重算都会按"当前所在位置"重新规划）
@@ -235,6 +274,24 @@ public final class DragonFlightAssist {
      * @return 修正后的速度；没有障碍时原样返回 {@code want}
      */
     public Vec3 avoidance(DragonGolemEntity dragon, Vec3 want) {
+        // 强制回退中：故意朝"背离当前路径点"的方向走，先把死角甩开再重新规划。
+        // 这一步必须在 horizontalCollision 判断之前 —— 回退期间它可能已经不撞墙了
+        // （正在往回飞），但仍需要走完这段脱离动作。
+        if (this.retreatTicks > 0) {
+            this.retreatTicks--;
+            Vec3 node = this.pathNodeVec(dragon);
+            Vec3 away = node == null
+                    ? want.scale(-1.0D)
+                    : new Vec3(dragon.getX() - node.x, 0.0D, dragon.getZ() - node.z);
+            if (away.horizontalDistance() < 1.0E-4D) {
+                away = want.scale(-1.0D);
+            }
+            away = away.normalize().scale(Math.max(want.horizontalDistance(), 0.2D));
+            if (DragonDebug.RIDE && this.retreatTicks == RETREAT_TICKS - 1) {
+                Dragon_golems.LOGGER.info("[fly] 回退中：朝 {} 方向脱离死角", away);
+            }
+            return new Vec3(away.x, 0.0D, away.z);
+        }
         if (!dragon.horizontalCollision) {
             return want;
         }
@@ -274,10 +331,7 @@ public final class DragonFlightAssist {
      */
     @Nullable
     private Vec3 pathDirection(DragonGolemEntity dragon) {
-        if (!(dragon.getNavigation() instanceof DragonFlyingNavigation nav)) {
-            return null;
-        }
-        Vec3 node = nav.currentPathNode();
+        Vec3 node = this.pathNodeVec(dragon);
         if (node == null) {
             return null;
         }
@@ -287,6 +341,22 @@ public final class DragonFlightAssist {
             return null;
         }
         return flat.normalize();
+    }
+
+    /** 当前路径点（世界坐标）或 null。 */
+    @Nullable
+    private Vec3 pathNodeVec(DragonGolemEntity dragon) {
+        if (!(dragon.getNavigation() instanceof DragonFlyingNavigation nav)) {
+            return null;
+        }
+        return nav.currentPathNode();
+    }
+
+    /** 当前路径点所在的方块坐标（用来判断"重算之后目标换没换"）或 null。 */
+    @Nullable
+    private BlockPos currentPathNode(DragonGolemEntity dragon) {
+        Vec3 node = this.pathNodeVec(dragon);
+        return node == null ? null : BlockPos.containing(node);
     }
 
     /** 避障时"往上爬"持续的 tick 数（40 = 2 秒）。 */
