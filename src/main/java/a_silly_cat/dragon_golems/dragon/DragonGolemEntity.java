@@ -26,6 +26,7 @@ import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
@@ -45,6 +46,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.common.ForgeMod;
 import net.minecraftforge.entity.PartEntity;
@@ -929,10 +931,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      *
      * @return 是否受理
      */
-    public boolean onRiderCommand(Player player, int skill, double x, double y, double z) {
+    public boolean onRiderCommand(Player player, int skill, double x, double y, double z, int entityId) {
         if (DragonDebug.RIDE) {
-            Dragon_golems.LOGGER.info("[ride] server got skill={} from={} riding={}", skill,
-                    player.getName().getString(), player.getVehicle());
+            Dragon_golems.LOGGER.info("[ride] server got skill={} entity={} from={} riding={}", skill,
+                    entityId, player.getName().getString(), player.getVehicle());
         }
         if (this.level().isClientSide() || player != this.getControllingPassenger()) {
             return false;
@@ -964,7 +966,14 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.riderCooldowns[skill] = skill == DragonSkillPacket.SKILL_DIVE ? RIDER_DIVE_CD : RIDER_BLAST_CD;
         this.getLookControl().setLookAt(aim.x, aim.y, aim.z);
         if (skill == DragonSkillPacket.SKILL_DIVE) {
-            this.orderDive();
+            // 冲锋要先有目标才能起飞（见 orderDive 的说明）。拿不到有效目标就整条指令作废
+            // 并退还冷却 —— 否则玩家会"按了 R 但什么都没发生，还白扣 30 秒"。
+            if (!this.orderDive(entityId, aim)) {
+                this.orderedSkill = -1;
+                this.commandedAim = null;
+                this.riderCooldowns[skill] = 0;
+                return false;
+            }
         }
         return true;
     }
@@ -975,14 +984,73 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * <p>为什么不自己实现一遍俯冲：那套航线（LINEUP → DIVE → PLOW → CLIMB）连同撞击结算、
      * 无敌帧处理都已经调好并实测过了，重写只会引入新的手感差异。
      *
-     * <p>这里做的是"手动置票"：正常流程由 {@link #tickSkillRoll} 掷骰子写 {@code pendingSkill}，
-     * 而驾驶期间那条调度是被乘客挡住的，所以骑手的指令得自己写进去，
-     * 顺便把"待办超时"的计数清零，免得它把这一轮当成"掷出来却一直没执行"给清掉。
+     * <p><b>关键点：那套航线是"追着目标飞"的。</b>{@code DragonDiveGoal.canUse()} 要求
+     * {@code getTarget() != null}、且水平距离落在 {@code diveMinH()..diveMaxH()}（默认 4~34 格）。
+     * 而龙带 {@code PASSIVE} 时服务端自己索敌会被本家挡掉，所以这里必须用客户端带过来的
+     * "准星命中谁"来补目标 —— 第一版就是漏了这一步，表现是"按 R 完全没反应"。
+     *
+     * @param entityId 客户端准星命中的实体 id；{@code -1} 表示没瞄到实体
+     * @param aim      客户端算出的瞄准点（命中实体时就是它的判定箱中心）
+     * @return 能不能起飞
      */
-    private void orderDive() {
+    private boolean orderDive(int entityId, Vec3 aim) {
+        LivingEntity target = null;
+        String source = "none";
+        // ① 命令手杖指定的目标优先：那是玩家"明确指定"的意图，而且射程 64 格（远超准星），
+        //    比"骑着龙时用准星瞄"更符合直觉 —— 先用手杖点一下要打谁，再按 R 冲过去。
+        //    forcedTarget 是上游 AbstractGolemEntity 的 public 字段，命令手杖的
+        //    resetTarget() 会写它；TargetManager.predicateTarget 见到它就返回 FORCED，
+        //    是一条跳过 canAttackType（也就是跳过 PASSIVE）的强制通道。
+        if (this.forcedTarget != null && this.forcedTarget.isAlive()
+                && this.forcedTarget != this.getControllingPassenger()) {
+            target = this.forcedTarget;
+            source = "forcedTarget(command wand)";
+        }
+        // ② 其次用客户端带过来的"准星命中谁"
+        if (target == null && entityId >= 0 && this.level() instanceof ServerLevel server
+                && server.getEntity(entityId) instanceof LivingEntity living && living.isAlive()) {
+            target = living;
+            source = "crosshair";
+        }
+        // ③ 都没有：在瞄准点附近兜一次（准星贴着目标但没有精确命中时能救回来）
+        if (target == null) {
+            AABB box = new AABB(aim, aim).inflate(6.0D);
+            double best = Double.MAX_VALUE;
+            for (LivingEntity candidate : this.level().getEntitiesOfClass(LivingEntity.class, box)) {
+                if (!this.predicateTarget(candidate) || candidate == this.getControllingPassenger()) {
+                    continue;
+                }
+                double d = candidate.position().distanceToSqr(aim);
+                if (d < best) {
+                    best = d;
+                    target = candidate;
+                    source = "near-aim";
+                }
+            }
+        }
+        if (target == null) {
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[ride] dive aborted: no valid target (aim={} entityId={})",
+                        aim, entityId);
+            }
+            return false;
+        }
+        // setTargetRaw 是上游自己的"绕开索敌校验"入口（只过 canAttack，不过 canAttackType）：
+        // 用它而不是自己写一个 super.setTarget 包装，免得和上游的后手处理脱节。
+        this.setTargetRaw(target);
+        if (DragonDebug.RIDE) {
+            Dragon_golems.LOGGER.info("[ride] dive ordered via {} target={} hDist={}", source,
+                    target.getName().getString(), String.format("%.2f", this.horizontalDistanceTo(target)));
+        }
         this.pendingSkill = DragonSkill.DIVE;
         this.skillPendingTicks = 0;
         this.skillInProgress = false;
+        return true;
+    }
+
+    /** 到某个目标的水平距离（俯冲的可用距离是水平判定的，见 {@code DragonDiveGoal.canUse}）。 */
+    private double horizontalDistanceTo(LivingEntity target) {
+        return Math.sqrt(Math.pow(target.getX() - this.getX(), 2) + Math.pow(target.getZ() - this.getZ(), 2));
     }
 
     /** 有没有等着执行的骑手指令。 */
@@ -1047,19 +1115,6 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     protected void removePassenger(Entity passenger) {
         super.removePassenger(passenger);
         this.riderInputFlags = 0;
-    }
-
-    /**
-     * 绕开 {@code PASSIVE} 把骑手指定的目标塞进本家的目标槽。
-     *
-     * <p>为什么需要这个后门：装了坐骑升级的龙带 {@code GolemFlags.PASSIVE}，本家的
-     * {@code AbstractGolemEntity.setTarget} 会走 {@code canAttack → canAttackType → !PASSIVE}
-     * 直接拒绝，于是 {@code getTarget()} 永远是 null，俯冲那套"有目标才飞航线"的判定也起不来。
-     * 但这里的目的是"玩家让它打谁"，不是"它自己发现敌人"，所以可以绕过索敌权限
-     * —— 只允许从 {@link #onRiderCommand} 这条链路上调用。
-     */
-    public void setRiderTarget(@Nullable LivingEntity target) {
-        super.setTarget(target);
     }
 
     /**
@@ -1152,7 +1207,16 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             this.tickSkillRoll();
             // 摘掉本家挂上去的、我们不想要的 goal（近战 / 三维距离传送）
             this.disableNativeGoals();
-            if (this.diveVelocity != null) {
+            // 竖直速度的三种来源，<b>互斥</b>：
+            //   1) 有骑手：由 tickVertical 在 super.aiStep() 之后写（见上面的调用），
+            //      这里两个分支都不能走 —— 尤其不能走 applyHover()，它会按"回悬停目标高度"
+            //      把刚写进去的上升速度压回去。这正是"按空格反而被压下来、上限卡在待机高度 3 格"
+            //      的原因（真机日志：服务端确实收到了 up=true 并写了 +0.08，随后被悬停覆盖）。
+            //   2) 技能接管（diveVelocity 非 null）：俯冲/拉升直接写速度。
+            //   3) 都没人管：悬停自己维持高度。
+            if (rider != null) {
+                this.keepAimThisTick = false;
+            } else if (this.diveVelocity != null) {
                 // 俯冲 / 拉升阶段：技能直接接管速度，悬停必须让位（它只会往上顶）。
                 this.setNoGravity(true);
                 this.setDeltaMovement(this.diveVelocity);

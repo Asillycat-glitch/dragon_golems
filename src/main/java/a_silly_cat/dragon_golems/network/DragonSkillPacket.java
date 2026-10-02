@@ -35,16 +35,26 @@ public class DragonSkillPacket extends SimplePacketBase {
     public double x;
     public double y;
     public double z;
+    /**
+     * 准星命中的实体 id，没命中实体时为 {@code -1}。
+     *
+     * <p><b>冲锋必须要它。</b>俯冲那条航线（{@code DragonDiveGoal}）是"追着一个
+     * {@code getTarget()} 的目标"飞的，没有目标就 {@code canUse()} 返回 false、整套动作不会开始；
+     * 而龙装了坐骑升级时带 {@code PASSIVE}，服务端自己索敌又被挡掉。所以由客户端把"瞄到谁"
+     * 一并带过来，服务端再校验（见 {@code DragonGolemEntity.onRiderCommand}）。
+     */
+    public int entityId;
 
     /** 反序列化用（Forge 的 {@code Function<FriendlyByteBuf, MSG>} 解码器要求有它）。 */
     public DragonSkillPacket() {
     }
 
-    public DragonSkillPacket(int skill, double x, double y, double z) {
+    public DragonSkillPacket(int skill, double x, double y, double z, int entityId) {
         this.skill = skill;
         this.x = x;
         this.y = y;
         this.z = z;
+        this.entityId = entityId;
     }
 
     @Override
@@ -53,6 +63,7 @@ public class DragonSkillPacket extends SimplePacketBase {
         buf.writeDouble(this.x);
         buf.writeDouble(this.y);
         buf.writeDouble(this.z);
+        buf.writeVarInt(this.entityId);
     }
 
     /** 解码构造器（由 {@link DragonNetwork} 注册）。 */
@@ -61,6 +72,7 @@ public class DragonSkillPacket extends SimplePacketBase {
         this.x = buf.readDouble();
         this.y = buf.readDouble();
         this.z = buf.readDouble();
+        this.entityId = buf.readVarInt();
     }
 
     @Override
@@ -72,7 +84,7 @@ public class DragonSkillPacket extends SimplePacketBase {
                 return;
             }
             if (player.getVehicle() instanceof DragonGolemEntity dragon) {
-                dragon.onRiderCommand(player, this.skill, this.x, this.y, this.z);
+                dragon.onRiderCommand(player, this.skill, this.x, this.y, this.z, this.entityId);
             }
         });
         ctx.get().setPacketHandled(true);

@@ -205,14 +205,19 @@ public final class DragonRiderKeys {
         }
 
         private static void send(Minecraft mc, int skill) {
-            Vec3 aim = computeAim(mc);
-            DragonNetwork.CHANNEL.sendToServer(new DragonSkillPacket(skill, aim.x, aim.y, aim.z));
+            Aim aim = computeAim(mc);
+            DragonNetwork.CHANNEL.sendToServer(new DragonSkillPacket(
+                    skill, aim.pos.x, aim.pos.y, aim.pos.z, aim.entityId));
             if (DragonDebug.RIDE) {
-                Dragon_golems.LOGGER.info("[ride] client send skill={} aim=({}, {}, {})", skill,
-                        String.format("%.1f", aim.x), String.format("%.1f", aim.y),
-                        String.format("%.1f", aim.z));
+                Dragon_golems.LOGGER.info("[ride] client send skill={} aim=({}, {}, {}) entity={}",
+                        skill, String.format("%.1f", aim.pos.x), String.format("%.1f", aim.pos.y),
+                        String.format("%.1f", aim.pos.z), aim.entityId);
             }
         }
+    }
+
+    /** 瞄准结果：一个世界坐标 + 命中的实体 id（{@code -1} = 没命中实体）。 */
+    private record Aim(Vec3 pos, int entityId) {
     }
 
     /**
@@ -222,7 +227,7 @@ public final class DragonRiderKeys {
      * {@code forge:entity_reach}（默认 <b>3 格</b>）当实体距离闸门，传 48 进去也只打得到 3 格内的东西。
      * 所以按原版那套自己来一遍。
      */
-    private static Vec3 computeAim(Minecraft mc) {
+    private static Aim computeAim(Minecraft mc) {
         Entity player = mc.player;
         Vec3 eye = player.getEyePosition(1.0F);
         Vec3 look = player.getLookAngle();
@@ -241,10 +246,11 @@ public final class DragonRiderKeys {
         EntityHitResult entityHit = ProjectileUtil.getEntityHitResult(
                 mc.level, player, eye, rayEnd, search, filter, (float) AIM_PICK_PADDING);
         if (entityHit != null) {
-            // 命中实体就瞄它的判定箱中心，别瞄"射线与它的交点"——那个点会随着视角抖
+            // 命中实体就瞄它的判定箱中心，别瞄"射线与它的交点"——那个点会随着视角抖。
+            // 同时把实体 id 带回去：冲锋（俯冲）那条航线必须有目标才能起飞，见 DragonSkillPacket.entityId。
             Vec3 center = entityHit.getEntity().getBoundingBox().getCenter();
-            return new Vec3(center.x, center.y, center.z);
+            return new Aim(new Vec3(center.x, center.y, center.z), entityHit.getEntity().getId());
         }
-        return rayEnd;
+        return new Aim(rayEnd, -1);
     }
 }
