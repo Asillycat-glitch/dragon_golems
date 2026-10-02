@@ -1220,12 +1220,39 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 就把龙切进"原地待机悬停"——它仍然会跟随主人（超过阈值会被拉回来）、照常索敌开火，
      * 只是不再自己随机游走。
      *
-     * <p>实现上直接复用现成的 {@code idleSettled} 机制（见 {@link DragonIdleGoal} 与
-     * {@link #hoverHeight()}）：置位后 {@code DragonIdleGoal} 不再采样游走目标点，
-     * 龙就停在原地悬停。玩家骑乘时这条不生效（驾驶权在玩家手里）。
+     * <p><b>为什么不靠 {@code setIdleSettled} 实现：</b>那个字段的<b>正常管理者</b>是
+     * {@link DragonIdleGoal}，它每 tick 都会重算并覆盖（见它 tick 里的
+     * {@code setIdleSettled(this.settled)}）。在这里置位活不过一 tick。
+     * 所以货舱模式改成<b>每 tick 重新判定</b>，判定点放在 {@code aiStep} 里
+     * （见 {@link #tickGolemPassengerMode()}），并且<b>只在没有玩家驾驶时</b>生效 ——
+     * 玩家在开的时候，飞不飞、往哪飞完全由玩家说了算。
      */
     private void onPassengersChanged() {
-        this.setIdleSettled(this.hasGolemPassenger());
+        // 上车/下车只负责"立刻生效一次"，后续由 tickGolemPassengerMode 维持
+        this.tickGolemPassengerMode();
+    }
+
+    /**
+     * 每 tick 维护"货舱模式"：有傀儡乘客且<b>没有玩家驾驶</b>时，
+     * 让待机寻路进入原地待机（不再随机游走）。
+     *
+     * <p>注意调用点必须在 {@link DragonIdleGoal} 之上游一点：本方法在
+     * {@code aiStep} 开头跑，而 goal 的 {@code canUse/tick} 在 {@code super.aiStep()}
+     * 里跑，所以这里写下的状态会被当 tick 的 goal 立刻看到。
+     */
+    private void tickGolemPassengerMode() {
+        if (this.level().isClientSide()) {
+            return;
+        }
+        boolean cargo = this.hasGolemPassenger() && this.getControllingPassenger() == null;
+        if (cargo && !this.idleSettled) {
+            this.setIdleSettled(true);
+        }
+    }
+
+    /** 背着傀儡当炮台（没有玩家驾驶）。 */
+    public boolean isGolemCargoMode() {
+        return this.hasGolemPassenger() && this.getControllingPassenger() == null;
     }
 
     /** 背上是不是有傀儡乘客（不含玩家）。 */
@@ -1313,6 +1340,9 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         // 放在最前面，因为本 tick 里 goal 的 canUse/setTarget 都会问 canAttackType。
         this.riderCombat = this.getControllingPassenger() != null
                 && (this.orderedSkill >= 0 || this.pendingSkill == DragonSkill.DIVE);
+        // "货舱模式"每 tick 维护一次（背上傀儡 + 没玩家 → 原地悬停不游走）。
+        // 必须在 super.aiStep() 之前：goal 的取用发生在那里面。
+        this.tickGolemPassengerMode();
         // 玩家在开：水平方向交给原版骑乘管线（travel → travelRidden → getRiddenInput/Speed，
         // 见 DragonRiderControl 的类注释），这里只负责"没人在开"时的收尾。
         Player rider = DragonRiderControl.rider(this);
@@ -1367,6 +1397,19 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.relaxRoll();
                 this.applyHover();
             }
+        }
+        // 诊断：定期报一次"竖直相关的全部状态"。排查"按了上升却不动"必须同时看到
+        // y / 竖直速度 / 重力 / 目标高度 / 各模式标志 —— 只看其中一两个会一直猜错。
+        if (DragonDebug.RIDE && !this.level().isClientSide && this.tickCount % 40 == 0) {
+            Dragon_golems.LOGGER.info(
+                    "[ride] state y={} dy={} noGravity={} diveVel={} hoverTarget={} settled={} parked={} golemPax={} rider={} dive={}",
+                    String.format("%.2f", this.getY()),
+                    String.format("%.2f", this.getDeltaMovement().y),
+                    this.isNoGravity(),
+                    this.diveVelocity != null,
+                    String.format("%.2f", this.hoverTargetY()),
+                    this.idleSettled, this.isParked(), this.golemPassengerCount(),
+                    this.getControllingPassenger() != null, this.getDivePhase());
         }
     }
 
