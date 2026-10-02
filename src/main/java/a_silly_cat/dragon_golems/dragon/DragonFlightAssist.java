@@ -65,6 +65,13 @@ public final class DragonFlightAssist {
     private int rescueTicks = -1;
     /** 玩家打开的自由飞行开关。 */
     private boolean freeFlight;
+    /**
+     * 上一 tick 是否"当前位置塞不下龙"（嵌在方块里）。
+     *
+     * <p>嵌住时必须让 {@code noPhysics} 为真 —— 否则碰撞解算会每个 tick 把实体猛推出去，
+     * 骑手的高度输入会被彻底淹没（见 {@link #handleStuck} 的注释）。
+     */
+    private boolean embedded;
 
     /** 玩家打开/关闭自由飞行（穿墙）。 */
     public void setFreeFlight(boolean on) {
@@ -106,9 +113,9 @@ public final class DragonFlightAssist {
             return;
         }
         Dragon_golems.LOGGER.info(
-                "[fly] stuck={} room={} rescue={} noPhysics={} dy={} hColl={} vColl={} pos={}",
+                "[fly] stuck={} room={} embedded={} rescue={} noPhysics={} free={} dy={} hColl={} vColl={} pos={}",
                 this.stuckTicks, hasRoomFor(dragon, dragon.position()),
-                this.rescueTicks, dragon.noPhysics,
+                this.embedded, this.rescueTicks, dragon.noPhysics, this.freeFlight,
                 String.format("%.3f", dragon.getDeltaMovement().y),
                 dragon.horizontalCollision, dragon.verticalCollision, dragon.position());
     }
@@ -120,14 +127,21 @@ public final class DragonFlightAssist {
      */
     private void handleStuck(DragonGolemEntity dragon) {
         boolean blocked = dragon.horizontalCollision;
-        // "四面都塞不下"也是卡住的一种：嵌在方块里时 move() 可能因为 noPhysics
-        // 而不产生 horizontalCollision，只靠那个标志会漏判。
-        boolean trapped = !hasRoomFor(dragon, dragon.position()) && findOpenDirection(dragon) == null;
-        if (blocked || trapped) {
+        // "当前位置塞不下"本身就是最硬的卡住信号。
+        // 为什么必须把它单独拿出来（真机踩到的死锁）：
+        //   嵌在方块里时 horizontalCollision 常常是 false（没有"从外向内撞"这个过程），
+        //   而 findOpenDirection() 又会在 1.6 格外探到空间、返回非 null，
+        //   于是 stuck 一直是 0、脱困永不触发、noPhysics 一直 false，
+        //   而 noPhysics=false 恰恰让碰撞解算每 tick 把实体猛推出去
+        //   （实测 dy 达到 +17~+26 格/tick）—— 骑手按 Ctrl 下降完全被淹没。
+        // 所以判据改成：位置塞不下就计数，不再附加别的条件。
+        boolean noRoom = !hasRoomFor(dragon, dragon.position());
+        if (blocked || noRoom) {
             this.stuckTicks++;
         } else {
             this.stuckTicks = 0;
         }
+        this.embedded = noRoom;
 
         // ★ 卡住就强制重算路径。
         //   这条才是"撞墙后不会重新找路线"的正解：原版只在 goal 需要新路径时才 createPath，
@@ -152,17 +166,26 @@ public final class DragonFlightAssist {
             }
         } else if (!this.freeFlight
                 && this.stuckTicks >= STUCK_LIMIT
-                && !hasRoomFor(dragon, dragon.position())) {
-            // 一直撞墙、而且当前位置本身就塞不下 → 是"嵌在方块里"而不是"前方有障碍"
+                && noRoom) {
+            // 一直撞墙/一直塞不下 → 是"嵌在方块里"而不是"前方有障碍"
             this.rescueTicks = 0;
             if (DragonDebug.RIDE) {
                 Dragon_golems.LOGGER.info("[fly] 自动脱困：stuck={} pos={}", this.stuckTicks, dragon.position());
             }
         }
 
-        // noPhysics 的唯一写入口：自由飞行 or 自动脱困。
-        // 注意它是 Entity 上的 public 字段，没有 setter（javap 查过：只有字段、没有 setNoPhysics）。
-        dragon.noPhysics = this.freeFlight || this.rescueTicks >= 0;
+        // noPhysics 的唯一写入口：自由飞行 / 自动脱困 / 正嵌在方块里。
+        //
+        // ★ 第三条是这次真机踩出来的必需品：嵌在方块里时如果 noPhysics 为 false，
+        //   碰撞解算会每个 tick 把实体猛推出去（实测 dy 达到 +17~+26 格/tick），
+        //   骑手的高度输入被彻底淹没 —— "骑着在矿洞里一直往上飞、Ctrl 压不下来"。
+        //   这三条都是"穿过方块"，所以统一在这里表达，不要另开写入口。
+        dragon.noPhysics = this.freeFlight || this.rescueTicks >= 0 || noRoom;
+    }
+
+    /** 现在是不是"嵌在方块里"（供诊断/别的模块查询）。 */
+    public boolean isEmbedded() {
+        return this.embedded;
     }
 
     /** 脱困结束：撤掉 no-clip，清计数（否则会立刻又触发一次）。 */
@@ -172,7 +195,10 @@ public final class DragonFlightAssist {
         }
         this.rescueTicks = -1;
         this.stuckTicks = 0;
-        dragon.noPhysics = this.freeFlight;
+        // 只撤到"自由飞行"这一档：如果它其实还嵌在方块里，noPhysics 必须留着 ——
+        // 否则下一 tick 的 handleStuck 会立刻因为 noRoom 又打开，来回抖动。
+        // 真正该关掉的时刻是"它真的出来了"（那时 noRoom 为假，handleStuck 会关）。
+        dragon.noPhysics = this.freeFlight || !hasRoomFor(dragon, dragon.position());
     }
 
     /** 脱困用的速度：朝"最近的开阔处"飞。 */

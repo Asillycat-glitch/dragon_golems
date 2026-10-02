@@ -209,7 +209,18 @@ public final class DragonRiderControl {
         }
         want = clampVertical(dragon, want);
         Vec3 current = dragon.getDeltaMovement();
-        double vy = Mth.lerp(RIDER_VERTICAL_LERP, current.y, want);
+        // ★ 把"不是玩家给的"异常竖直速度削掉，再插值。
+        //   真机踩到的严重问题：龙嵌在方块里时，碰撞解算每个 tick 把它往外猛推
+        //   （实测 dy 达到 +17~+26 格/tick，而飞行上限只有 0.2）。那个量级会把
+        //   玩家的下降输入（-0.08）彻底淹没 —— 表现就是"骑着在矿洞里一直往上飞、
+        //   按 Ctrl 压不下来"。
+        //   注意顺序：必须先削 current.y 再 lerp，否则 RIDER_VERTICAL_LERP(0.35)
+        //   只把 26 削到 17，照样压不住。
+        double sourceY = current.y;
+        if (Math.abs(sourceY) > RIDER_VERTICAL_SPIKE) {
+            sourceY = Math.copySign(RIDER_VERTICAL_SPIKE, sourceY);
+        }
+        double vy = Mth.lerp(RIDER_VERTICAL_LERP, sourceY, want);
         if (Math.abs(vy) < 1.0E-4D) {
             vy = 0.0D;
         }
@@ -217,6 +228,14 @@ public final class DragonRiderControl {
         // 自己写速度 → 必须告诉原版"我不在下落"，否则骑乘时会被判摔落伤害
         dragon.fallDistance = 0.0F;
     }
+
+    /**
+     * "异常竖直速度"的判定阈值（格/tick）。
+     *
+     * <p>取 {@link #RIDER_VERTICAL}(0.08) 的 5 倍 —— 玩家的升降速度永远不该超过这个量级的
+     * 几倍，所以超过它的竖直速度一定是碰撞解算或别的 goal 写进来的，不是玩家意图。
+     */
+    private static final double RIDER_VERTICAL_SPIKE = RIDER_VERTICAL * 5.0D;
 
     /**
      * 竖直速度的安全闸门：<b>不许把龙开进地形</b>。
