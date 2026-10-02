@@ -2499,8 +2499,18 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             return;
         }
         // 头顶顶着方块（矿洞、屋里）就别硬往上顶了，免得贴着天花板抽搐。
-        BlockPos above = BlockPos.containing(this.getX(), this.getY() + this.getBbHeight(), this.getZ());
-        if (!this.level().getBlockState(above).isAir()) {
+        //
+        // ★ 这里原来只看"一个方块坐标"（BlockPos.containing(getY() + getBbHeight())），
+        //   而那个点是浮点取整的 —— 只要那**一个**位置恰好是空气就允许上升，
+        //   可实际挡路的是判定箱（高 2.2 格）跨到的那几个方块。
+        //   真机表现：龙卡在 y=-0.20、头上 2.0 处有方块，但那个单点判成空气，
+        //   于是每个 tick 都给它 +0.19 的上升速度 → vColl=true、y 却纹丝不动，
+        //   看起来就是"一直向上飞但升不上去"。
+        //   现在改成问"这个位置的天花板有没有把悬停目标压低" —— 一句话同时覆盖
+        //   "多个方块挡路"和"实际可用空间"，不再依赖单个方块的取整巧合。
+        double unclamped = this.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                this.blockPosition().getX(), this.blockPosition().getZ()) + this.hoverHeight();
+        if (this.hoverTargetY() < unclamped - 0.1D) {
             return;
         }
         this.setNoGravity(true);
