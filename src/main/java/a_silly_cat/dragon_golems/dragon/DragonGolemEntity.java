@@ -667,17 +667,12 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      */
     @Override
     public boolean isControlledByLocalInstance() {
-        // ★ 骑手冲锋期间让出位置权威。
-        //   真机症状："按 R 之后龙一动不动，玩家一下龙它就冲出去了"。
-        //   机制：骑着时这里返回 true → 位置由客户端模拟；而客户端不跑 goal
-        //   （DragonDiveGoal.tick 在服务端分支里），所以它根本不知道在冲锋，
-        //   只跑 applyHover()（悬停）——客户端的悬停位置压过服务端写进 diveVelocity 的
-        //   俯冲速度。玩家一下龙，这里变假、位置改由服务端裁定，俯冲就"突然能用"了。
-        //   所以冲锋期间必须返回 false：让服务端推位置、客户端跟随。
-        //   判据用<b>同步</b>的 isRiderDiveSynced()，两端一致（普通字段客户端看不到）。
-        if (this.isRiderDiveSynced()) {
-            return false;
-        }
+        // ★ 这里**不要**为"骑手冲锋"返回 false（我试过一次，已回退）。
+        //   当时的推理是"冲锋期间客户端不知道在冲锋，只跑悬停，会压过服务端的俯冲速度"，
+        //   于是让它返回 false 想"把位置权威交给服务端"。真机结果是**龙彻底不能动**：
+        //   骑着时乘客控制着这条龙，这个开关一关，客户端不再预测、服务端那侧也不再推进，
+        //   两边互相等 —— 龙卡在俯冲姿态里一动不动（截图确认）。
+        //   正确的做法是让客户端"预测对的东西"，而不是让它别预测。
         if (this.getControllingPassenger() instanceof Player) {
             return true;
         }
@@ -1724,30 +1719,44 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             //      的原因（真机日志：服务端确实收到了 up=true 并写了 +0.08，随后被悬停覆盖）。
             //   2) 技能接管（diveVelocity 非 null）：俯冲/拉升直接写速度。
             //   3) 都没人管：悬停自己维持高度。
-            if (rider != null) {
-                this.keepAimThisTick = false;
-            } else if (this.diveVelocity != null) {
-                // 俯冲 / 拉升阶段：技能直接接管速度，悬停必须让位（它只会往上顶）。
+            // 竖直速度的四个来源，<b>互斥</b>（按优先级）：
+            //   1) 骑手冲锋（isRiderOrderedDive + diveVelocity）：<b>航线接管</b>，连玩家输入都让位。
+            //   2) 有骑手：由 tickVertical 在 super.aiStep() 之后写，这里什么都不做。
+            //   3) 技能接管（diveVelocity 非 null，AI 自发的俯冲/拉升）：直接写速度。
+            //   4) 都没人管：悬停自己维持高度。
+            //
+            // ★ 第 1 条是后来补的，也是"骑着时冲锋不动、下龙才冲出去"的真正原因：
+            //   原来 `rider != null` 排在最前面早退，于是骑手冲锋那条航线的 diveVelocity
+            //   <b>被直接丢弃</b>（本轮诊断"骑手冲锋速度"一条都没打出来就是证据 ——
+            //   那行日志在 else-if 里面，根本没被执行）。
+            //   现在让"骑手冲锋"优先于"有骑手"：冲锋那几秒的控制权属于航线。
+            boolean riderDive = rider != null && this.isRiderOrderedDive() && this.diveVelocity != null;
+            if (riderDive) {
                 this.setNoGravity(true);
                 Vec3 vel = this.diveVelocity;
-                // 避障只作用在"自己飞"的场合：俯冲那套航线是刻意贴着地形掠过的，
-                // 给它加避障会把航线扯歪（撞墙时航线本来就该自己结束，见 DragonDiveGoal）。
                 this.setDeltaMovement(vel);
                 this.fallDistance = 0.0F;
-                if (DragonDebug.RIDE && this.isRiderOrderedDive()) {
-                    // 骑手冲锋专用诊断：每 10 tick 报一次"我们写进去的速度 / 写之前的位移"。
-                    // 症状是"骑着时龙不动、下龙才冲出去"，必须区分两种可能：
-                    //   a) 我们的速度压根没生效（写完被别处清掉）
-                    //   b) 速度生效了但位置没变（碰撞/别的 goal 抢走了移动）
-                    // 把"写进去的 vel"和"这一 tick 实际位移"并排打出来就能分辨。
-                    if (this.tickCount % 10 == 0) {
-                        Dragon_golems.LOGGER.info(
-                                "[dive] 骑手冲锋速度 vel={} prevPos={} nowPos={} noPhysics={} hColl={}",
-                                vel, this.riderDivePrevPos, this.position(),
-                                this.noPhysics, this.horizontalCollision);
-                    }
-                    this.riderDivePrevPos = this.position();
+                if (DragonDebug.RIDE && this.tickCount % 10 == 0) {
+                    Dragon_golems.LOGGER.info(
+                            "[dive] 骑手冲锋速度 vel={} prevPos={} nowPos={} noPhysics={} hColl={}",
+                            vel, this.riderDivePrevPos, this.position(),
+                            this.noPhysics, this.horizontalCollision);
                 }
+                this.riderDivePrevPos = this.position();
+                if (this.keepAimThisTick) {
+                    this.keepAimThisTick = false;
+                } else {
+                    this.faceMovement(vel);
+                }
+                this.diveVelocity = null;
+            } else if (rider != null) {
+                this.keepAimThisTick = false;
+            } else if (this.diveVelocity != null) {
+                // AI 自发的俯冲 / 拉升：技能直接接管速度，悬停必须让位（它只会往上顶）。
+                this.setNoGravity(true);
+                Vec3 vel = this.diveVelocity;
+                this.setDeltaMovement(vel);
+                this.fallDistance = 0.0F;
                 if (this.keepAimThisTick) {
                     // 开火中：朝向由 goal 的 aimAt 管（绕圈喷息时运动方向是切线，不能拿来当朝向）
                     this.keepAimThisTick = false;
