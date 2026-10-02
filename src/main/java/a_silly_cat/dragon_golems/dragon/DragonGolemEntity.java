@@ -801,6 +801,17 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         if (this.hasDriverSeatOccupied()) {
             return true;
         }
+        // ★ 有敌人就解禁。
+        //   真机反馈："停止模式下龙一直索敌却完全不出手（不会龙息也不会龙息弹）"。
+        //   根因：龙息 / 龙息弹 / 冲锋三个攻击 goal 的 canUse() 第一句都是
+        //   `if (!isMovable() ...) return false;`，而 STAND（停止）模式的 movable 是 false
+        //   —— 于是"停下来"等于"关掉全部攻击手段"，连自保都不行。
+        //   这不是"取消停止模式"：只是"有敌人时别装死"。敌人一走（getTarget() 变 null）
+        //   它就立刻回到待机，行为与原来完全一致。
+        LivingEntity enemy = this.getTarget();
+        if (enemy != null && enemy.isAlive()) {
+            return true;
+        }
         return super.isMovable();
     }
 

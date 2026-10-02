@@ -6,6 +6,7 @@ import net.minecraft.world.entity.ai.navigation.FlyingPathNavigation;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.pathfinder.BlockPathTypes;
 import net.minecraft.world.level.pathfinder.Path;
+import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
 /**
@@ -124,5 +125,28 @@ public class DragonFlyingNavigation extends FlyingPathNavigation {
     @Nullable
     public Path currentPathForDebug() {
         return this.path;
+    }
+
+    /**
+     * 当前路径上下一个还没走到的路径点（世界坐标，取节点中心）；没有路径或已走完则 null。
+     *
+     * <p>给 {@link DragonFlightAssist} 的避障用：撞墙时最可靠的方向不是"扇面里碰运气"，
+     * 而是<b>寻路已经算好的那条路线</b>。真机反馈"龙往一根柱子上撞、绕不过去"，
+     * 就是因为避障只在自己的小扇面里挑方向，没有利用已经存在的路径。
+     *
+     * <p>注意 {@code Path.getNextNode()} 在"路径为空"时可能返回 null（javap 查过签名），
+     * 所以这里两个都判。
+     */
+    @Nullable
+    public Vec3 currentPathNode() {
+        if (this.path == null || this.path.isDone()) {
+            return null;
+        }
+        net.minecraft.world.level.pathfinder.Node node = this.path.getNextNode();
+        if (node == null) {
+            return null;
+        }
+        // +0.5 取方块中心：节点坐标是方块整数坐标，直接当方向会偏半格
+        return new Vec3(node.x + 0.5D, node.y + 0.5D, node.z + 0.5D);
     }
 }

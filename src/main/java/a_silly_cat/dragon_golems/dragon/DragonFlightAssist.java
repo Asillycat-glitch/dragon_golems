@@ -241,23 +241,52 @@ public final class DragonFlightAssist {
         double stuckRatio = Mth.clamp(this.stuckTicks / (double) STUCK_LIMIT, 0.0D, 1.0D);
         // 交替相位：爬一段、平飞一段
         boolean risePhase = (this.stuckTicks / RISE_PHASE) % 2 == 0;
-        Vec3 open = findOpenDirection(dragon);
+
+        // ★ 首选：顺着寻路给的路径点走。
+        //   真机反馈"往一根柱子上撞、绕不过去" —— 原因是避障只在自己的小扇面里挑方向，
+        //   完全没用上"寻路已经算好的一条绕行路线"。只要路径还有下一个节点，
+        //   那个节点的方向就是最可靠的"往哪绕"，比扇面碰运气准得多。
+        Vec3 pathDir = this.pathDirection(dragon);
+        Vec3 open = pathDir != null ? pathDir : findOpenDirection(dragon);
         if (open == null) {
             // 四周都堵死：往上顶（这是唯一可能出去的方向），但保留一点原方向避免完全停住
             double vy = risePhase ? 0.15D + 0.25D * stuckRatio : 0.06D;
             return new Vec3(want.x * 0.3D, vy, want.z * 0.3D);
         }
-        // 把"想去哪"和"哪里有空"混一混：优先往开阔处，但不要完全丢掉原方向
-        Vec3 blended = open.add(want.normalize().scale(0.35D));
+        // 把"想去哪"和"该往哪绕"混一混：优先绕行方向，但保留一点原方向免得完全丢掉目标
+        double mix = pathDir != null ? 0.2D : 0.35D;
+        Vec3 blended = open.add(want.normalize().scale(mix));
         double len = blended.horizontalDistance();
         if (len < 1.0E-4D) {
             return want;
         }
-        // 水平速度保持原样，方向按 blended 重排
         double speed = want.horizontalDistance();
-        // 爬升相位给正的竖直分量；平飞相位给 0（不往上也不往下），把高度交给寻路/悬停
+        // 爬升相位给正的竖直分量；平飞相位给 0，把高度交给寻路/悬停
         double vy = risePhase ? 0.12D + 0.30D * stuckRatio : 0.0D;
         return new Vec3(blended.x / len * speed, vy, blended.z / len * speed);
+    }
+
+    /**
+     * 寻路当前路径点的方向（单位向量，水平归一化）；没有路径就返回 null。
+     *
+     * <p>只取水平分量：竖直方向由 {@link #RISE_PHASE} 那套交替逻辑管，
+     * 否则"路径点在头顶"会让龙一直往上钻。
+     */
+    @Nullable
+    private Vec3 pathDirection(DragonGolemEntity dragon) {
+        if (!(dragon.getNavigation() instanceof DragonFlyingNavigation nav)) {
+            return null;
+        }
+        Vec3 node = nav.currentPathNode();
+        if (node == null) {
+            return null;
+        }
+        Vec3 flat = new Vec3(node.x - dragon.getX(), 0.0D, node.z - dragon.getZ());
+        if (flat.horizontalDistance() < 0.5D) {
+            // 路径点就在脚下：说明这一步没有横向指引，交回扇面探测
+            return null;
+        }
+        return flat.normalize();
     }
 
     /** 避障时"往上爬"持续的 tick 数（40 = 2 秒）。 */
@@ -277,17 +306,26 @@ public final class DragonFlightAssist {
     @Nullable
     private Vec3 findOpenDirection(DragonGolemEntity dragon) {
         Vec3 forward = Vec3.directionFromRotation(0.0F, dragon.getYRot());
+        // 扇面比原来密得多：真机反馈"往柱子上撞、绕不过去"就是因为原来 7 个方向
+        // 在大体型的判定箱下全部探到障碍，于是只能往上顶。
+        // 现在加了"斜上偏左右"和"纯左右"，绕柱子的成功率明显提高。
         double[][] fan = {
-                {0.0D, 1.0D},   // 正上
-                {0.6D, 0.8D},   // 斜上（前）
-                {-0.6D, 0.8D},  // 斜上（后）
-                {1.0D, 0.0D},   // 前
-                {-1.0D, 0.0D},  // 后
-                {0.7D, 0.0D},   // 前偏左
-                {-0.7D, 0.0D},  // 前偏右
+                {0.0D, 1.0D},    // 正上
+                {0.6D, 0.8D},    // 斜上前
+                {-0.6D, 0.8D},   // 斜上后
+                {0.8D, 0.6D},    // 更偏前的斜上
+                {-0.8D, 0.6D},   // 更偏后的斜上
+                {1.0D, 0.0D},    // 正前
+                {-1.0D, 0.0D},   // 正后
+                {0.7D, 0.2D},    // 前偏左（几乎水平，带一点上）
+                {-0.7D, 0.2D},   // 前偏右
+                {0.4D, 0.0D},    // 左前方 45°
+                {-0.4D, 0.0D},   // 右前方 45°
+                {0.2D, 0.0D},    // 几乎正侧向
+                {-0.2D, 0.0D},   // 另一侧
         };
-        // 从近到远试：近处有空间就优先走短的
-        for (double dist : new double[]{1.6D, 2.6D, 4.0D}) {
+        // 探测距离也比原来远：柱子常有 3~5 格粗，只探 4 格会在"贴着柱子"时全判为堵死。
+        for (double dist : new double[]{1.6D, 2.6D, 4.0D, 6.0D, 9.0D}) {
             for (double[] f : fan) {
                 Vec3 dir = new Vec3(
                         forward.x * f[0], f[1], forward.z * f[0]).normalize();
