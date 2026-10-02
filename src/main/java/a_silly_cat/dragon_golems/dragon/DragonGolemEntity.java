@@ -1776,9 +1776,18 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.fallDistance = 0.0F;
             } else {
                 this.keepAimThisTick = false;
-                // 这条路上没人写速度、也就没人更新侧倾，把它慢慢收平（否则会留着上一次的压弯角度）
-                this.relaxRoll();
                 this.applyHover();
+            }
+            // ★ 侧倾收平必须放在分支链<b>外面</b>（真机 bug："冲刺后龙体倾斜"）。
+            //   原来 relaxRoll() 只挂在最后那个"没人管"分支里，于是：
+            //     冲刺时 faceMovement 写了一个压弯角 → 冲刺结束、玩家还骑着 →
+            //     走的是 `rider != null` 分支 → relaxRoll 永不执行 → 那个压弯角<b>永久保留</b>。
+            //   现在改成"所有分支之后统一收"，只在两个"本 tick 刚写过侧倾"的分支上跳过：
+            //     - riderDive（骑手冲锋）：faceMovement 刚按航线方向压过弯
+            //     - AI 俯冲（diveVelocity 非 null 但 riderDive 为假）：同上
+            //   普通驾驶（rider != null 但没在冲锋）也要收 —— 那正是这个 bug 的场景。
+            if (!riderDive && this.diveVelocity == null) {
+                this.relaxRoll();
             }
         }
         // 飞行辅助：撞墙计数、自动脱困的进出、noPhysics 的唯一写入口。
