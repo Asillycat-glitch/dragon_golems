@@ -120,16 +120,27 @@ public final class DragonRiderControl {
      * 不会出现"速度朝旧方向、机头已经转过去"的错帧。
      */
     public static void tickBody(DragonGolemEntity dragon, Player player) {
-        // 别的 goal 写下的速度（俯冲/巡航）一律作废：驾驶期间只有玩家说话算数
-        dragon.setDiveVelocity(null);
+        // ★ 玩家自己按 R 要的冲锋是"驾驶期间只认玩家"这条规则的<b>例外</b>：
+        //   那几秒的控制权归 DragonDiveGoal 的航线，这里绝不能去拆它的台。
+        //   下面三行（清速度 / 清目标 / 清姿态）原本是无条件的，于是把骑手冲锋整个抹掉：
+        //   goal 明明 start() 了、冷却也扣了，但每 tick 都被清成
+        //   diveVel=false / dive=0 / target=null —— 真机日志里就是
+        //   "dive ordered 成功、y 却卡在 -47.23 纹丝不动、dive 恒为 0"。
+        if (!dragon.isRiderOrderedDive()) {
+            // 别的 goal 写下的速度（俯冲/巡航）一律作废：驾驶期间只有玩家说话算数
+            dragon.setDiveVelocity(null);
+            if (dragon.getDivePhase() != DragonGolemEntity.DIVE_PHASE_NONE) {
+                dragon.setDivePhase(DragonGolemEntity.DIVE_PHASE_NONE);
+            }
+        }
         if (dragon.isIdleSettled()) {
             // 一上人就把它从"原地贴地待机"里叫醒
             dragon.setIdleSettled(false);
         }
-        // 驾驶期间不打人：玩家在操作时被自己龙的技能抢走控制权会很难受
-        dragon.setTarget(null);
-        if (dragon.getDivePhase() != DragonGolemEntity.DIVE_PHASE_NONE) {
-            dragon.setDivePhase(DragonGolemEntity.DIVE_PHASE_NONE);
+        // 驾驶期间不打人：玩家在操作时被自己龙的技能抢走控制权会很难受。
+        // 同理，冲锋期间必须留着自己那条目标，否则航线立刻失去目标。
+        if (!dragon.isRiderOrderedDive()) {
+            dragon.setTarget(null);
         }
 
         // ---- 机头朝向：朝玩家视角的 yaw 慢慢转 ----
@@ -178,6 +189,12 @@ public final class DragonRiderControl {
      * 上升键默认仍绑原版跳跃键、下降键默认绑左 Ctrl。
      */
     public static void tickVertical(DragonGolemEntity dragon, Player player) {
+        // 骑手冲锋期间竖直速度归航线管（DragonDiveGoal 经 diveVelocity 写），
+        // 这里再写一次会把它按回悬停高度 —— 那正是"按 R 只看见姿态、龙不落地"的另一半原因。
+        if (dragon.isRiderOrderedDive()) {
+            dragon.fallDistance = 0.0F;
+            return;
+        }
         double want = 0.0D;
         if (dragon.riderWantsUp()) {
             want = RIDER_VERTICAL;
