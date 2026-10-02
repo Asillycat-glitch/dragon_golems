@@ -92,16 +92,25 @@ public final class DragonFlightAssist {
             return;
         }
         handleStuck(dragon);
-        // 诊断：每 40 tick 报一次飞行状态。排查"嵌在方块里 / 一直往上飞"必须同时看到
-        // 撞墙计数、当前位置塞不塞得下、有没有在脱困、以及竖直速度 —— 少一个就会猜错。
-        if (DragonDebug.RIDE && dragon.tickCount % 40 == 0) {
-            Dragon_golems.LOGGER.info(
-                    "[fly] stuck={} room={} rescue={} noPhysics={} dy={} hColl={} pos={}",
-                    this.stuckTicks, hasRoomFor(dragon, dragon.position()),
-                    this.rescueTicks, dragon.noPhysics,
-                    String.format("%.2f", dragon.getDeltaMovement().y),
-                    dragon.horizontalCollision, dragon.position());
+    }
+
+    /**
+     * 诊断：报一行飞行辅助的状态。
+     *
+     * <p>由实体在 {@code tickCount % 40 == 20} 时调用 —— 和 {@code [ride] state}（% 40 == 0）
+     * 错开 20 tick，这样"同一秒里悬停目标和飞行辅助各自的看法"能对照着看，
+     * 排查"一直往上飞是悬停算错还是脱困在爬"必须同时有这两侧的数据。
+     */
+    public void logState(DragonGolemEntity dragon) {
+        if (!DragonDebug.RIDE) {
+            return;
         }
+        Dragon_golems.LOGGER.info(
+                "[fly] stuck={} room={} rescue={} noPhysics={} dy={} hColl={} vColl={} pos={}",
+                this.stuckTicks, hasRoomFor(dragon, dragon.position()),
+                this.rescueTicks, dragon.noPhysics,
+                String.format("%.3f", dragon.getDeltaMovement().y),
+                dragon.horizontalCollision, dragon.verticalCollision, dragon.position());
     }
 
     /**

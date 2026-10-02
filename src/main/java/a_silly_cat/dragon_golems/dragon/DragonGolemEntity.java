@@ -1672,18 +1672,32 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.crystalHealEffects(usedCrystal);
             }
         }
-        // 诊断：定期报一次"竖直相关的全部状态"。排查"按了上升却不动"必须同时看到
-        // y / 竖直速度 / 重力 / 目标高度 / 各模式标志 —— 只看其中一两个会一直猜错。
+        // 诊断：定期报一次"竖直相关的全部状态"。排查"按了上升却不动 / 一直往上飞"
+        // 必须同时看到 y / 竖直速度 / 水平速度 / 重力 / 目标高度 / 地表高度 / 各模式标志
+        // —— 只看其中一两个会一直猜错。
         if (DragonDebug.RIDE && !this.level().isClientSide && this.tickCount % 40 == 0) {
+            // 地表高度单独取一次：hoverTarget 是"地表 + 悬停高度"，把它们拆开才能看出
+            // "是地表读错了"还是"悬停高度算错了"（这两种的修法完全不同）。
+            int surface = this.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                    this.blockPosition().getX(), this.blockPosition().getZ());
+            Vec3 v = this.getDeltaMovement();
             Dragon_golems.LOGGER.info(
-                    "[ride] state y={} dy={} noGravity={} diveVel={} hoverTarget={} settled={} parked={} golemPax={} rider={} dive={}",
+                    "[ride] state y={} dy={} dxz={} noGravity={} diveVel={} surface={} hoverBase={} hoverTarget={} settled={} parked={} golemPax={} rider={} dive={}",
                     String.format("%.2f", this.getY()),
-                    String.format("%.2f", this.getDeltaMovement().y),
+                    String.format("%.3f", v.y),
+                    String.format("%.3f", v.horizontalDistance()),
                     this.isNoGravity(),
                     this.diveVelocity != null,
+                    surface,
+                    String.format("%.2f", this.hoverHeight()),
                     String.format("%.2f", this.hoverTargetY()),
                     this.idleSettled, this.isParked(), this.golemPassengerCount(),
                     this.getControllingPassenger() != null, this.getDivePhase());
+        }
+        // 诊断：飞行辅助的状态（卡住计数 / 有没有空间 / 脱困 / noPhysics）。
+        // 和上面那行分开打，方便对照"同一时刻的悬停目标和飞行辅助状态"。
+        if (DragonDebug.RIDE && !this.level().isClientSide && this.tickCount % 40 == 20) {
+            this.flightAssist.logState(this);
         }
     }
 
