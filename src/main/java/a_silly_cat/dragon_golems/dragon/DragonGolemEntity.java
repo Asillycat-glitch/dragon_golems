@@ -1608,6 +1608,37 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return false;
     }
 
+    /**
+     * 冲锋期间把背上的傀儡逼进<b>近战模式</b>。
+     *
+     * <p>真机反馈："龙傀儡冲刺时，傀儡来不及切换近战武器（其实是没切换）"。
+     *
+     * <p>机制（查了本家 2.6.34 源码 + 2.7.3 字节码）：
+     * <pre>
+     * AbstractGolemEntity.isInRangedMode() = getMode() == STAND || entityData(IS_IN_RANGE_ATTACK)
+     * AbstractGolemEntity.hasRangeAttack() = false（由人形子类覆写）
+     * GolemMeleeGoal.tickMove(): boolean hasRange = golem.hasRangeAttack() || ...
+     * </pre>
+     * 也就是说"有远程武器 + IS_IN_RANGE_ATTACK 为真"就等于<b>永远远程模式</b>，
+     * 它会一直举着远程武器（而且 tickMove 里 hasRange 为真时还会 strafe 往后躲）。
+     * 冲刺是拿身体撞过去，这一下必须是近战武器才有意义。
+     *
+     * <p>所以冲锋期间每 tick 把乘客的 {@code IS_IN_RANGE_ATTACK} 压成 false
+     * —— 那是上游的公开 API（{@code setInRangeAttack}），不是我们自己造的开关。
+     * 冲锋结束就不再干预，本家自己会按目标距离重新评估。
+     *
+     * <p><b>已知局限</b>：{@code isInRangedMode()} 还有 {@code getMode() == STAND} 那半边，
+     * 所以"停止模式下背着傀儡冲刺"仍然压不住（那种情况要临时改乘客的模式，副作用更大，
+     * 用户选择先不做）。
+     */
+    private void forceGolemPassengersMelee() {
+        for (Entity passenger : this.getPassengers()) {
+            if (passenger instanceof AbstractGolemEntity<?, ?> golem) {
+                golem.setInRangeAttack(false);
+            }
+        }
+    }
+
     /** 背上傀儡乘客的数量。 */
     public int golemPassengerCount() {
         int count = 0;
@@ -1731,6 +1762,11 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             //   那行日志在 else-if 里面，根本没被执行）。
             //   现在让"骑手冲锋"优先于"有骑手"：冲锋那几秒的控制权属于航线。
             boolean riderDive = rider != null && this.isRiderOrderedDive() && this.diveVelocity != null;
+            // 冲锋（骑手指令 或 AI 自发）期间把背上的傀儡逼进近战模式 —— 撞过去那一下
+            // 必须拿近战武器才有意义，见 forceGolemPassengersMelee() 的说明。
+            if (riderDive || this.getDivePhase() != DIVE_PHASE_NONE) {
+                this.forceGolemPassengersMelee();
+            }
             if (riderDive) {
                 this.setNoGravity(true);
                 Vec3 vel = this.diveVelocity;
