@@ -309,10 +309,21 @@ public class DragonIdleGoal extends Goal {
     }
 
     /**
-     * 原始中心：有主人（或守卫点、巡逻点）时就是那个位置，只取水平坐标；
+     * 原始中心：<b>自由行动时是"原点"</b>，其余情况跟主人（或守卫点、巡逻点），只取水平坐标；
      * 没有跟随目标时（{@code getTargetPos()} 返回自己的位置）用固定锚点。
+     *
+     * <p><b>自由行动为什么特殊：</b>本家的 {@code FREE_WANDER} 是
+     * {@code new GolemMode(false, true, true, ...)}，{@code positioned = false} ——
+     * 所以 {@code getTargetPos()} 对它返回的是<b>主人位置</b>，也就是本家的"自由行动"
+     * 其实是"跟着主人到处走"。用户要的是"收回原点 + 自行追逐攻击"，
+     * 所以这个模式下改成围绕 {@code freeWanderOrigin()} 游走、回位也回原点。
      */
     private Vec3 rawCenter() {
+        if (this.dragon.isFreeWander()) {
+            Vec3 origin = this.dragon.freeWanderOrigin();
+            this.anchor = origin;
+            return origin;
+        }
         Vec3 follow = this.dragon.getTargetPos();
         if (follow.distanceToSqr(this.dragon.position()) < 1.0D) {
             if (this.anchor == null) {

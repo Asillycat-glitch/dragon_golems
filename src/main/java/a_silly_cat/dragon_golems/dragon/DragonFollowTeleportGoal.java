@@ -112,7 +112,11 @@ public class DragonFollowTeleportGoal extends Goal {
         // 192 格外才回位，本家傀儡收回杖的射线（默认 64 格）根本够不到，就是"收不回来"。
         double maxH = Math.min(MAX_HORIZONTAL * scale, MAX_HORIZONTAL_CAP);
         double maxV = Math.min(MAX_VERTICAL * scale, MAX_VERTICAL_CAP);
-        Vec3 target = this.dragon.getTargetPos();
+        // 自由行动时"家"是原点，不是主人 —— 否则追怪离开一会儿就被拽回主人身边，
+        // 而玩家明明把它放在这里站岗（见 DragonGolemEntity.freeWanderOrigin 的说明）。
+        Vec3 target = this.dragon.isFreeWander()
+                ? this.dragon.freeWanderOrigin()
+                : this.dragon.getTargetPos();
         double dx = target.x - this.dragon.getX();
         double dy = target.y - this.dragon.getY();
         double dz = target.z - this.dragon.getZ();
@@ -133,7 +137,10 @@ public class DragonFollowTeleportGoal extends Goal {
     }
 
     private void teleportNearOwner() {
-        Vec3 target = this.dragon.getTargetPos();
+        // 和 canUse() 里的判据保持一致：自由行动时回的是原点，不是主人。
+        Vec3 target = this.dragon.isFreeWander()
+                ? this.dragon.freeWanderOrigin()
+                : this.dragon.getTargetPos();
         BlockPos pos = BlockPos.containing(target);
         if (pos.getY() < this.dragon.level().getMinBuildHeight() - 32) {
             return;

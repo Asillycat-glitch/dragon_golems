@@ -10,6 +10,7 @@ import dev.xkmc.modulargolems.content.entity.goals.GolemMeleeGoal;
 import dev.xkmc.modulargolems.content.entity.goals.GolemRandomStrollGoal;
 import dev.xkmc.modulargolems.content.entity.goals.TeleportToOwnerGoal;
 import dev.xkmc.modulargolems.content.entity.humanoid.weapon.GolemWeaponRegistry;
+import dev.xkmc.modulargolems.content.entity.mode.GolemMode;
 import dev.xkmc.modulargolems.content.entity.mode.GolemModes;
 import dev.xkmc.modulargolems.content.item.upgrade.IUpgradeItem;
 import dev.xkmc.modulargolems.content.modifier.base.GolemModifier;
@@ -1295,6 +1296,65 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.commandedAim = null;
     }
 
+    // ---- 自由行动（FREE_WANDER）的原点 ----
+
+    /**
+     * "自由行动"模式下这条龙的<b>家</b>（原点）；{@code null} = 还没记过。
+     *
+     * <p><b>为什么要自己记：</b>本家 {@code GolemModes.FREE_WANDER} 是
+     * {@code new GolemMode(false, true, true, ...)} —— 第一个参数 {@code positioned = false}，
+     * 也就是<b>它不记原点</b>。而 {@code AbstractGolemEntity.getTargetPos()} 对
+     * {@code !hasPos()} 的模式返回的是<b>主人位置</b>，所以本家的"自由行动"实际上是
+     * "跟着主人、但可以到处乱走"。
+     *
+     * <p>我们想要的"自由行动"是<b>有家</b>的：切到该模式时把当时位置记为原点，
+     * 之后龙围绕原点自行游走、自行追打，离原点过远就回原点（而不是回主人身边）。
+     * 用户明确要的就是这个（"傀儡有一个收回原点，然后可以自行追逐攻击"）。
+     *
+     * <p>用本家已有的锚点机制（{@code setMode(id, pos)} 传进来的那个 {@code BlockPos}）
+     * 会更好，但它只对 {@code hasPos()} 的模式生效 —— 而 {@code FREE_WANDER} 恰好不是。
+     * 所以这里在自己这侧补一个：第一次需要时就地记下，够用且不依赖上游改行为。
+     */
+    @Nullable
+    private Vec3 freeWanderOrigin;
+
+    /** 上次见到的模式，用来在"进出自由行动"时清掉原点。 */
+    @Nullable
+    private GolemMode lastSeenMode;
+
+    /** 现在是不是"自由行动"模式。 */
+    public boolean isFreeWander() {
+        return this.getMode() == GolemModes.FREE_WANDER;
+    }
+
+    /**
+     * 自由行动的原点；第一次调用时把当前位置记下来。
+     *
+     * <p>只在 {@link #isFreeWander()} 为真时有意义。进/出该模式时原点会被清掉
+     * （见 {@link #tickFreeWanderOrigin()}），所以"重新切一次模式"等于"重新安家"。
+     */
+    public Vec3 freeWanderOrigin() {
+        if (this.freeWanderOrigin == null) {
+            this.freeWanderOrigin = this.position();
+        }
+        return this.freeWanderOrigin;
+    }
+
+    /**
+     * 每 tick 维护原点：<b>模式一变就清</b>。
+     *
+     * <p>为什么必须清：不清的话"切到自由行动 → 安家 → 切走 → 再切回来"会沿用旧原点，
+     * 而玩家第二次切的时候显然是想在<b>新位置</b>安家。清掉之后
+     * {@link #freeWanderOrigin()} 会在下一次被问到时就地重记。
+     */
+    private void tickFreeWanderOrigin() {
+        GolemMode now = this.getMode();
+        if (this.lastSeenMode != now) {
+            this.lastSeenMode = now;
+            this.freeWanderOrigin = null;
+        }
+    }
+
     // ---- 飞行辅助（穿墙 / 脱困 / 避障） ----
 
     /**
@@ -1717,6 +1777,9 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         // "货舱模式"每 tick 维护一次（背上傀儡 + 没玩家 → 原地悬停不游走）。
         // 必须在 super.aiStep() 之前：goal 的取用发生在那里面。
         this.tickGolemPassengerMode();
+        // 自由行动的原点：模式一变就清（见 tickFreeWanderOrigin 的说明）。
+        // 同样必须在 goal 取用之前 —— DragonIdleGoal 会问 freeWanderOrigin()。
+        this.tickFreeWanderOrigin();
         // 玩家在开：水平方向交给原版骑乘管线（travel → travelRidden → getRiddenInput/Speed，
         // 见 DragonRiderControl 的类注释），这里只负责"没人在开"时的收尾。
         Player rider = DragonRiderControl.rider(this);
