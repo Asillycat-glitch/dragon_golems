@@ -801,17 +801,13 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         if (this.hasDriverSeatOccupied()) {
             return true;
         }
-        // ★ 有敌人就解禁。
-        //   真机反馈："停止模式下龙一直索敌却完全不出手（不会龙息也不会龙息弹）"。
-        //   根因：龙息 / 龙息弹 / 冲锋三个攻击 goal 的 canUse() 第一句都是
-        //   `if (!isMovable() ...) return false;`，而 STAND（停止）模式的 movable 是 false
-        //   —— 于是"停下来"等于"关掉全部攻击手段"，连自保都不行。
-        //   这不是"取消停止模式"：只是"有敌人时别装死"。敌人一走（getTarget() 变 null）
-        //   它就立刻回到待机，行为与原来完全一致。
-        LivingEntity enemy = this.getTarget();
-        if (enemy != null && enemy.isAlive()) {
-            return true;
-        }
+        // ★ 这里**不要**再为"有敌人"开口子。
+        //   我一度加过 `if (getTarget() != null) return true;`，理由是"停止模式下龙一直索敌
+        //   却不出手，连自保都不行"。但用户明确澄清：**"停止模式下不攻击"就是设计本意** ——
+        //   "停"是"把它放下、别动手"的指令，不是"换个地方打"。
+        //   而且三个攻击 goal 的 canUse() 第一句都是 isMovable()，所以"不能移动"
+        //   在实现上就等于"不能攻击"，这正是那个设计得以成立的地方。
+        //   （注意：这不会影响骑乘升降 —— 那条走 tickVertical，只看 localFloorY 和按键。）
         return super.isMovable();
     }
 
