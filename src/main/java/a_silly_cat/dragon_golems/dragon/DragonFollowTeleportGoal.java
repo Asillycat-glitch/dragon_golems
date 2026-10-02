@@ -80,7 +80,17 @@ public class DragonFollowTeleportGoal extends Goal {
         if (this.dragon.getControllingPassenger() instanceof Player) {
             return false;
         }
-        // 俯冲/冲刺动作中不回位（以后做龙息时也走这里）
+        // ★ 骑手冲锋（按 R）期间绝不回位：那几秒龙"离开主人"正是设计要求的。
+        //   必须用这个明确的标志，不能只靠下面那条 DIVE_PHASE 判断 ——
+        //   真机日志（16:51 那版）里就是它漏过去了：
+        //     start(): pos=(216.34,-49.25,-127.62)
+        //     finish(): phase=LINEUP phaseTicks=28 target=null   ← 28 tick 内龙一动没动
+        //     下一次 start(): pos=(254.86,-48.65,-118.92)        ← 突然瞬移 38 格
+        //   也就是回位传送把正在冲锋的龙拽了回来，顺手 setTarget(null) 毁掉了航线目标。
+        if (this.dragon.isRiderOrderedDive()) {
+            return false;
+        }
+        // 俯冲/冲刺动作中也不回位（AI 自发的俯冲走这条：那时 DIVE_PHASE 已经离开 NONE）
         if (this.dragon.getDivePhase() != DragonGolemEntity.DIVE_PHASE_NONE) {
             return false;
         }
@@ -139,7 +149,11 @@ public class DragonFollowTeleportGoal extends Goal {
             }
             this.dragon.moveTo(x + 0.5D, y, z + 0.5D, this.dragon.getYRot(), this.dragon.getXRot());
             this.dragon.getNavigation().stop();
-            this.dragon.setTarget(null);
+            // 传送会打断正在飞的航线，别顺手把它的目标也清了
+            // （canUse 里已经挡了骑手冲锋，这里是第二道保险）
+            if (!this.dragon.isRiderOrderedDive()) {
+                this.dragon.setTarget(null);
+            }
             this.nextTryTick = 0;
             return;
         }
