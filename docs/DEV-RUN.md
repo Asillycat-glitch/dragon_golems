@@ -45,8 +45,10 @@ property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/ou
 
 ```
 ./gradlew build
-copy build\libs\dragon_golems-0.1.jar <整合包>\mods\
+copy build\libs\dragon_golems-<版本>.jar <整合包>\mods\
 ```
+
+（`<版本>` 就是 `gradle.properties` 里的 `mod_version`；写成占位符是为了以后升版本不用回来改这里。）
 
 然后**先把 `golems_arsenal-0.3.jar` 移出 `mods`**（两边都注册了一条龙，同时装会看到两份），
 进游戏看：创造栏出现"巨龙傀儡"这一页、切石机能把大傀儡胚料切成五个部件、
