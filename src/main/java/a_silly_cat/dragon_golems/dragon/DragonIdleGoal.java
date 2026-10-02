@@ -180,8 +180,9 @@ public class DragonIdleGoal extends Goal {
             // "离地三格"是个给以后骑乘用的固定高度，上下浮动会让人站不稳；想要那点浮动的话
             // 把下面 wantY 末尾的 + this.bob() 加回来即可。
             this.waypoint = null;
-            double settleY = this.groundHeight(this.dragon.getX(), this.dragon.getZ())
-                    + this.dragon.hoverHeight();
+            // 用 hoverTargetY() 而不是自己再算一遍：那个方法会把目标压到"头顶天花板之下"
+            // （洞里的龙否则会朝世界地表高度一直爬，实测过：surface=70 / y=-6 → 目标 80）。
+            double settleY = this.dragon.hoverTargetY();
             double settleVy = Mth.clamp((settleY - this.dragon.getY()) * VERTICAL_GAIN,
                     -VERTICAL_MAX * range, VERTICAL_MAX * range);
             this.dragon.setDiveVelocity(new Vec3(0.0D, settleVy, 0.0D));
@@ -242,9 +243,11 @@ public class DragonIdleGoal extends Goal {
             vz = vz / horizontal * horizontalMax;
         }
 
-        // ---- 高度：脚下地形 + HOVER_HEIGHT + 呼吸 ----
-        double wantY = this.groundHeight(this.dragon.getX(), this.dragon.getZ())
-                + this.dragon.hoverHeight() + this.bob();
+        // ---- 高度：地表高度 + 悬停高度 + 呼吸，但被头顶天花板夹住 ----
+        // 用 hoverTargetY() 而不是自己拼：它会 min(世界地表+悬停高度, 天花板下一格)。
+        // 自己拼的话，洞里的龙会朝"世界地表 + 10"一直爬（实测 surface=70 / y=-6 → 目标 80），
+        // 表现为无限向上飞直到被回位传送拽回来。
+        double wantY = this.dragon.hoverTargetY() + this.bob();
         double vy = Mth.clamp((wantY - this.dragon.getY()) * VERTICAL_GAIN,
                 -VERTICAL_MAX * range, VERTICAL_MAX * range);
         // 蹭到方块就抬一点，免得贴着树、墙原地磨

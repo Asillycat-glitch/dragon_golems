@@ -2568,11 +2568,62 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return scale <= 1.0D ? 1.0D : Math.pow(scale, HOVER_SCALE_EXP);
     }
 
-    /** 当前水平位置的地表高度 + 期望离地高度（不算树叶，免得把树冠当地面）。俯冲结束时就回到这个高度。 */
+    /**
+     * 当前水平位置的地表高度 + 期望离地高度（不算树叶，免得把树冠当地面）。
+     * 俯冲结束时就回到这个高度。
+     *
+     * <p><b>★ 为什么要被头顶的天花板夹一下</b>（真机踩到的严重问题）：
+     * {@code getHeight(MOTION_BLOCKING_NO_LEAVES)} 返回的是<b>世界地表</b>高度，
+     * 而龙飞在洞穴/矿道里时那个值可能比它高几十格。实测日志：
+     * <pre>
+     * surface=70   y=-6.20   hoverBase=10.00   hoverTarget=80.00   dy=0.200（恒定）
+     * </pre>
+     * 也就是"龙在地下 6 格、却想飞到 80"→ 它<b>每个 tick 都顶格往上爬</b>，
+     * 爬到洞顶撞一下、掉下来、再爬，无限循环 —— 表现就是"一直向上飞太远、
+     * 最后被回位传送拽回来"。这和撞墙是两回事。
+     *
+     * <p>修法：从身体顶端往上找第一层挡路的方块，把目标压到它<b>下面</b>一格。
+     * 这样洞里的龙会老老实实贴着洞顶下方悬停，而开阔地（上方几十格都是空气）
+     * 完全不受影响 —— 扫描有 {@link #CEILING_SCAN} 上限，找不到就按原值返回。
+     */
     public double hoverTargetY() {
         BlockPos pos = this.blockPosition();
-        return this.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, pos.getX(), pos.getZ())
-                + this.hoverHeight();
+        double target = this.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                pos.getX(), pos.getZ()) + this.hoverHeight();
+        double ceiling = this.hoverCeilingY();
+        return ceiling == NO_CEILING ? target : Math.min(target, ceiling);
+    }
+
+    /** {@link #hoverTargetY()} 里"没找到天花板"的哨兵值。 */
+    private static final double NO_CEILING = Double.MAX_VALUE;
+    /** 往上找天花板时最多扫多少格（超过就当作开阔地，避免在高空做长扫描）。 */
+    private static final int CEILING_SCAN = 32;
+
+    /**
+     * 头顶第一层挡路方块的下沿 Y（再往下留一格余量）；正上方 {@link #CEILING_SCAN} 格内
+     * 全是空气就返回 {@link #NO_CEILING}。
+     *
+     * <p>用 {@code getCollisionShape().isEmpty()} 判断"挡不挡路"，所以草、雪层、藤蔓
+     * 这些没有碰撞箱的方块不算天花板 —— 和 {@code DragonFlightAssist.hasRoomFor} 是同一套判据。
+     */
+    private double hoverCeilingY() {
+        Level level = this.level();
+        double from = this.getY() + this.getBbHeight() + 0.5D;
+        int x = this.blockPosition().getX();
+        int z = this.blockPosition().getZ();
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        for (int i = 0; i < CEILING_SCAN; i++) {
+            int y = Mth.floor(from) + i;
+            if (y >= level.getMaxBuildHeight()) {
+                break;
+            }
+            cursor.set(x, y, z);
+            if (!level.getBlockState(cursor).getCollisionShape(level, cursor).isEmpty()) {
+                // 目标 = 障碍下沿再减一格（留出身体高度），但这个值会再由 hoverTargetY 取 min
+                return y - 1.0D;
+            }
+        }
+        return NO_CEILING;
     }
 
     /**
