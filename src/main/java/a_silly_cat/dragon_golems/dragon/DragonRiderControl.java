@@ -256,15 +256,30 @@ public final class DragonRiderControl {
     /**
      * 竖直速度的安全闸门：<b>不许把龙开进地形</b>。
      *
-     * <p>玩家驾驶时没有悬停那套自动纠高，所以"按着 Shift 不放"会一路钻下去。
+     * <p>玩家驾驶时没有悬停那套自动纠高，所以"按着 Ctrl 不放"会一路钻下去。
      * 这里只夹"低于地面多少"和"头顶顶到方块"，不做自动悬停 —— 想停在哪个高度是玩家自己的事。
+     *
+     * <p><b>★ 这里有个真机抓到的符号 bug（已修）</b>：原来"低于最低离地量"时写的是
+     * <pre>
+     * vy = Math.max(0.0D, minY - dragon.getY());
+     * </pre>
+     * 本意是"把龙抬到 minY"，但 {@code minY} 用的是<b>世界地表高度</b>
+     * （{@code getHeight(MOTION_BLOCKING_NO_LEAVES)}）。龙飞在矿洞里时地表可能比它高几十格 ——
+     * 实测：地表 70、龙在 y≈22 → minY = 72.2 → 玩家按下降，却算出 {@code want = +49.4}
+     * （向上 49 格/tick），于是"一按 Ctrl 就往上冲"。
+     * 日志原文：{@code [rider] vy down=true want=49.400 written=17.290}
+     * （写进去 17.29 是又被 {@link #RIDER_VERTICAL_SPIKE} 削平的结果，仍然是正的）。
+     *
+     * <p>现在只在<b>确实高于最低离地量</b>的时候才夹（那是"快贴地了，刹住"的正常情况）；
+     * 已经低于它（人在洞里、地表在头顶）就<b>不干预</b>，让玩家自由往下 ——
+     * 反正真正的"钻进方块"由碰撞和自动脱困负责，不需要一个基于世界地表的猜测来管。
      */
     private static double clampVertical(DragonGolemEntity dragon, double vy) {
         if (vy < 0.0D) {
-            // 拿机体高度当最低离地量：贴到地面就停住，不再往下钻
             double minY = groundHeight(dragon) + dragon.getBbHeight();
-            if (dragon.getY() + vy <= minY) {
-                vy = Math.max(0.0D, minY - dragon.getY());
+            // 只在"本来就高于最低点、这一步会越过它"时夹住 —— 不要反过来把龙抬上去
+            if (dragon.getY() > minY && dragon.getY() + vy <= minY) {
+                vy = 0.0D;
             }
         } else if (vy > 0.0D) {
             // 头顶有东西就别硬顶（矿洞 / 屋里），和 applyHover 是一个思路

@@ -65,6 +65,31 @@ public final class DragonFlightAssist {
     private int rescueTicks = -1;
     /** 玩家打开的自由飞行开关。 */
     private boolean freeFlight;
+    /**
+     * "常驻幽灵"：撞墙次数累计够了就打开，之后每 {@link #GHOST_CHECK_INTERVAL} 检查一次，
+     * 连续 {@link #GHOST_CLEAR_CHECKS} 次确认"全身（含子碰撞箱）都不和方块重合"才关掉。
+     *
+     * <p>用户定义："重复多次撞墙后常驻穿墙，然后每 30s 监测一次龙的子母模型是否和墙体有重合，
+     * 如果有就继续幽灵飞行，连续三次没有就正常飞行。"
+     */
+    private boolean stickyGhost;
+    /** 累计撞墙次数（不清零，只有"稳定飞行"很久才衰减）。 */
+    private int totalHits;
+    /** 距离下一次"是否还在墙里"的检查还有多少 tick。 */
+    private int ghostCheckTicks;
+    /** 连续多少次检查发现"没在墙里"。 */
+    private int ghostClearChecks;
+
+    /** 累计撞墙多少次之后进入常驻幽灵。 */
+    private static final int GHOST_AFTER_HITS = 60;
+    /** 常驻幽灵期间每隔多少 tick 检查一次"还在不在墙里"。600 tick = 30 秒。 */
+    private static final int GHOST_CHECK_INTERVAL = 600;
+    /** 连续多少次检查都"没在墙里"才退出常驻幽灵。 */
+    private static final int GHOST_CLEAR_CHECKS = 3;
+    /** 长时间不撞墙就衰减累计值（tick）。1800 = 90 秒。 */
+    private static final int HITS_DECAY_TICKS = 1800;
+    /** 距离上次撞墙的 tick 数，用于衰减。 */
+    private int ticksSinceHit;
     /** 连续多少次"重算路径之后目标点还是同一个"。 */
     private int repathAttempts;
     /** 上一次重算后看到的路径点（用来判断"重算有没有换目标"）。 */
@@ -154,10 +179,57 @@ public final class DragonFlightAssist {
         boolean noRoom = !hasRoomFor(dragon, dragon.position());
         if (blocked || noRoom) {
             this.stuckTicks++;
+            this.ticksSinceHit = 0;
+            if (blocked) {
+                this.totalHits++;
+            }
         } else {
             this.stuckTicks = 0;
+            this.ticksSinceHit++;
+            // 长时间不撞墙就衰减，免得"骑出去转一圈回来"永远处在幽灵状态
+            if (this.ticksSinceHit > HITS_DECAY_TICKS && this.totalHits > 0) {
+                this.totalHits--;
+            }
         }
         this.embedded = noRoom;
+
+        // ★ 常驻幽灵：累计撞墙够了就打开（用户要求的"重复多次撞墙后常驻穿墙"）。
+        //   动机：矿洞这种地形里"判定箱 2.6 格宽"物理上就进不去，反复脱困-再撞的循环
+        //   既费性能又难看。不如认账："这条龙在这个环境里就是会穿墙"，直到它真的出来了。
+        if (!this.stickyGhost && this.totalHits >= GHOST_AFTER_HITS) {
+            this.stickyGhost = true;
+            this.ghostCheckTicks = GHOST_CHECK_INTERVAL;
+            this.ghostClearChecks = 0;
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[fly] 累计撞墙 {} 次 → 进入常驻幽灵飞行", this.totalHits);
+            }
+        }
+        // 常驻幽灵期间：每 30 秒检查一次"全身（含子碰撞箱）是否还在墙里"
+        if (this.stickyGhost) {
+            if (--this.ghostCheckTicks <= 0) {
+                this.ghostCheckTicks = GHOST_CHECK_INTERVAL;
+                if (dragon.isBodyOverlappingBlocks()) {
+                    // 还在墙里 → 继续幽灵
+                    this.ghostClearChecks = 0;
+                    if (DragonDebug.RIDE) {
+                        Dragon_golems.LOGGER.info("[fly] 幽灵检查：仍在墙里，继续穿墙");
+                    }
+                } else {
+                    this.ghostClearChecks++;
+                    if (DragonDebug.RIDE) {
+                        Dragon_golems.LOGGER.info("[fly] 幽灵检查：已脱离（{}/{}）",
+                                this.ghostClearChecks, GHOST_CLEAR_CHECKS);
+                    }
+                    if (this.ghostClearChecks >= GHOST_CLEAR_CHECKS) {
+                        this.stickyGhost = false;
+                        this.totalHits = 0;
+                        if (DragonDebug.RIDE) {
+                            Dragon_golems.LOGGER.info("[fly] 连续 {} 次脱离 → 退出常驻幽灵", GHOST_CLEAR_CHECKS);
+                        }
+                    }
+                }
+            }
+        }
 
         // ★ 卡住就强制重算路径。
         //   这条才是"撞墙后不会重新找路线"的正解：原版只在 goal 需要新路径时才 createPath，
@@ -213,13 +285,19 @@ public final class DragonFlightAssist {
             }
         }
 
-        // noPhysics 的唯一写入口：自由飞行 / 自动脱困 / 正嵌在方块里。
+        // noPhysics 的唯一写入口：自由飞行 / 自动脱困 / 正嵌在方块里 / 常驻幽灵。
         //
         // ★ 第三条是这次真机踩出来的必需品：嵌在方块里时如果 noPhysics 为 false，
         //   碰撞解算会每个 tick 把实体猛推出去（实测 dy 达到 +17~+26 格/tick），
         //   骑手的高度输入被彻底淹没 —— "骑着在矿洞里一直往上飞、Ctrl 压不下来"。
-        //   这三条都是"穿过方块"，所以统一在这里表达，不要另开写入口。
-        dragon.noPhysics = this.freeFlight || this.rescueTicks >= 0 || noRoom;
+        // ★ 第四条是用户要求的策略：矿洞里反复撞墙就认账常驻穿墙，别再循环脱困。
+        //   这四条都是"穿过方块"，所以统一在这里表达，不要另开写入口。
+        dragon.noPhysics = this.freeFlight || this.rescueTicks >= 0 || noRoom || this.stickyGhost;
+    }
+
+    /** 现在是不是"常驻幽灵"（累计撞墙够多，正在穿墙飞行）。 */
+    public boolean isStickyGhost() {
+        return this.stickyGhost;
     }
 
     /** 现在是不是"嵌在方块里"（供诊断/别的模块查询）。 */

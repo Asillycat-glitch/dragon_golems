@@ -1401,16 +1401,45 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
-     * 下了乘客：重算货舱模式，并且<b>把玩家挪到一个真正站得住的地方</b>。
+     * "母体 + 所有子碰撞箱"有没有和方块重合。
      *
-     * <p>为什么要多这一步（真机 bug：骑上龙之后<b>下不来</b>）：原版
+     * <p>给 {@link DragonFlightAssist} 的"常驻幽灵"检查用：用户的要求是
+     * <b>"每 30s 监测一次龙的子母模型是否和墙体有重合"</b> —— 必须连子箱一起看，
+     * 否则会出现"母体在外面、头/翅膀埋在石头里"被误判成已经出来。
+     *
+     * <p>判据用方块碰撞形状（{@code getCollisionShape().isEmpty()}），所以草、雪层、藤蔓
+     * 这类没有碰撞箱的方块不算"墙" —— 和 {@code hasRoomFor} / {@code hoverCeilingY} 同一套。
+     */
+    public boolean isBodyOverlappingBlocks() {
+        if (this.overlapsBlocks(this.getBoundingBox())) {
+            return true;
+        }
+        for (DragonGolemPartEntity part : this.parts) {
+            if (part != null && this.overlapsBlocks(part.getBoundingBox())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 单个 AABB 有没有和带碰撞形状的方块相交。 */
+    private boolean overlapsBlocks(AABB box) {
+        Level level = this.level();
+        return BlockPos.betweenClosedStream(box)
+                .anyMatch(pos -> !level.getBlockState(pos).getCollisionShape(level, pos).isEmpty());
+    }
+
+    /**
+     * 下了乘客：重算货舱模式、放下冲锋标志，并且<b>把玩家挪到一个真正站得住的地方</b>。
+     *
+     * <p><b>为什么要挪玩家</b>（真机 bug：骑上龙之后<b>下不来</b>）：原版
      * {@code ServerLevel.removePassenger} 会把乘客放到
      * "{@code move(-bbWidth, 0, -bbWidth)} 扫到的第一个水平不重叠的位置"，<b>只看水平</b>。
      * 而这条龙的判定箱高 2.2 格、背上还有傀儡乘客，落点常常正好落在
      * 龙自己的子碰撞箱或另一个乘客身上；原版找不到位置就<b>静默放弃</b>（日志里没有任何异常），
      * 于是玩家按 Shift 毫无反应、一直挂在龙背上。
      *
-     * <p>这里补一个"落下 + 向外挪"的兜底：先试脚下，再试四周，最后直接放到头顶。
+     * <p>兜底策略：先试脚下，再试四周，最后放到头顶。
      * 只有在原版给的落点确实和实体相撞时才动手，正常情况不改变原版行为。
      */
     @Override
