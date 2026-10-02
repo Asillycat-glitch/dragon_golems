@@ -35,3 +35,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# 编译验证时产生的临时产物（javac 直接编译用）
+*.class
+.javacout/
+.javaclog.txt
+.javacargs.txt
+.buildlog.txt

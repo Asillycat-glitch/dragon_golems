@@ -5,6 +5,11 @@
 `modulargolems_version = 2.7.3` 实际加载的那一份）+ `dev/xkmc/modulargolems-2.6.34-sources`（源码，**仅供对照，
 数字以 2.7.3 的字节码为准**）+ Minecraft 1.20.1 Forge 源码。
 
+> **2026 更新：第五节的 C + C′ + 飞行驾驶已经落地。** 龙现在可以被"骑乘手杖"点名、
+> 载一个玩家，并用 **空格上升 / Shift 下降 / WASD 前后左右 / 鼠标决定机头朝向与俯仰**
+> 在大世界里自由飞。实际做了什么、在哪几个文件里，见文末的
+> [七、已经落地了什么](#七已经落地了什么)。
+
 ## 一、升级能不能装在龙身上：只有一条被挡
 
 本家判定"这条升级能不能装到这个傀儡"只走一条链：
@@ -175,7 +180,7 @@ return count <= Math.min(size * 2 - 1, 3) && total <= getBbWidth() + 1e-3;
 
 | 方案 | 改哪里 | 代价 |
 |---|---|---|
-| A. 让本家那条坐骑升级对龙生效 | mixin `RideUpgrade#fitsOn`（`@Inject(HEAD, cancellable)`，判断 `type == DragonGolemItems.TYPE.get()`） | 本仓库要开 mixin 基础设施（`dragom_golems.mixins.json` + build.gradle 的 `MixinConfigs`；`mixin.env.remapRefMap` 已经有了）。好处是玩家看到的就是本家那条升级物品 |
+| A. 让本家那条坐骑升级对龙生效 | mixin `RideUpgrade#fitsOn`（`@Inject(HEAD, cancellable)`，判断 `type == DragonGolemItems.TYPE.get()`） | 本仓库要开 mixin 基础设施（`dragon_golems.mixins.json` + build.gradle 的 `MixinConfigs`；`mixin.env.remapRefMap` 已经有了）。好处是玩家看到的就是本家那条升级物品 |
 | B. 自己做一条"龙用坐骑升级" | 继承本家 `RideUpgrade` 覆写 `fitsOn` + 用 `SimpleUpgradeItem` 做物品，注册进本家 `GolemTypes.MODIFIERS`（写法照军械库 `GolemUpgrades`，那边有 20 多个例子） | 不用 mixin，但要额外多一条升级物品；且**必须配合 C** 才有意义 |
 | C. 让龙真能载客 | `DragonGolemEntity` 搬入上面那 6 个方法（`canAddPassenger` / `positionRider` / `getPassengersRidingOffset` / `getControllingPassenger` / `onPassengerTurned` / `addPassenger`；公式里的 3 可以按龙的定位再定） | 纯我们自己的代码，不需要 mixin |
 | C′. 再加"上龙"入口 | 最简单：我们自己加一根骑乘道具（`user.startRiding(dragon)`）；想复用本家的骑乘杖/傀儡自动上坐骑，就得 mixin `RiderWandItem.ride`（私有静态，只对 `DogGolemEntity` 执行 startRiding；由 `m_6880_` = `interactLivingEntity` 调）、`HumanoidGolemEntity.checkRide`（认狗和马）、`MetalGolemEntity.checkRide`（只认狗，而且要求狗比它宽） | 不加就永远是"能载但没人上得去" |
@@ -184,8 +189,68 @@ return count <= Math.min(size * 2 - 1, 3) && total <= getBbWidth() + 1e-3;
 （狗是地面版：`getRiddenSpeed` 用移速 × `MGConfig.riddenSpeedFactor`，`executeRidersJump` 给竖直速度），
 龙的版本要按飞行写（或者干脆只当"运兵车"，玩家骑上去但龙自己飞）。
 
-## 六、待定
+## 七、已经落地了什么
 
-1. 龙到底要"玩家驾驶"还是"只运傀儡"？
-2. 数量上限要不要照抄 `min(size*2-1, 3)`，还是固定 3 / 按龙体型另定？
-3. 坐骑升级走 A（改本家行为）还是 B（自带一条）？
+### 飞行驾驶（`DragonRiderControl`）
+
+| 操作 | 效果 |
+|---|---|
+| **空格** | 上升（原版只把"跳跃"和"潜行"两个状态同步到服务端，所以高度键只能用这两个） |
+| **Shift** | 下降（贴到地面就停住，不会钻进地形；头顶有方块也不会硬顶） |
+| **W / A / S / D** | 沿<b>机头朝向</b>前后飞 + 左右平移（`player.zza` / `player.xxa`，联机同样有效） |
+| **鼠标** | 左右 = 机头转过去（6°/tick 起，按转弯半径放大，不会瞬间掉头）；上下 = 机体俯仰（±35°），模型和子碰撞箱一起低头/抬头 |
+
+要点：
+
+- **接的是原版骑乘管线，不是绕开它**。1.20.1 的流程是
+  `LivingEntity.travel` → `travelRidden`（只在 `getControllingPassenger()` 是玩家时走）
+  → `tickRidden` / `getRiddenInput` / `getRiddenSpeed` → `move`，全都在 `aiStep` 里的
+  `super.aiStep()` 那一步执行。所以龙只回答"往哪飞、多快"，碰撞/贴墙/贴地全给原版。
+  **反过来做（在 `aiStep` 里直接写 `deltaMovement`）是行不通的**：`travelRidden` 紧接着会用
+  `moveRelative(getRiddenInput × getRiddenSpeed)` 重写一遍，前面写的会被覆盖成 0。
+  （悬停/俯冲能直接写速度，是因为那条路上没有玩家操控、走的是另一条分支。）
+- **唯一写在 `super.aiStep()` 之后的是"升降"**：原版骑乘不给竖直输入，而 `noGravity` 下没人写
+  Y 速度就永远是 0，所以空格/Shift 那一笔在移动结算完之后补 Y，和悬停是同一个套路。
+- **服务端权威**。原版只在 `isControlledByLocalInstance()` 为真时才算骑乘输入，而这个方法在
+  服务端默认返回 false（它不是客户端、也没有 `isEffectiveAi`），所以龙覆写了它
+  （有玩家操控时返回 true）。不覆写的话单机看着正常、联机时所有操作都会被服务端退回。
+- **驾驶期间不打人**：`setTarget` 拒收、掷出来的技能作废、俯冲姿态清零 —— 玩家在操作时被自己龙的
+  技能抢走控制权会很难受。
+- `jumping` 是 `LivingEntity` 的 **protected** 字段，而且 Java 的 protected 规则不允许
+  "用别的子类实例去读"（`player.jumping` 写在龙或驾驶类里都编译不过），原版也没有 getter，
+  所以走了一次带缓存的反射读取（见 `DragonGolemEntity.jumpKeyDown`），失败就恒返回 false。
+
+### 上龙入口
+
+- 龙覆写了 `canWandModify`（龙没有配置卡那一套，直接放行），于是**骑乘手杖**的判定链
+  `ConfigCard.getFilter(user).test(golem) && golem.canWandModify(user)` 能过。
+- 但手杖里真正"骑上去"的那一步写死了 `DogGolemEntity`
+  （`if (golem instanceof DogGolemEntity e) user.startRiding(e, false);`），龙走到那里只会
+  `return true` —— 手杖判定"成功"、人却没上去。所以加了 `DragonRideHandler`
+  （Forge 的 `PlayerInteractEvent.EntityInteract`，它在实体交互之前派发），
+  **不改别人的代码、不开 mixin**。
+- 座位：`canAddPassenger` 只收玩家、且只收一个（第一版不做"傀儡骑龙"）；
+  `positionRider` 把玩家放在前颈根部（背上），换算和龙头/龙嘴同一套
+  （`rotateAndLift`），所以龙俯仰时座位跟着一起转。
+
+### 已知遗留
+
+1. **子碰撞箱整体偏高约 2.4 格**（这是"手杖难指"的根因，尚未改动）。
+   实测换算（1 倍体型）：躯干箱中心在 `y + 2.86`，而**可见的龙身中心渲染在 `y + 0.42`**
+   —— 也就是玩家看着龙身瞄准时，准星其实穿在判定箱<b>下方</b>的空气里。原因在
+   `DragonGolemEntity.rotateAndLift` 的输入是"模型像素 + 两次 lift 平移"，而整套子箱的
+   `*_UP_PX` 常量（躯干 16、头/颈 20、尾 10、翼 5）是按`NECK_BASE_Y_PX = 20` 这条**动画基准**
+   抄的，不是按模型实际渲染高度量出来的。
+   想修的话改这几个常量即可（躯干从 16 往 4 那一档调、头/颈从 20 往 12 那一档调），
+   **推荐先在游戏里按 F3 + B 打开判定箱显示，对着模型读数再定值**
+   （判定箱和模型必须同时看得见才能一次调准）。
+2. **手杖的射程**：原版选中生物的距离上限是玩家属性 `forge:entity_reach`（默认 **3.0 格**），
+   而龙待机时离地 3 格、子箱又偏高，站在地面上就够不着。第 1 条修完之后这一条会自然缓解；
+   真想再放宽得动玩家属性（会影响到所有生物，不建议）。
+3. 龙现在不会因为上人就自动降落：待机的龙在离地 3 格（会随体型 × √体型）。想让它"停在人面前"
+   得另做一条"被主人靠近就降高度"的逻辑。
+4. **本节这些只能靠实机验证**：开发环境的 `runClient` 跑不起来（l2library 自己的 mixin，
+   见 [DEV-RUN.md](DEV-RUN.md)），所以改动只做到了"对着 1.20.1 的 Forge 类逐个核对签名 + 编译通过"。
+   实机第一次要重点看四件事：上得去、动得了、升降跟手、**下龙以后龙能自己回到悬停高度**
+   （`applyHover` 会把 `noGravity` 重新管起来；如果下龙后它原地悬着不掉，就是这个衔接没接好）。
+

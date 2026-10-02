@@ -147,7 +147,7 @@
 
 ### 物品模型 json
 
-- `assets/dragom_golems/models/item/` 下的六个（五个部件 + `dragon_golem_holder`）都是
+- `assets/dragon_golems/models/item/` 下的六个（五个部件 + `dragon_golem_holder`）都是
   `"parent": "minecraft:builtin/entity"`，只给一个 `particle` 贴图占位；显示变换全部由
   `setupItemRender` 在代码里做。
 - `dragon_golem_template.json` 是**唯一的特例**：`item/generated` + 借用本家胚料贴图，并手写了全套
@@ -239,4 +239,4 @@ DragonGolemRenderer.scale(entity, pose, partialTick)
 | 装备界面的槽位与底图 | `dragon/DragonGolemMenuControl.fillMenu()` + `client/DragonGolemScreenControl.render(...)` |
 | 悬浮图标的大小 | `client/DragonGolemOverlayControl.getWidth/getHeight`（18 × 38） |
 | 龙弹图标的大小 | `client/DragonGolemFireballRenderer.SCALE`（2.0，原版值） |
-| 部件/成品的物品模型 | `assets/dragom_golems/models/item/*.json`（五个部件 + 成品这 6 个都是 `minecraft:builtin/entity`）；胚料模板单独一个 `dragon_golem_template.json`（`item/generated` + 全套 `display`） |
+| 部件/成品的物品模型 | `assets/dragon_golems/models/item/*.json`（五个部件 + 成品这 6 个都是 `minecraft:builtin/entity`）；胚料模板单独一个 `dragon_golem_template.json`（`item/generated` + 全套 `display`） |

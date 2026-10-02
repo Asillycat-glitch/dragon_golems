@@ -1,0 +1,8 @@
+{
+  "type": "minecraft:stonecutting",
+  "count": 1,
+  "ingredient": {
+    "item": "dragon_golems:dragon_golem_template"
+  },
+  "result": "dragon_golems:dragon_golem_wings"
+}

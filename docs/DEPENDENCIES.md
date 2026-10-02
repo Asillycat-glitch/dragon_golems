@@ -27,7 +27,7 @@
 | `client/DragonGolemRenderer.java` | 本家 `AbstractGolemRenderer` |
 | `client/DragonGolemScreenControl.java` | l2library `MenuLayoutConfig.ScreenRenderer`、本家 `GolemScreenControl` |
 | `client/DragonGolemOverlayControl.java` | 本家 `GolemOverlayControl` / `GolemStatusOverlay` |
-| `compat/jei/DragomGolemsJeiPlugin.java` | JEI 15 的 `IModPlugin` / `IRecipeRegistration`；**只在装了 JEI 时才会被加载**。另外读了本家 `GolemMaterialConfig` / `GolemPart`（为了把说明页登记到每个材料变体上） |
+| `compat/jei/DragonGolemsJeiPlugin.java` | JEI 15 的 `IModPlugin` / `IRecipeRegistration`；**只在装了 JEI 时才会被加载**。另外读了本家 `GolemMaterialConfig` / `GolemPart`（为了把说明页登记到每个材料变体上） |
 
 JEI 在 `build.gradle` 里是 `compileOnly`（jar 在 `libs/`）：编译要能看见它，运行时没有也不会出问题。
 
@@ -42,5 +42,5 @@ JEI 在 `build.gradle` 里是 `compileOnly`（jar 在 `libs/`）：编译要能�
 `data/modulargolems/tags/**` 的命名空间必须是 `modulargolems`：这些文件是**往本家的标签里追加**
 条目（数据包标签会合并），改成自己的命名空间就等于另建一份没人读的标签。
 
-`data/dragom_golems/modulargolems_config/` 下的材料与部件配置则是自己的命名空间，
+`data/dragon_golems/modulargolems_config/` 下的材料与部件配置则是自己的命名空间，
 里面的 id 必须和 `DragonGolemItems` 的注册名、以及贴图文件名对得上。

@@ -45,7 +45,7 @@ property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/ou
 
 ```
 ./gradlew build
-copy build\libs\dragom_golems-0.1.jar <整合包>\mods\
+copy build\libs\dragon_golems-0.1.jar <整合包>\mods\
 ```
 
 然后**先把 `golems_arsenal-0.3.jar` 移出 `mods`**（两边都注册了一条龙，同时装会看到两份），

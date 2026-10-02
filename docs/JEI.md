@@ -19,7 +19,7 @@
   （按**类**注册，所以任何 mod 的 `golem_assemble` 配方都吃到这套展开逻辑）
 - `GolemPart.LIST` 是全局静态列表，`GolemPart` 构造时就把自己加进去；我们的 5 个部件走的是同一个构造函数
 - `GolemMaterialConfig.getAllMaterials()` 合并所有数据包里 `modulargolems_config/materials/*.json` 的材料，
-  我们的 `data/dragom_golems/modulargolems_config/materials/dragon.json` 在里面
+  我们的 `data/dragon_golems/modulargolems_config/materials/dragon.json` 在里面
 - 装配配方为什么算"工作台"：l2library 的 `AbstractShapedRecipe extends ShapedRecipe`，
   `getType()` 就是 `minecraft:crafting`
 
@@ -28,7 +28,7 @@
 
 ## 二、我们加了什么
 
-`compat/jei/DragomGolemsJeiPlugin`（JEI 可选，缺了也不影响游戏）只补本家没有的东西——
+`compat/jei/DragonGolemsJeiPlugin`（JEI 可选，缺了也不影响游戏）只补本家没有的东西——
 给胚料、五个部件、成品加 JEI 信息页（`IRecipeRegistration#addItemStackInfo`）：
 
 - 胚料：怎么在切石机里切成五个部件。
@@ -48,7 +48,7 @@
    `CraftEventListeners.onAnvilCraft` 里同时参与玩法判断（进这个标签的材料在铁砧上直接不能用），
    **不要**拿它当 JEI 开关。
 2. **同一个部件会出现"铁锭版"和"铁块版"两页、外观一模一样**：因为本家在 `vanilla.json` 里定义的
-   `modulargolems:iron` 用的是铁锭、数值与我们 `dragom_golems:iron`（铁块）完全相同，而本家材料
+   `modulargolems:iron` 用的是铁锭、数值与我们 `dragon_golems:iron`（铁块）完全相同，而本家材料
    没有 partLimitation，所以两种都能铸进龙部件。这是设计取舍（龙专属材料只锁部件、不锁数值），不是 bug。
 
 ## 四、以后想扩展

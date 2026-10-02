@@ -1,0 +1,24 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "B": {
+      "item": "modulargolems:metal_golem_template"
+    },
+    "G": {
+      "item": "minecraft:diamond"
+    },
+    "I": {
+      "item": "minecraft:iron_block"
+    }
+  },
+  "pattern": [
+    "BGB",
+    "BIB",
+    "BBB"
+  ],
+  "result": {
+    "item": "dragon_golems:dragon_golem_template"
+  },
+  "show_notification": true
+}

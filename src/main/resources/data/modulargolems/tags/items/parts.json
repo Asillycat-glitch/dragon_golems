@@ -1,9 +1,9 @@
 {
   "values": [
-    "dragom_golems:dragon_golem_wings",
-    "dragom_golems:dragon_golem_head",
-    "dragom_golems:dragon_golem_body",
-    "dragom_golems:dragon_golem_tail",
-    "dragom_golems:dragon_golem_limb"
+    "dragon_golems:dragon_golem_wings",
+    "dragon_golems:dragon_golem_head",
+    "dragon_golems:dragon_golem_body",
+    "dragon_golems:dragon_golem_tail",
+    "dragon_golems:dragon_golem_limb"
   ]
 }

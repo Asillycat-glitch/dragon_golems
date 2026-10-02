@@ -4,8 +4,9 @@
 五个装材料的部位配置，外加自己的创造栏、装备界面、JEI 说明页与图标预览。
 从 `golems_arsenal`（傀儡军械库）里拆出来单独维护 —— 武器 / 科技 / 铁魔法那些留在那边，这边一概没有。
 
-> 显示名是 **Dragon Golems**；注册 id 仍然保留早期的拼写 `dragom_golems`
-> （改 id 会让存档里的实体、配方、标签全部作废，所以只改展示名，不动 id）。
+> 注册 id 是 `dragon_golems`，显示名是 **Dragon Golems**。
+> 早期这个 id 误拼成了 `dragom_golems`（漏了 `n`），现已修正；
+> 注意 id 变过，旧存档与旧配置里引用 `dragom_golems:...` 的实体、配方与标签都会失效。
 
 ## 这条龙会干什么
 
@@ -56,7 +57,7 @@
 ## 安装
 
 1. 先装 **Modular Golems ≥ 2.7.3** 和 **l2library ≥ 2.5.3**（本家自己的前置）。
-2. 把 `dragom_golems-<版本>.jar` 丢进 `mods/`。
+2. 把 `dragon_golems-<版本>.jar` 丢进 `mods/`。
 3. **不要和 `golems_arsenal` 一起装**：两边都注册了一条龙，创造栏会看到两份、
    两个傀儡种类在装备界面里也各占一项。
 
@@ -66,21 +67,21 @@
 ./gradlew build
 ```
 
-产物在 `build/libs/dragom_golems-<版本>.jar`。
+产物在 `build/libs/dragon_golems-<版本>.jar`。
 
 ## 代码结构
 
 ```
-src/main/java/a_silly_cat/dragom_golems/
-  Dragom_golems.java              主类（@Mod）：MODID / id() / 初始化注册
+src/main/java/a_silly_cat/dragon_golems/
+  Dragon_golems.java              主类（@Mod）：MODID / id() / 初始化注册
   init/ModCreativeTabs.java       自己的创造栏；另外往本家的傀儡页补物品
   compat/jei/                     JEI 说明页（JEI 不在也能正常玩）
   dragon/                         服务端与两端共用：实体 / 种类 / 部件枚举 / 装备栏 / AI / 全部注册
   client/                         仅客户端：模型 / 渲染器 / 装备界面底图 / 悬浮图标 / 预览摆位
 
 src/main/resources/
-  assets/dragom_golems/           物品模型、lang、龙的贴图
-  data/dragom_golems/             材料与部件配置、7 条配方
+  assets/dragon_golems/           物品模型、lang、龙的贴图
+  data/dragon_golems/             材料与部件配置、7 条配方
   data/modulargolems/tags/        往本家的标签里追加（命名空间保持 modulargolems 不动）
 
 docs/
@@ -109,14 +110,14 @@ docs/
 
 从 `golems_arsenal` 拆出来时只做了命名空间替换，游戏逻辑一行没动：
 
-| 原（golems_arsenal） | 现（dragom_golems） |
+| 原（golems_arsenal） | 现（dragon_golems） |
 |---|---|
-| 包名 `a_silly_cat.golems_arsenal` | `a_silly_cat.dragom_golems` |
-| `Golems_arsenal.MODID` / `.id(...)` | `Dragom_golems.MODID` / `.id(...)` |
-| `assets/golems_arsenal/...`、`data/golems_arsenal/...` | `assets/dragom_golems/...`、`data/dragom_golems/...` |
-| json 里的 `golems_arsenal:xxx` | `dragom_golems:xxx` |
+| 包名 `a_silly_cat.golems_arsenal` | `a_silly_cat.dragon_golems` |
+| `Golems_arsenal.MODID` / `.id(...)` | `Dragon_golems.MODID` / `.id(...)` |
+| `assets/golems_arsenal/...`、`data/golems_arsenal/...` | `assets/dragon_golems/...`、`data/dragon_golems/...` |
+| json 里的 `golems_arsenal:xxx` | `dragon_golems:xxx` |
 | `data/modulargolems/tags/...` 的命名空间 | **不变**，只换里面的物品/实体 id |
-| 创造栏挂在 `golems_arsenal` 的标签页里 | 新建独立标签页 `itemGroup.dragom_golems` |
+| 创造栏挂在 `golems_arsenal` 的标签页里 | 新建独立标签页 `itemGroup.dragon_golems` |
 
 物品的注册名（`dragon_golem_head` 等）、材料 id（`iron` / `gold` / …）和贴图文件名都保持原样，
 所以材料/配方/贴图那套对应关系不需要重新推一遍。移植前的原件只在本地留作对照，不进版本库。
