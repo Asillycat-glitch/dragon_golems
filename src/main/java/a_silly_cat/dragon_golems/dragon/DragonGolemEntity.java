@@ -1244,10 +1244,22 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /** 每次回血回复的血量。和原版末影龙一致：1 点 = 半颗心。 */
     private static final float CRYSTAL_HEAL_AMOUNT = 1.0F;
 
-    /** 治疗光效的节流：每 N 次回血才放一次光束与音效（回血是 0.5 秒一次，每 4 次 = 2 秒）。 */
-    private static final int CRYSTAL_FX_INTERVAL = 4;
-    /** 治疗光效的计数器。 */
+    /**
+     * 治疗光效的节流：每 N 次回血才起一次脉冲（回血是 0.5 秒一次，每 2 次 = 1 秒一发）。
+     * 比"每 4 次"更频繁是有意的 —— 现在每次只放一小段粒子，多放几次反而更连续。
+     */
+    private static final int CRYSTAL_FX_INTERVAL = 2;
+    /** 一发脉冲在"水晶 → 龙"这条线上走多少 tick 走完。 */
+    private static final int CRYSTAL_PULSE_TICKS = 6;
+
+    /** 治疗光效的计数器（决定什么时候起下一发）。 */
     private int crystalFxTicks;
+    /** 当前这发脉冲已经走了几个 tick；-1 = 没有在走的脉冲。 */
+    private int crystalPulseTicks = -1;
+    /** 当前这发脉冲的起点（水晶）。 */
+    private Vec3 crystalPulseFrom;
+    /** 当前这发脉冲的终点（龙受击点）。 */
+    private Vec3 crystalPulseTo;
 
     /**
      * 水晶治疗的光效。
@@ -1257,27 +1269,51 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * （水晶到龙的那道光束纯粹是渲染层读 {@code DATA_BEAM_TARGET} 画出来的）。
      * 所以"看不见在回血"是必然的，得自己补。
      *
-     * <p>表现设计：从<b>正在治疗的那块水晶</b>到龙之间拉一串末地烛粒子，
-     * 再在龙身上撒一圈"幸福村民"（绿色十字）——前者交代"能量从哪来"，后者交代"谁在被治"。
-     * 每 {@link #CRYSTAL_FX_INTERVAL} 次回血放一次（2 秒），避免刷屏。
+     * <p><b>为什么不是"整条线铺满粒子"</b>（第一版就是这么做的，已废弃）：<br>
+     * 一是<b>看不见流动</b>——粒子均匀撒在 32 格上，看着像一团静止的灰雾，不像能量在输送；<br>
+     * 二是<b>开销大</b>——每 2 秒沿整条线撒一遍，在末地那种开阔地形里粒子量很可观。
+     * 现在改成<b>一颗沿直线飞过去的脉冲光点</b>：沿途只放少量粒子，
+     * 到位时在龙身上炸开一圈。既看得出"能量从水晶流向龙"，粒子量也降了一个数量级。
      */
     private void crystalHealEffects(EndCrystal crystal) {
+        if (!(this.level() instanceof ServerLevel server)) {
+            return;
+        }
+        // ---- 推进已经在飞的那发脉冲 ----
+        if (this.crystalPulseTicks >= 0) {
+            this.crystalPulseTicks++;
+            if (this.crystalPulseTicks >= CRYSTAL_PULSE_TICKS) {
+                this.crystalPulseArrived(server);
+            } else {
+                double u = this.crystalPulseTicks / (double) CRYSTAL_PULSE_TICKS;
+                Vec3 p = this.crystalPulseFrom.lerp(this.crystalPulseTo, u);
+                // 光点本体 + 一点点拖尾：拖着才看得出方向
+                server.sendParticles(ParticleTypes.END_ROD, p.x, p.y, p.z, 2, 0.05D, 0.05D, 0.05D, 0.0D);
+            }
+        }
+
+        // ---- 起一发新的（受节流控制） ----
         if (++this.crystalFxTicks < CRYSTAL_FX_INTERVAL) {
             return;
         }
         this.crystalFxTicks = 0;
-        if (!(this.level() instanceof ServerLevel server)) {
-            return;
-        }
-        Vec3 from = crystal.position().add(0.0D, 0.6D, 0.0D);
-        Vec3 to = this.position().add(0.0D, this.getBbHeight() * 0.5D, 0.0D);
-        // 线宽 0.4：不需要原版死亡光束那么粗，太密反而看不清龙
-        server.sendParticles(ParticleTypes.END_ROD, from.x, from.y, from.z,
-                0, to.x - from.x, to.y - from.y, to.z - from.z, 0.4D);
+        this.crystalPulseFrom = crystal.position().add(0.0D, 0.6D, 0.0D);
+        this.crystalPulseTo = this.position().add(0.0D, this.getBbHeight() * 0.5D, 0.0D);
+        this.crystalPulseTicks = 0;
+        // 起点先给一小簇，交代"这一发是从这块水晶出来的"
+        server.sendParticles(ParticleTypes.END_ROD,
+                this.crystalPulseFrom.x, this.crystalPulseFrom.y, this.crystalPulseFrom.z,
+                4, 0.15D, 0.15D, 0.15D, 0.02D);
+    }
+
+    /** 脉冲打到龙身上：撒一圈绿色十字 + 一声清亮的钟鸣。 */
+    private void crystalPulseArrived(ServerLevel server) {
+        this.crystalPulseTicks = -1;
+        Vec3 to = this.crystalPulseTo;
         server.sendParticles(ParticleTypes.HAPPY_VILLAGER, to.x, to.y, to.z,
-                6, this.getBbWidth() * 0.3D, this.getBbHeight() * 0.3D, this.getBbWidth() * 0.3D, 0.0D);
+                8, this.getBbWidth() * 0.35D, this.getBbHeight() * 0.3D, this.getBbWidth() * 0.35D, 0.0D);
         server.playSound(null, this.blockPosition(), SoundEvents.AMETHYST_BLOCK_CHIME,
-                SoundSource.NEUTRAL, 0.9F, 1.4F);
+                SoundSource.NEUTRAL, 0.7F, 1.5F);
     }
 
     /** 飞行辅助（goal 拿它做避障修正，按键拿它开关自由飞行）。 */
