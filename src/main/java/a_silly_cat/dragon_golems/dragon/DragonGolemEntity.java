@@ -1690,6 +1690,20 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 // 给它加避障会把航线扯歪（撞墙时航线本来就该自己结束，见 DragonDiveGoal）。
                 this.setDeltaMovement(vel);
                 this.fallDistance = 0.0F;
+                if (DragonDebug.RIDE && this.isRiderOrderedDive()) {
+                    // 骑手冲锋专用诊断：每 10 tick 报一次"我们写进去的速度 / 写之前的位移"。
+                    // 症状是"骑着时龙不动、下龙才冲出去"，必须区分两种可能：
+                    //   a) 我们的速度压根没生效（写完被别处清掉）
+                    //   b) 速度生效了但位置没变（碰撞/别的 goal 抢走了移动）
+                    // 把"写进去的 vel"和"这一 tick 实际位移"并排打出来就能分辨。
+                    if (this.tickCount % 10 == 0) {
+                        Dragon_golems.LOGGER.info(
+                                "[dive] 骑手冲锋速度 vel={} prevPos={} nowPos={} noPhysics={} hColl={}",
+                                vel, this.riderDivePrevPos, this.position(),
+                                this.noPhysics, this.horizontalCollision);
+                    }
+                    this.riderDivePrevPos = this.position();
+                }
                 if (this.keepAimThisTick) {
                     // 开火中：朝向由 goal 的 aimAt 管（绕圈喷息时运动方向是切线，不能拿来当朝向）
                     this.keepAimThisTick = false;
@@ -2708,6 +2722,9 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         // 兜底：往下扫不到东西（悬在深渊/熔岩上方/高空），用世界地表作参照
         return level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z) - FLOOR_FALLBACK;
     }
+
+    /** 骑手冲锋专用的"上一 tick 位置"，用来算实际位移（见 aiStep 里的诊断）。 */
+    private Vec3 riderDivePrevPos = Vec3.ZERO;
 
     /**
      * 头顶第一层挡路方块的下沿 Y（再往下留一格余量）；正上方 {@link #CEILING_SCAN} 格内
