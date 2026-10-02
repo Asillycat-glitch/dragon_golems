@@ -167,37 +167,53 @@ public class DragonDiveGoal extends Goal {
 
     @Override
     public boolean canUse() {
+        // 诊断：只要有一轮 DIVE 还挂着没执行，就每 20 tick 报一次"走到哪一步被挡了"。
+        // 之前只打了"最终结果"，结果"受理成功但 canUse 一直 false"这种情况完全查不出来
+        // —— 必须逐个退出点都留痕。
+        boolean trace = DragonDebug.RIDE && this.dragon.pendingSkill() == DragonGolemEntity.DragonSkill.DIVE
+                && this.dragon.tickCount % 20 == 0;
         // 只有"这一轮被骰子抽中"时才上（冷却由实体统一管，见 DragonGolemEntity.tickSkillRoll）。
         // 骑手指令（按 R）也是走这条：DragonGolemEntity.onRiderCommand → orderDive() 会把
         // pendingSkill 手动置成 DIVE，所以这里同样能过。
         if (!this.dragon.wantsSkill(DragonGolemEntity.DragonSkill.DIVE)) {
+            if (trace) {
+                Dragon_golems.LOGGER.info("[dive] canUse=false: pendingSkill={} (不是 DIVE)",
+                        this.dragon.pendingSkill());
+            }
             return false;
         }
         if (!this.dragon.isMovable() || this.dragon.isInSittingPose()) {
+            if (trace) {
+                Dragon_golems.LOGGER.info("[dive] canUse=false: movable={} sitting={}",
+                        this.dragon.isMovable(), this.dragon.isInSittingPose());
+            }
             return false;
         }
         // ★ 有人骑着时：只放行"骑手指令的冲锋"，仍然挡掉 AI 自己抽中的那一次。
-        //   原来这里无条件 return false，把按 R 的冲锋也一起挡死了 ——
-        //   表现就是"服务端受理了指令、冷却也扣了，但龙一动不动"。
+        //   原来这里无条件 return false，把按 R 的冲锋也一起挡死了。
         if (this.dragon.getControllingPassenger() != null && !this.dragon.isRiderOrderedDive()) {
+            if (trace) {
+                Dragon_golems.LOGGER.info("[dive] canUse=false: 有乘客但不是骑手指令 (riderOrdered={})",
+                        this.dragon.isRiderOrderedDive());
+            }
             return false;
         }
         LivingEntity target = this.dragon.getTarget();
         if (target == null || !target.isAlive()) {
+            if (trace) {
+                Dragon_golems.LOGGER.info("[dive] canUse=false: 目标为空或已死 target={} forced={}",
+                        target, this.dragon.forcedTarget);
+            }
             return false;
         }
         double dist = this.horizontalDistance(this.dragon.getX(), this.dragon.getZ(), target.getX(), target.getZ());
         boolean ok = dist >= this.dragon.diveMinH() && dist <= this.dragon.diveMaxH();
-        if (!ok && DragonDebug.RIDE && this.dragon.isRiderOrderedDive()) {
-            // 骑手指令但距离不合适：明确告诉他为什么没起飞（这个距离闸门是原设计，不是 bug）
-            Dragon_golems.LOGGER.info("[ride] dive blocked by range: dist={} allowed={}..{}",
-                    String.format("%.1f", dist),
+        if (trace) {
+            Dragon_golems.LOGGER.info("[dive] canUse={} dist={} allowed={}..{} riderOrdered={}",
+                    ok, String.format("%.1f", dist),
                     String.format("%.1f", this.dragon.diveMinH()),
-                    String.format("%.1f", this.dragon.diveMaxH()));
-        }
-        if (ok && DragonDebug.RIDE && this.dragon.isRiderOrderedDive()) {
-            Dragon_golems.LOGGER.info("[ride] dive goal ACCEPTED the rider order (dist={})",
-                    String.format("%.1f", dist));
+                    String.format("%.1f", this.dragon.diveMaxH()),
+                    this.dragon.isRiderOrderedDive());
         }
         return ok;
     }
