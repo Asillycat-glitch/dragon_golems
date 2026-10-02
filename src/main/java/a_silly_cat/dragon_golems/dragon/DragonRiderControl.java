@@ -276,7 +276,8 @@ public final class DragonRiderControl {
      */
     private static double clampVertical(DragonGolemEntity dragon, double vy) {
         if (vy < 0.0D) {
-            double minY = groundHeight(dragon) + dragon.getBbHeight();
+            // 拿<b>局部地面</b>（脚下那一层，不是世界地表）当最低离地量。
+            double minY = dragon.localFloorY() + dragon.getBbHeight();
             // 只在"本来就高于最低点、这一步会越过它"时夹住 —— 不要反过来把龙抬上去
             if (dragon.getY() > minY && dragon.getY() + vy <= minY) {
                 vy = 0.0D;
@@ -292,9 +293,16 @@ public final class DragonRiderControl {
         return vy;
     }
 
+    /**
+     * 驾驶时用的"局部地面"—— 直接转发龙的实现。
+     *
+     * <p><b>为什么不再自己算世界地表</b>：原来这里用
+     * {@code getHeight(MOTION_BLOCKING_NO_LEAVES)}，在矿洞里读到的是世界地表（比龙高几十格），
+     * 于是 {@code minY = 地表 + 判定箱高} 算成 72.2，玩家按下降反而被"抬"到 49 格。
+     * 高度参照系必须和龙自己所在的那一层有关，见 {@code DragonGolemEntity.localFloorY()}。
+     */
     private static double groundHeight(DragonGolemEntity dragon) {
-        return dragon.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
-                Mth.floor(dragon.getX()), Mth.floor(dragon.getZ()));
+        return dragon.localFloorY();
     }
 
     /** 下龙之后把驾驶帧留下的俯仰收回水平（否则龙会一直歪着）。 */

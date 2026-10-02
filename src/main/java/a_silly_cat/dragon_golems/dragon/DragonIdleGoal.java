@@ -324,9 +324,19 @@ public class DragonIdleGoal extends Goal {
         return follow;
     }
 
+    /**
+     * 高度参照系 —— 转发龙的"局部地面"。
+     *
+     * <p><b>参数 {@code x}/{@code z} 现在被忽略了</b>（保留签名是为了不改调用点）。
+     * 原来这里是 {@code getHeight(MOTION_BLOCKING_NO_LEAVES, x, z)}，也就是<b>世界地表</b>；
+     * 龙在矿洞里时它读到 70 而龙在 y=22 → "悬停目标 80"→ 无限向上爬。
+     * 参照系必须和龙自己所在的那一层有关（见 {@code DragonGolemEntity.localFloorY()}）。
+     *
+     * <p>注意本类里真正参与决策的高度已经全部走 {@code dragon.hoverTargetY()} 了，
+     * 这个方法现在只被采样/诊断路径用到 —— 保留它并把语义改正，避免以后有人再踩同一个坑。
+     */
     private double groundHeight(double x, double z) {
-        return this.dragon.level()
-                .getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z));
+        return this.dragon.localFloorY();
     }
 
     private double horizontalDistance(double x1, double z1, double x2, double z2) {

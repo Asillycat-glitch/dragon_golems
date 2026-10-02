@@ -2544,12 +2544,11 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         //   而那个点是浮点取整的 —— 只要那**一个**位置恰好是空气就允许上升，
         //   可实际挡路的是判定箱（高 2.2 格）跨到的那几个方块。
         //   真机表现：龙卡在 y=-0.20、头上 2.0 处有方块，但那个单点判成空气，
-        //   于是每个 tick 都给它 +0.19 的上升速度 → vColl=true、y 却纹丝不动，
-        //   看起来就是"一直向上飞但升不上去"。
-        //   现在改成问"这个位置的天花板有没有把悬停目标压低" —— 一句话同时覆盖
-        //   "多个方块挡路"和"实际可用空间"，不再依赖单个方块的取整巧合。
-        double unclamped = this.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
-                this.blockPosition().getX(), this.blockPosition().getZ()) + this.hoverHeight();
+        //   于是每个 tick 都给它 +0.19 的上升速度 → vColl=true、y 却纹丝不动。
+        //   现在改成问"天花板有没有把悬停目标压低" —— 一句话同时覆盖"多个方块挡路"
+        //   和"实际可用空间"，不再依赖单个方块的取整巧合。
+        //   注意比较基准也要用局部地面（不再用世界地表），否则洞里会误判。
+        double unclamped = this.localFloorY() + this.hoverHeight();
         if (this.hoverTargetY() < unclamped - 0.1D) {
             return;
         }
@@ -2619,27 +2618,26 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
-     * 当前水平位置的地表高度 + 期望离地高度（不算树叶，免得把树冠当地面）。
-     * 俯冲结束时就回到这个高度。
+     * 悬停高度参照系（<b>见 {@link #localFloorY()} 的说明</b>）。
      *
-     * <p><b>★ 为什么要被头顶的天花板夹一下</b>（真机踩到的严重问题）：
-     * {@code getHeight(MOTION_BLOCKING_NO_LEAVES)} 返回的是<b>世界地表</b>高度，
-     * 而龙飞在洞穴/矿道里时那个值可能比它高几十格。实测日志：
+     * <p>期望高度 = {@code max(脚下的局部地面, 世界地表 − FLOOR_FALLBACK) + hoverHeight()}，
+     * 再被头顶天花板夹住。
+     *
+     * <p><b>★ 为什么不再直接用世界地表高度</b>（这是整个"一直往上飞"系列的根因）：
+     * {@code getHeight(MOTION_BLOCKING_NO_LEAVES)} 返回的是<b>整个世界柱最高的固体方块</b>，
+     * 对"飞在洞穴里的实体"毫无意义。实测：龙在矿洞里 y=22，而它读到 70 —— 于是
      * <pre>
-     * surface=70   y=-6.20   hoverBase=10.00   hoverTarget=80.00   dy=0.200（恒定）
+     * hoverTarget = 70 + 10 = 80（够不到） → 每个 tick 顶格上爬 → 撞洞顶 → 掉 → 再爬
      * </pre>
-     * 也就是"龙在地下 6 格、却想飞到 80"→ 它<b>每个 tick 都顶格往上爬</b>，
-     * 爬到洞顶撞一下、掉下来、再爬，无限循环 —— 表现就是"一直向上飞太远、
-     * 最后被回位传送拽回来"。这和撞墙是两回事。
+     * 我先后用"天花板夹取""applyHover 别硬顶"去救，都是在<b>给一个错误的基准打补丁</b>。
+     * 正确的参照系是"<b>它自己脚下的地面 + 头顶的天花板</b>"，与世界地表无关。
      *
-     * <p>修法：从身体顶端往上找第一层挡路的方块，把目标压到它<b>下面</b>一格。
-     * 这样洞里的龙会老老实实贴着洞顶下方悬停，而开阔地（上方几十格都是空气）
-     * 完全不受影响 —— 扫描有 {@link #CEILING_SCAN} 上限，找不到就按原值返回。
+     * <p>对骑乘那条路也是根本解：{@code DragonRiderControl.clampVertical} 原来算
+     * {@code minY = 世界地表 + 判定箱高} 去"防止钻地"，在洞里就变成 {@code minY = 72.2}，
+     * 玩家按下降却算出"要往上抬 49 格"。基准换成局部地面之后那个夹取自动就对了。
      */
     public double hoverTargetY() {
-        BlockPos pos = this.blockPosition();
-        double target = this.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
-                pos.getX(), pos.getZ()) + this.hoverHeight();
+        double target = this.localFloorY() + this.hoverHeight();
         double ceiling = this.hoverCeilingY();
         return ceiling == NO_CEILING ? target : Math.min(target, ceiling);
     }
@@ -2648,6 +2646,40 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     private static final double NO_CEILING = Double.MAX_VALUE;
     /** 往上找天花板时最多扫多少格（超过就当作开阔地，避免在高空做长扫描）。 */
     private static final int CEILING_SCAN = 32;
+    /** 往下找地面时最多扫多少格。比天花板深一些：洞里悬停高度常有十几格。 */
+    private static final int FLOOR_SCAN = 48;
+    /**
+     * "局部地面"的兜底：往下扫不到任何方块时，允许向下取到世界地表再往下这么多格。
+     *
+     * <p>为什么要兜底：从高空往下看、或者悬在熔岩湖/虚空上方时，脚下 FLOOR_SCAN 格内
+     * 可能真的是空的。这时用世界地表作为参照是合理的（而不是认为"没有地面"）。
+     * 取 16 是"悬停高度最大档（10 × 体型倍率）"的余量。
+     */
+    private static final double FLOOR_FALLBACK = 16.0D;
+
+    /**
+     * "龙自己脚下的地面"高度（局部，非世界地表）；扫不到就退回
+     * {@code 世界地表 − FLOOR_FALLBACK}。
+     *
+     * <p>只找<b>有碰撞形状</b>的方块（草/雪层/藤蔓不算地面），和 {@code hasRoomFor}
+     * 是同一套判据。这样"站在草丛上"和"站在石头上"的参照一致。
+     */
+    public double localFloorY() {
+        Level level = this.level();
+        int x = this.blockPosition().getX();
+        int z = this.blockPosition().getZ();
+        int startY = Mth.floor(this.getY());
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        for (int y = startY; y > startY - FLOOR_SCAN && y >= level.getMinBuildHeight(); y--) {
+            cursor.set(x, y, z);
+            if (!level.getBlockState(cursor).getCollisionShape(level, cursor).isEmpty()) {
+                // 方块占据 [y, y+1)，所以站在它上面的高度就是 y+1
+                return y + 1.0D;
+            }
+        }
+        // 兜底：往下扫不到东西（悬在深渊/熔岩上方/高空），用世界地表作参照
+        return level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z) - FLOOR_FALLBACK;
+    }
 
     /**
      * 头顶第一层挡路方块的下沿 Y（再往下留一格余量）；正上方 {@link #CEILING_SCAN} 格内
