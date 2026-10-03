@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "a_silly_cat.dragon_golems.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "GolemMaterialConfigMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

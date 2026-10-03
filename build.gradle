@@ -112,7 +112,9 @@ tasks.named('jar', Jar).configure {
                 "Implementation-Title"    : project.name,
                 "Implementation-Version"  : project.jar.archiveVersion,
                 "Implementation-Vendor"   : mod_authors,
-                "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+                "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
+                // Mixin 靠自己这份清单被加载；mods.toml 里的 mixinConfigs 是对应的另一处声明
+                "MixinConfigs"            : "${mod_id}.mixins.json"
         ])
     }
     finalizedBy 'reobfJar'
