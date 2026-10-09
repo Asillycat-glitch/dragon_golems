@@ -664,10 +664,15 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     private static final double RIDER_SURFACE_UP_PX = 4.0D;
     private static final double RIDER_FORWARD_PX = 6.0D;
     /**
-     * 乘客脚底陷进背脊表面多深（<b>世界格</b>，<b>不随体型放大</b>）。
+     * 乘客脚底陷进背脊表面多深（<b>世界格</b>）：<b>按体型等比放大，但最多放大到 1 倍体型那一档</b>。
      *
      * <p>0.85 是"1 倍体型下原来那个 12 像素"折出来的等价值，所以 1 倍手感一个像素都没变；
      * 想让人坐得更高就调小（0 = 正好站在背面上），想更贴背就调大。
+     *
+     * <p>为什么要有"最多到 1 倍"这个上限：乘客本身不会跟着龙一起变大。
+     * 等比放大的话 4 倍泰坦就沉 3.4 格（人只有 1.8 格高 → 整个人被埋进模型里）；
+     * 反过来把它做成固定值时，缩小 4 档的龙（背脊表面才 0.6 格高）又会被"沉 0.85 格"
+     * 塞到肚子底下。所以取两头的好处：缩小侧等比（和模型一致）、放大侧封顶（和乘客一致）。
      */
     private static final double RIDER_SINK = 0.85D;
 
@@ -839,12 +844,17 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         double yaw = Math.toRadians(this.yBodyRot);
         double forwardX = -Math.sin(yaw);
         double forwardZ = Math.cos(yaw);
-        // ★ 只有"表面"跟着体型走，下沉量 RIDER_SINK 是世界格常数 —— 于是不管龙多大，
-        //   乘客都只陷进背面同样的深度（见 RIDER_SINK 的说明：这是"泰坦把人埋进模型里"的根因）。
-        //   横向与前后仍然按模型像素 × 体型，所以大体型时座位自然铺开在更宽的背上。
+        // ★ 竖向 = 模型背脊表面 − 下沉量，而下沉量按体型等比放大、**最多放大到 1 倍体型那一档**：
+        //   - 缩小体型（scale < 1）：下沉量与旧公式完全一致（表面与座位一起等比缩小），
+        //     小体型的手感零变化 —— 不然"固定 0.85 格"会把缩小 4 档的龙（表面才 0.6 格高）
+        //     里的乘客塞到肚子底下；
+        //   - 放大体型（scale > 1）：下沉量钉在 0.85 格不再涨，于是泰坦也不会把人埋进身体里
+        //     （见 RIDER_SINK 的说明）。
+        //   横向与前后仍按模型像素 × 体型，所以大体型时座位自然铺开在更宽的背上。
+        double sink = RIDER_SINK * Math.min(1.0D, this.bodyScale());
         setPos.accept(passenger,
                 this.getX() + forwardX * upForward[1],
-                this.getY() + upForward[0] - RIDER_SINK + passenger.getMyRidingOffset(),
+                this.getY() + upForward[0] - sink + passenger.getMyRidingOffset(),
                 this.getZ() + forwardZ * upForward[1]);
     }
 
