@@ -636,9 +636,22 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      *
      * <p><b>怎么调：</b>
      * <ul>
-     *   <li>{@link #RIDER_UP_PX} 调大 = 人坐得更高（贴着脖子/翅膀根）、调小 = 更贴近龙背；</li>
-     *   <li>{@link #RIDER_FORWARD_PX} 调大 = 往<b>前</b>挪（靠近颈根）、调小 = 往后挪到翅膀之间。</li>
+     *   <li>{@link #RIDER_SINK} = "人陷进背里多深"（世界格，不随体型放大）：调小 = 坐得更高；</li>
+     *   <li>{@link #RIDER_FORWARD_PX} 调大 = 往<b>前</b>挪（靠近颈根）、调小 = 往后挪到翅膀之间
+     *       （前后仍按模型像素走，所以大体型时座位间距也跟着变大，符合"背上很宽"的直觉）。</li>
      * </ul>
+     *
+     * <h2>为什么不是"固定模型像素 × 体型"</h2>
+     * 原来座位是一个固定模型像素值（12），世界高度 = {@code (2.861 − 12×PX) × 体型}，
+     * 也就是<b>下沉量跟着体型一起放大</b>：1 倍时脚底在背脊表面下 0.85 格（腿藏进背里，
+     * 看着就是"坐在背上"），4 倍的泰坦龙沉 3.4 格 —— 而乘客本人只有 1.8 格高，
+     * 于是连头一起被埋进龙的身体模型里，从外面只剩一个影子。
+     * 根因是"模型像素"对龙是等比的、对人不是。
+     *
+     * <p>现在改成锚在模型背脊<b>表面</b>上（{@link #RIDER_SURFACE_UP_PX} = 躯干方块顶面，
+     * 本类 {@code TORSO_UP_PX} 的注释里写着原版躯干方块占 y=4..28 像素），
+     * 再在世界空间减去固定深度 {@link #RIDER_SINK}。1 倍时与旧公式<b>严格相等</b>：
+     * {@code (2.861 − 4×PX) − 0.85 = 1.586 = (2.861 − 12×PX)}。
      * 现在这组值（12 / 6）是"坐在肩背上、头颈后面"的位置。调过一次：
      * 上一版是 12 / 20，玩家反馈"坐在脖颈第一节和第二节之间的<b>上方一格</b>"——
      * 也就是 <b>太靠前</b>了，所以把 FORWARD 从 20 收到 6（20 像素 ≈ 往前 2.1 格，
@@ -648,8 +661,15 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 坐得太靠前时准星射线会先命中自己这条龙（客户端瞄准那侧已经加了"排除坐骑"的过滤，
      * 但座椅靠后能让视锥更干净、也能少一点贴脸时的镜头穿模）。
      */
-    private static final double RIDER_UP_PX = 12.0D;
+    private static final double RIDER_SURFACE_UP_PX = 4.0D;
     private static final double RIDER_FORWARD_PX = 6.0D;
+    /**
+     * 乘客脚底陷进背脊表面多深（<b>世界格</b>，<b>不随体型放大</b>）。
+     *
+     * <p>0.85 是"1 倍体型下原来那个 12 像素"折出来的等价值，所以 1 倍手感一个像素都没变；
+     * 想让人坐得更高就调小（0 = 正好站在背面上），想更贴背就调大。
+     */
+    private static final double RIDER_SINK = 0.85D;
 
     /**
      * 谁在开这条龙：<b>只有第一个乘客是玩家时</b>才由他操控，否则交回 AI。
@@ -813,19 +833,18 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         }
         // 每往后一个座位，沿机体方向退 SPACING 像素（模型像素，再经 rotateAndLift 换算成格）
         double forwardPx = RIDER_FORWARD_PX - index * RIDER_SEAT_SPACING_PX;
-        // 驾驶座再抬高一点：玩家的视线要越过龙背
-        double upPx = RIDER_UP_PX + (index == 0 ? 0.0D : RIDER_PASSENGER_UP_PX);
-        double[] upForward = this.rotateAndLift(upPx, forwardPx, this.getBodyPitch());
+        // 竖向锚在"背脊表面"上（模型像素只用来找那个点），傀儡乘客再往上抬一点点，免得和玩家的腿重叠
+        double surfacePx = RIDER_SURFACE_UP_PX - (index == 0 ? 0.0D : RIDER_PASSENGER_UP_PX);
+        double[] upForward = this.rotateAndLift(surfacePx, forwardPx, this.getBodyPitch());
         double yaw = Math.toRadians(this.yBodyRot);
         double forwardX = -Math.sin(yaw);
         double forwardZ = Math.cos(yaw);
-        // ★ 座椅位置<b>只由模型决定</b>（模型像素 × 体型倍率），不掺任何判定箱 / 眼高因素。
-        //   乘客与判定箱冲突时，改的是判定箱那一侧（见 pickRadiusFor：拾取箱会自动收缩，
-        //   不去包住自己乘客的眼睛），绝不能反过来把座位顶高 —— 那会让"坐在龙背上"变成
-        //   "浮在龙背上方"，大体型时尤其明显。
+        // ★ 只有"表面"跟着体型走，下沉量 RIDER_SINK 是世界格常数 —— 于是不管龙多大，
+        //   乘客都只陷进背面同样的深度（见 RIDER_SINK 的说明：这是"泰坦把人埋进模型里"的根因）。
+        //   横向与前后仍然按模型像素 × 体型，所以大体型时座位自然铺开在更宽的背上。
         setPos.accept(passenger,
                 this.getX() + forwardX * upForward[1],
-                this.getY() + upForward[0] + passenger.getMyRidingOffset(),
+                this.getY() + upForward[0] - RIDER_SINK + passenger.getMyRidingOffset(),
                 this.getZ() + forwardZ * upForward[1]);
     }
 
@@ -896,7 +915,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
 
     /** 相邻两个座位之间沿机体方向的距离（模型像素，1 格 = 16 像素）。 */
     private static final double RIDER_SEAT_SPACING_PX = 9.0D;
-    /** 傀儡乘客比驾驶座再抬高多少（模型像素）：免得和玩家的腿重叠。 */
+    /** 傀儡乘客比驾驶座再抬高多少（模型像素；模型 y 越小越高，所以是从表面值里减掉它）。 */
     private static final double RIDER_PASSENGER_UP_PX = 3.0D;
 
     /**
