@@ -83,6 +83,16 @@ public final class DragonRiderKeys {
             InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_H, CATEGORY);
 
     /**
+     * 骑乘手册开关。默认 <b>J</b>。
+     *
+     * <p>手册本体在 {@link DragonRideManual}（骑龙时屏幕左侧那一栏按键提示）。
+     * 按键注册集中在这个类里，所以开关也放这儿。
+     */
+    public static final KeyMapping MANUAL = new KeyMapping(
+            "key.dragon_golems.manual", KeyConflictContext.IN_GAME,
+            InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_J, CATEGORY);
+
+    /**
      * 瞄准射程（格）。取 48：龙弹的射程是 44（{@code SKILL_ROCKET}），
      * 瞄准点没必要比最远的技能还远。
      */
@@ -107,6 +117,7 @@ public final class DragonRiderKeys {
             event.register(BLAST);
             event.register(DESCEND);
             event.register(FREE_FLIGHT);
+            event.register(MANUAL);
         }
     }
 

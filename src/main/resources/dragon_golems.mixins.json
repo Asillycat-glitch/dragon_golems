@@ -4,7 +4,9 @@
   "package": "a_silly_cat.dragon_golems.mixin",
   "compatibilityLevel": "JAVA_17",
   "mixins": [
-    "GolemMaterialConfigMixin"
+    "GolemMaterialConfigMixin",
+    "GolemCheckRideMixin",
+    "RideUpgradeMixin"
   ],
   "injectors": {
     "defaultRequire": 1

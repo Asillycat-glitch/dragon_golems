@@ -31,7 +31,18 @@
   "jei.dragon_golems.holder.desc": "Assemble the five parts in the golem assembly table: W / HBT / L (W wings, H head, B body, T tail, L limbs).",
   "jei.dragon_golems.holder.slot": "Equipment screen is dog-typed: two slots, helmet and chestplate.",
   "jei.dragon_golems.holder.hover": "Gunship: hovers 10+ blocks above the ground in combat and around 3 blocks while idling, both scaling with body size (x sqrt(size)). Retrieve it with a golem retrieval wand.",
-  "jei.dragon_golems.holder.ride": "Riding: right-click the dragon with a rider wand (body, head, neck, tail or wings all count). Then Space ascends, Left Ctrl descends, WASD flies forward/back and sideways, and the mouse steers the nose and pitch; R/G/V fire charge / breath / fireball. Note Shift is vanilla's dismount key - do not bind it to descend.",
+  "jei.dragon_golems.holder.ride": "Riding: right-click the dragon with a rider wand (body, head, neck, tail or wings all count). Then Space ascends, Left Ctrl descends, WASD flies forward/back and sideways, and the mouse steers the nose and pitch; R/G/V fire charge / breath / fireball, and H toggles free flight (noclip). Note Shift is vanilla's dismount key - do not bind it to descend. A control panel also appears on the left while riding (press J to fold it).",
+
+  "overlay.dragon_golems.ride.title": "Dragon Golem Controls",
+  "overlay.dragon_golems.ride.move": "W / A / S / D: move (mouse steers nose and pitch)",
+  "overlay.dragon_golems.ride.height": "Space / Left Ctrl: ascend / descend",
+  "overlay.dragon_golems.ride.free": "H: free flight (noclip) toggle",
+  "overlay.dragon_golems.ride.charge": "R: charge the target under the crosshair (needs a target; 30s cooldown)",
+  "overlay.dragon_golems.ride.breath": "G: breathe at the crosshair (3s, 3s cooldown)",
+  "overlay.dragon_golems.ride.blast": "V: fire a golem fireball at the crosshair (sonic beam on sculk bodies; 3s cooldown)",
+  "overlay.dragon_golems.ride.dismount": "Dismount: Shift, or right-click with a rider wand",
+  "overlay.dragon_golems.ride.wand": "Command wand: right-click a golem to switch modes; right-click a mob to order nearby golems to attack it",
+  "overlay.dragon_golems.ride.toggle": "Press J to fold / unfold this panel",
 
   "key.categories.dragon_golems": "Dragon Golems",
   "key.dragon_golems.charge": "Mount Skill: Charge",
@@ -39,6 +50,7 @@
   "key.dragon_golems.blast": "Mount Skill: Fireball (Sonic for sculk bodies)",
   "key.dragon_golems.descend": "Mount: Descend (Shift is the dismount key, don't bind it)",
   "key.dragon_golems.free_flight": "Mount: Free Flight (noclip toggle)",
+  "key.dragon_golems.manual": "Mount: Controls Panel Toggle",
 
   "advancements.dragon_golems.advancements.golems.kill_ender_dragon.title": "Dragonslayer",
   "advancements.dragon_golems.advancements.golems.kill_ender_dragon.description": "Have a Dragon Golem slay an Ender Dragon"

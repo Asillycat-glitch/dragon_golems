@@ -152,6 +152,11 @@ public class DragonFollowTeleportGoal extends Goal {
         int vRadius = Math.max(SEARCH_VERTICAL, Mth.ceil(SEARCH_VERTICAL * scale));
         int tries = Math.max(TRIES, Mth.ceil(TRIES * scale));
         double keepAway = KEEP_AWAY * scale;
+        // ★ 落点优先选"不沾液体"的（别把龙传进湖里 / 岩浆里）。
+        //   主人真站在水里或岩浆湖边时可能一个干的落点都抽不到，那就用第一次抽到的湿落点兜底 ——
+        //   "回得来"比"落点完美"重要，而且悬停逻辑会把它在液面之上重新摆好
+        //   （见 DragonGolemEntity.localFloorY 的说明）。
+        Vec3 wetSpot = null;
         for (int i = 0; i < tries; i++) {
             int x = pos.getX() + this.randomIntInclusive(-radius, radius);
             int y = pos.getY() + this.randomIntInclusive(-vRadius, vRadius);
@@ -160,26 +165,42 @@ public class DragonFollowTeleportGoal extends Goal {
                     && Math.abs((double) z - target.z()) < keepAway) {
                 continue;
             }
-            double toX = x + 0.5D - this.dragon.getX();
-            double toY = y - this.dragon.getY();
-            double toZ = z + 0.5D - this.dragon.getZ();
+            Vec3 spot = new Vec3(x + 0.5D, y, z + 0.5D);
+            double toX = spot.x - this.dragon.getX();
+            double toY = spot.y - this.dragon.getY();
+            double toZ = spot.z - this.dragon.getZ();
             // 只挑不与当前判定箱碰撞的落点（飞行单位，不需要找"可站立"方块）
             if (!this.dragon.level().noCollision(this.dragon, this.dragon.getBoundingBox().move(toX, toY, toZ))) {
                 continue;
             }
-            this.dragon.moveTo(x + 0.5D, y, z + 0.5D, this.dragon.getYRot(), this.dragon.getXRot());
-            this.dragon.getNavigation().stop();
-            // 传送会打断正在飞的航线，别顺手把它的目标也清了
-            // （canUse 里已经挡了骑手冲锋，这里是第二道保险）
-            if (!this.dragon.isRiderOrderedDive()) {
-                this.dragon.setTarget(null);
+            if (!DragonFlightAssist.isLiquidFree(this.dragon, spot)) {
+                if (wetSpot == null) {
+                    wetSpot = spot;
+                }
+                continue;
             }
-            this.nextTryTick = 0;
+            this.landAt(spot);
+            return;
+        }
+        if (wetSpot != null) {
+            this.landAt(wetSpot);
             return;
         }
         // 这么多次都没找到（主人缩在洞里、被方块埋着）→ 记一次冷却，过 2 秒再试，
         // 别每 tick 都重做几十次体积检测。
         this.nextTryTick = this.dragon.tickCount + FAIL_RETRY;
+    }
+
+    /** 真的落下去：挪位置 + 停掉正在走的航线（但别顺手清掉攻击目标）。 */
+    private void landAt(Vec3 spot) {
+        this.dragon.moveTo(spot.x, spot.y, spot.z, this.dragon.getYRot(), this.dragon.getXRot());
+        this.dragon.getNavigation().stop();
+        // 传送会打断正在飞的航线，别顺手把它的目标也清了
+        // （canUse 里已经挡了骑手冲锋，这里是第二道保险）
+        if (!this.dragon.isRiderOrderedDive()) {
+            this.dragon.setTarget(null);
+        }
+        this.nextTryTick = 0;
     }
 
     private int randomIntInclusive(int min, int max) {

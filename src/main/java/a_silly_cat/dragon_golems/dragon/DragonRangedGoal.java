@@ -215,6 +215,8 @@ public class DragonRangedGoal extends Goal {
         this.dragon.setDiveVelocity(null);
         this.dragon.setDivePhase(DragonGolemEntity.DIVE_PHASE_NONE);
         this.dragon.setAggressive(false);
+        // 一轮喷息结束：把"同一次龙息里每个目标挨了几跳"的计数清掉（递减状态，见 beginBreathVolley）
+        this.dragon.endBreathVolley();
         // 只上报"这一轮真的开火了"的技能：靠拢那趟（CLOSE_IN）什么都没打出去，
         // 不能在这里把两个技能都上报 —— 那会把抽中的大招白扣一次冷却。
         if (this.executed != null) {
@@ -600,6 +602,10 @@ public class DragonRangedGoal extends Goal {
     private void enter(Phase next) {
         this.phase = next;
         this.phaseTicks = 0;
+        // 前摇一开始就开一轮龙息：递减计数必须在"第一跳落地之前"清空（见 DragonGolemEntity.beginBreathVolley）
+        if (next == Phase.BREATH_CHARGE) {
+            this.dragon.beginBreathVolley();
+        }
         // 只有开火阶段才上报姿态；靠拢阶段保持水平（否则会一直低着头飞）
         this.dragon.setDivePhase(next == Phase.CLOSE_IN
                 ? DragonGolemEntity.DIVE_PHASE_NONE

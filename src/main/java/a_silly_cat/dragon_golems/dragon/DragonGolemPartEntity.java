@@ -1,5 +1,6 @@
 package a_silly_cat.dragon_golems.dragon;
 
+import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
@@ -65,6 +66,55 @@ public class DragonGolemPartEntity extends PartEntity<DragonGolemEntity> {
     @Override
     public boolean isPickable() {
         return !this.getParent().isRemoved();
+    }
+
+    /**
+     * 额外拾取半径（格）：<b>让"看着龙头/翅膀点下去"真的能选中这条龙</b>。
+     *
+     * <p>原版 {@code Entity.getPickRadius()} 默认 0，选中范围就等于碰撞箱本身；而龙的子箱
+     * 是照着模型摆的立方体（头 2.4、翼 5.0…），离得稍远就"点不着" —— 回收手杖、徒手回收、
+     * 开装备界面这些操作全都要先被准星选中，所以这个半径直接决定"这条龙好不好点"。
+     *
+     * <p>数值见 {@code DragonGolemConfig.pickRadius()}（默认 1.0）。
+     * <b>注意本体那边的半径被刻意压小</b>（{@code bodyPickRadius}）：{@code ProjectileUtil} 里
+     * "射线起点落在箱子里"这一支是不看同车关系的，本体判定箱一旦被吹得够高，就会把龙背上
+     * 那位乘客自己的准星重新拽回自己骑着的龙身上。详见 {@code DragonGolemEntity.positionRider}。
+     */
+    @Override
+    public float getPickRadius() {
+        return (float) DragonGolemConfig.pickRadius();
+    }
+
+    /**
+     * <b>子碰撞箱算在龙本体那一辆"车"里。</b>
+     *
+     * <p>这条是"泰坦升级会阻挡坐在其上的玩家"的正面修复。Forge 的多部件实体是<b>独立实体</b>：
+     * {@code Entity.getRootVehicle()} 沿着 {@code isPassenger()} 往上爬，而子箱自己永远不会是乘客，
+     * 于是它返回的是<b>它自己</b> —— 和龙本体不是同一个 root vehicle。而原版/Forge 到处都用
+     * "root vehicle 相同"来判断"这是不是我自己（或我的坐骑）"：
+     * <ul>
+     *   <li>{@code ProjectileUtil.getEntityHitResult}（准星选中、{@code GameRenderer.pick}）：
+     *       同 root vehicle 的候选<b>不会抢走准星</b>（除非 {@code canRiderInteract()}）；</li>
+     *   <li>{@code Entity.skipAttackInteraction} / {@code push} / 移动碰撞：同 root vehicle 一律互免；</li>
+     *   <li>我们自己的 {@code DragonRiderKeys} 瞄准过滤、{@code DragonRetrieveHandler} 也是这么写的。</li>
+     * </ul>
+     * 修好之前，骑着龙的人<b>平视前方时准星会先命中自己这条龙的头部/躯干子箱</b>：泰坦体型
+     * （{@code getScale()=4}）时躯干箱有 9.6 格高、把整个座位包在里面，准星直接锁在
+     * 离自己 0 格的箱子上 —— 表现就是"坐在龙上什么都点不了/打不了"（右键交互、左键攻击、
+     * 放方块全被自己的龙吃掉）。普通体型下人的眼睛刚好在箱子上面一点点，所以只有大体型会犯。
+     *
+     * <p>本家的犬坐骑没有这个问题，因为它<b>根本没有子碰撞箱</b>：整只狗就是一个实体，
+     * 原版那套"root vehicle 相同就跳过"的规则天然生效。龙要拿到同样的行为，就得让子箱
+     * 如实回答"我属于本体"。
+     *
+     * <p>注意 {@code ProjectileUtil} 里还有一支：<b>射线起点落在箱子里</b>时是无条件选中的
+     * （不看 root vehicle）。所以光有这一条还不够 —— 座位本身也必须待在"自己所有判定箱"
+     * 的外面，那一条由 {@code DragonGolemEntity.positionRider} 的座椅净空负责。
+     */
+    @Override
+    public Entity getRootVehicle() {
+        DragonGolemEntity parent = this.getParent();
+        return parent == null ? this : parent.getRootVehicle();
     }
 
     /** 伤害转发给本体：材料减伤、升级效果、仇恨等全部照常走本体那条管线。 */

@@ -123,12 +123,15 @@ public class DragonRiderSkillGoal extends Goal {
         }
         this.dragon.setAggressive(true);
         if (this.skill == DragonSkillPacket.SKILL_BREATH) {
+            // 开一轮龙息：递减计数在这一轮之内有效（同一次喷息对同一个目标越打越轻）
+            this.dragon.beginBreathVolley();
             this.dragon.playSound(SoundEvents.ENDER_DRAGON_GROWL, 1.2F, 0.7F);
         }
     }
 
     @Override
     public void stop() {
+        this.dragon.endBreathVolley();
         this.dragon.clearRiderOrder();
         this.dragon.setDiveVelocity(null);
         this.dragon.setDivePhase(DragonGolemEntity.DIVE_PHASE_NONE);
@@ -264,8 +267,8 @@ public class DragonRiderSkillGoal extends Goal {
         if (this.dragon.breathDamage(best, SONIC_MULT, 0.0D)) {
             this.dragon.applyBreathEffects(best);
         }
-        // 击退（照 AI 版：水平 2.5、垂直 0.5，再按目标的击退抗性削）
-        double resist = 1.0D - best.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE);
+        // 击退（照 AI 版：水平 2.5、垂直 0.5，再按目标的击退抗性削；抗性拉满 = 完全不推）
+        double resist = Math.max(0.0D, 1.0D - best.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE));
         best.push(dir.x * SONIC_KNOCKBACK_H * resist, dir.y * SONIC_KNOCKBACK_V * resist,
                 dir.z * SONIC_KNOCKBACK_H * resist);
         best.hasImpulse = true;

@@ -27,7 +27,9 @@ import org.jetbrains.annotations.Nullable;
  *       脱离后（{@link #unstickClear}）自动退出。<b>不需要玩家操作。</b></li>
  *   <li><b>主动避障（{@link #avoidance}）</b>：撞墙时不是无脑往上顶 0.15，而是
  *       在"上 / 斜上 / 左 / 右"里挑一个真正有空间的方向推过去；
- *       向上的分量随"卡住时长"递增，所以真正被埋住时它会坚决地爬出来。</li>
+ *       向上的分量随"卡住时长"递增，所以真正被埋住时它会坚决地爬出来。
+ *       <b>并且优先挑不沾液体（水 / 岩浆）的方向</b>（见 {@link #isLiquidFree(DragonGolemEntity, Vec3)}）——
+ *       贴着湖岸绕行时，朝湖那一侧同样"塞得下龙"。</li>
  * </ol>
  *
  * <h2>为什么用 {@code noPhysics} 而不是"允许穿过某些方块"</h2>
@@ -473,12 +475,22 @@ public final class DragonFlightAssist {
                 {-0.2D, 0.0D},   // 另一侧
         };
         // 探测距离也比原来远：柱子常有 3~5 格粗，只探 4 格会在"贴着柱子"时全判为堵死。
-        for (double dist : new double[]{1.6D, 2.6D, 4.0D, 6.0D, 9.0D}) {
-            for (double[] f : fan) {
-                Vec3 dir = new Vec3(
-                        forward.x * f[0], f[1], forward.z * f[0]).normalize();
-                Vec3 probe = dragon.position().add(dir.scale(dist));
-                if (hasRoomFor(dragon, probe)) {
+        double[] distances = {1.6D, 2.6D, 4.0D, 6.0D, 9.0D};
+        // ★ 两轮：先只在"不沾液体"的方向里挑 —— 贴着湖岸/岩浆湖边绕行时，
+        //   扇面里朝湖那一侧同样"塞得下龙"，旧版会直接把它推进水里（水与岩浆都没有碰撞箱）。
+        //   全湿了才认账走第二轮（正泡在湖里的龙总得先出来）。
+        for (boolean allowLiquid : new boolean[]{false, true}) {
+            for (double dist : distances) {
+                for (double[] f : fan) {
+                    Vec3 dir = new Vec3(
+                            forward.x * f[0], f[1], forward.z * f[0]).normalize();
+                    Vec3 probe = dragon.position().add(dir.scale(dist));
+                    if (!hasRoomFor(dragon, probe)) {
+                        continue;
+                    }
+                    if (!allowLiquid && !isLiquidFree(dragon, probe)) {
+                        continue;
+                    }
                     return dir;
                 }
             }
@@ -496,30 +508,62 @@ public final class DragonFlightAssist {
      *
      * <p>逐格检查相交的方块，认定"能穿过"的只有：空气、以及<b>不带碰撞形状</b>的方块
      * （草、雪层、藤蔓、告示牌之类）。这样"判定箱能过"和"实际能不能挤过去"是一致的。
+     *
+     * <p><b>液体（水 / 岩浆）在这一档里算"能穿过"</b>，这是刻意的：它回答的是"物理上挤不挤得过去"
+     * （液体确实没有碰撞箱），而"要不要进液体"是另一件事 —— 想避开液体请用
+     * {@link #isLiquidFree(DragonGolemEntity, Vec3)}。要是把液体也算成"塞不下"，
+     * 那龙一进水就会满足 {@code noRoom}，直接被当成"嵌在方块里"而打开 {@code noPhysics} 幽灵飞行。
      */
     public static boolean hasRoomFor(DragonGolemEntity dragon, Vec3 pos) {
+        return !boxHits(dragon, pos, true);
+    }
+
+    /**
+     * 把判定箱搬到 {@code pos} 之后，箱内<b>不沾任何液体</b>（水 / 岩浆）吗？
+     *
+     * <p>给"别把龙送进液体里"用：避障挑方向、随机游走采样、回位落点都用它。
+     * 沾到一格液体就算"不干净"。注意区块没加载时一律当作"干净"（见 {@link #boxHits}）。
+     */
+    public static boolean isLiquidFree(DragonGolemEntity dragon, Vec3 pos) {
+        return !boxHits(dragon, pos, false);
+    }
+
+    /**
+     * 把判定箱搬到 {@code pos} 之后逐格检查。
+     *
+     * @param solid {@code true} 找"挡路的固体"（有碰撞形状的方块）；
+     *              {@code false} 找液体（水 / 岩浆 —— 它们恰恰没有碰撞形状）
+     * @return 找到了就 true；两个角所在区块有一个没加载时一律 false
+     *         （"未知"不下结论：不要因为没加载就疯狂脱困，也不要因此拒绝一个落点）
+     */
+    private static boolean boxHits(DragonGolemEntity dragon, Vec3 pos, boolean solid) {
         AABB box = dragon.getBoundingBox().move(
                 pos.x - dragon.getX(), pos.y - dragon.getY(), pos.z - dragon.getZ())
                 .inflate(-CLEARANCE);
         Level level = dragon.level();
         if (!level.hasChunkAt(BlockPos.containing(box.minX, box.minY, box.minZ))
                 || !level.hasChunkAt(BlockPos.containing(box.maxX, box.maxY, box.maxZ))) {
-            // 区块没加载：当作"未知"，倾向于认为有空间（不要因为没加载就疯狂脱困）
-            return true;
+            return false;
         }
         for (BlockPos bp : BlockPos.betweenClosed(
                 BlockPos.containing(box.minX, box.minY, box.minZ),
                 BlockPos.containing(box.maxX, box.maxY, box.maxZ))) {
             BlockState state = level.getBlockState(bp);
-            if (state.isAir()) {
-                continue;
+            if (solid) {
+                if (state.isAir()) {
+                    continue;
+                }
+                if (state.getCollisionShape(level, bp).isEmpty()) {
+                    // 草/雪层/藤蔓这类没有碰撞箱的，可以穿过
+                    continue;
+                }
+                return true;
             }
-            if (state.getCollisionShape(level, bp).isEmpty()) {
-                // 草/雪层/藤蔓这类没有碰撞箱的，可以穿过
-                continue;
+            if (!state.getFluidState().isEmpty()) {
+                // 含水方块（水草、海带）同样算液体
+                return true;
             }
-            return false;
         }
-        return true;
+        return false;
     }
 }

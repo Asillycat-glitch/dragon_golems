@@ -1,0 +1,43 @@
+{
+  "bodies": {
+    "dragon_golems:default": {
+      "breathParticle": "minecraft:flame",
+      "cloudParticle": "minecraft:dragon_breath",
+      "breathDamageType": "dragon_golems:dragon_breath",
+      "fireSeconds": 3
+    },
+    "modulargolems:netherite": {
+      "match": "body",
+      "breathParticle": "minecraft:soul_fire_flame",
+      "cloudParticle": "minecraft:soul_fire_flame",
+      "breathDamageType": "dragon_golems:dragon_breath",
+      "fireSeconds": 5,
+      "effects": [
+        {
+          "effect": "minecraft:wither",
+          "duration": 60,
+          "amplifier": 0
+        }
+      ]
+    },
+    "modulargolems:sculk": {
+      "match": "body",
+      "breathParticle": "minecraft:sonic_boom",
+      "cloudParticle": "minecraft:sculk_soul",
+      "breathDamageType": "dragon_golems:dragon_sonic",
+      "fireSeconds": 0,
+      "effects": [
+        {
+          "effect": "minecraft:darkness",
+          "duration": 100,
+          "amplifier": 0
+        },
+        {
+          "effect": "minecraft:weakness",
+          "duration": 100,
+          "amplifier": 0
+        }
+      ]
+    }
+  }
+}

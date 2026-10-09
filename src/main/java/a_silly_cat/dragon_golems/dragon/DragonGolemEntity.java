@@ -3,6 +3,9 @@ package a_silly_cat.dragon_golems.dragon;
 import dev.xkmc.modulargolems.content.entity.common.AbstractGolemEntity;
 import dev.xkmc.modulargolems.content.entity.common.SweepGolemEntity;
 import a_silly_cat.dragon_golems.Dragon_golems;
+import a_silly_cat.dragon_golems.content.config.DragonBodyConfig;
+import a_silly_cat.dragon_golems.content.config.DragonBodyEntry;
+import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 import a_silly_cat.dragon_golems.network.DragonSkillPacket;
 import dev.xkmc.modulargolems.content.config.GolemMaterial;
 import dev.xkmc.modulargolems.content.entity.goals.FollowOwnerGoal;
@@ -15,10 +18,14 @@ import dev.xkmc.modulargolems.content.entity.mode.GolemModes;
 import dev.xkmc.modulargolems.content.item.upgrade.IUpgradeItem;
 import dev.xkmc.modulargolems.content.modifier.base.GolemModifier;
 import dev.xkmc.modulargolems.content.modifier.special.BaseRangedAttackGoal;
+import dev.xkmc.modulargolems.content.modifier.special.EarthquakeHelper;
 import dev.xkmc.modulargolems.content.modifier.special.SonicAttackGoal;
 import dev.xkmc.modulargolems.init.registrate.GolemTypes;
+import dev.xkmc.l2damagetracker.contents.attack.AttackEventHandler;
+import dev.xkmc.l2damagetracker.contents.attack.CreateSourceEvent;
 import dev.xkmc.l2serial.serialization.SerialClass;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Registry;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -32,14 +39,18 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.DamageType;
+import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
-import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.ai.attributes.Attribute;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.attributes.RangedAttribute;
 import net.minecraft.world.entity.ai.control.FlyingMoveControl;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.ai.goal.WrappedGoal;
@@ -48,15 +59,18 @@ import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.common.ForgeMod;
 import net.minecraftforge.entity.PartEntity;
+import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraft.util.Mth;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.UUID;
 
 /**
@@ -256,9 +270,17 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.keepAimThisTick = keep;
     }
 
-    /** 直接指定机身侧倾（度）：绕圈喷息时用它压弯，不靠 faceMovement 的转角去推。 */
+    /**
+     * 直接指定机身侧倾（度）：绕圈喷息时用它压弯，不靠"本 tick 转角"去推。
+     *
+     * <p>顺手把低通状态 {@link #smoothedTurn} 也拉到对应值：绕圈结束的那一 tick
+     * {@link #tickBodyRoll()} 接手时不会从 0 重新起跳（交接处看不到"先回正、再压下去"）。
+     */
     public void setBodyRollDirect(float deg) {
-        this.entityData.set(DATA_BODY_ROLL, Mth.clamp(deg, -MAX_ROLL, MAX_ROLL));
+        float clamped = Mth.clamp(deg, -MAX_ROLL, MAX_ROLL);
+        this.bodyRollDirectThisTick = true;
+        this.smoothedTurn = clamped / ROLL_PER_DEGREE;
+        this.entityData.set(DATA_BODY_ROLL, clamped);
     }
 
     /** 每 tick 更新俯仰并同步出去（判定箱和客户端模型都读 {@link #getBodyPitch()}）。 */
@@ -523,9 +545,15 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 侧倾用的平滑转向速率（度/tick）。
      *
      * <p>直接拿"本 tick 转过的角度"算倾斜会抖（转速上限一到就是 ±18°，倾斜立刻顶格），
-     * 所以先低通再乘系数。停止移动后要把它慢慢收回去，否则会留着最后那个压弯角度。
+     * 所以先低通再乘系数。不再转向时它会自己 lerp 回 0（见 {@link #tickBodyRoll()}）。
      */
     private float smoothedTurn;
+
+    /** 上一 tick 的 yRot：压弯按"本 tick 实际转过多少度"算，这是它的参照点。 */
+    private float prevRollYRot;
+
+    /** 本 tick 的压弯已由 {@link #setBodyRollDirect(float)} 指定（绕圈喷息），{@link #tickBodyRoll()} 让位。 */
+    private boolean bodyRollDirectThisTick;
 
     public DragonGolemEntity(EntityType<DragonGolemEntity> type, Level level) {
         super(WEAPONS, type, level);
@@ -634,7 +662,17 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     @Nullable
     @Override
     public LivingEntity getControllingPassenger() {
-        return this.getFirstPassenger() instanceof Player player ? player : null;
+        // 按"谁是玩家"回答，而不是按"谁在 0 号位"回答。
+        // 原版 Entity#addPassenger 只在服务端把玩家插到 0 号位（玩家到得晚、傀儡先坐在
+        // 驾驶座上时就是这么排的），客户端照服务端下发的 SetPassengers 包顺序重建，
+        // 正常两边一致；但"有玩家就归玩家开"是这里的语义，扫一遍就不必赌这个顺序 ——
+        // 顺序一旦错位，这里返回 null 会直接退化成"没人驾驶，龙自己飞、按键全无反应"。
+        for (Entity passenger : this.getPassengers()) {
+            if (passenger instanceof Player player) {
+                return player;
+            }
+        }
+        return null;
     }
 
     /**
@@ -648,6 +686,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 于是"龙先切停止模式落地 → 让傀儡上背"这条最自然的操作路径上，
      * {@code isMovable()} 返回 false，<b>所有攻击 goal（俯冲/龙息/音爆）的
      * {@code canUse()} 全部返回 false</b>，表现就是"傀儡坐在龙背上，龙却完全不袭击"。
+     *
+     * <p><b>只给 {@link #isMovable()} 用，别拿它当骑乘闸门</b>：{@link #startRidingFrom(Player)}
+     * 曾经用它判"驾驶座有没有人"，那正好把"先放炮台傀儡、后上玩家"这条最常见的顺序挡死。
+     * 该不该让人上只由 {@link #canAddPassenger} 回答。
      */
     public boolean hasDriverSeatOccupied() {
         return !this.getPassengers().isEmpty();
@@ -713,13 +755,20 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      *
      * <p>座位规则（1 + N）：
      * <ul>
-     *   <li>第一个乘客 = 驾驶座。是玩家就由玩家驾驶（见 {@link DragonRiderControl}）；
-     *       是傀儡则退化为"纯乘客"，龙的 AI 继续自己飞（这正是"傀儡骑在龙身上当炮台"）；</li>
+     *   <li>座位 0 = 驾驶座。坐着玩家就由玩家驾驶（见 {@link DragonRiderControl}）；
+     *       坐着傀儡则退化为"纯乘客"，龙的 AI 继续自己飞（这正是"傀儡骑在龙身上当炮台"）；</li>
      *   <li>其余座位给傀儡，数量上限 {@link #MAX_GOLEM_PASSENGERS}。</li>
      * </ul>
      *
+     * <p><b>玩家不再被"驾驶座被占"挡住。</b>这里是全模组唯一一道"能不能上"的判定，
+     * 现在的规则是：<b>只要这条龙上还没有别的玩家，玩家随时能上</b> —— 背上驮着傀儡、
+     * 龙正在飞/俯冲/战斗、开着什么模式，一概不拦。已经在驾驶座上的傀儡不用先请下去：
+     * 原版 {@code Entity#addPassenger} 在服务端会把玩家<b>插到 0 号位</b>
+     * （{@code list.add(0, player)}，条件正是"首个乘客不是玩家"），傀儡整体后移一格，
+     * 座位重排由 {@link #positionRider} 每 tick 跟着算。
+     *
      * <p><b>为什么放开给傀儡不会破坏驾驶</b>：{@link #getControllingPassenger()} 只在
-     * 首个乘客是 {@code Player} 时才返回非 null，所以傀儡乘客不会顶掉玩家的驾驶权，
+     * 乘客里<b>真的有玩家</b>时才返回非 null（傀儡不算），所以傀儡乘客不会顶掉玩家的驾驶权，
      * 也不会让 AI 的"有乘客就别动手"那批守卫误判。
      *
      * <p>本家 {@code AbstractGolemEntity} 一个载客方法都没覆写（只有
@@ -728,8 +777,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     @Override
     protected boolean canAddPassenger(Entity passenger) {
         if (passenger instanceof Player) {
-            // 玩家只能坐驾驶座，且只有第一个位置
-            return this.getPassengers().isEmpty();
+            // 玩家永远坐驾驶座，背上已经有傀儡也照上（原版会把他插到 0 号位，傀儡后移一格）。
+            // 唯一保留的硬规则：一条龙上只能有一个玩家 —— 两个玩家会让
+            // getControllingPassenger() 没法回答"谁在开"，WASD 到底听谁的。
+            return this.getPassengers().stream().noneMatch(p -> p instanceof Player);
         }
         if (passenger instanceof AbstractGolemEntity<?, ?>) {
             // 傀儡：驾驶座被占了也能上来（那就是乘客位），但总数有上限
@@ -742,10 +793,34 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     private static final int MAX_GOLEM_PASSENGERS = 3;
 
     /**
+     * 座椅净空：乘客的<b>眼睛</b>要比"龙自己在这一点的判定箱顶面"至少高出这么多格。
+     *
+     * <p>为什么是眼睛而不是脚：原版 {@code ProjectileUtil.getEntityHitResult}（准星选中）里有一支
+     * <pre>
+     * if (aabb.contains(射线起点)) { 选中它，距离 = 0 }
+     * </pre>
+     * <b>这一支不看 root vehicle</b>（只有"射线擦过箱子"那一支才看），所以只要玩家的眼睛落在
+     * 任何一个判定箱（含膨胀过的拾取箱）里，准星就会被那个箱子无条件抓住 —— 右键交互、左键攻击、
+     * 放方块全部被自己的坐骑吃掉。
+     *
+     * <p>普通体型下人的眼睛比躯干箱顶高一点点，所以看不出来；泰坦那种 4 倍体型时箱顶长了 4 倍、
+     * 人的眼高没变，整个人就被埋进箱子里了 —— 这就是"泰坦升级会阻挡坐在其上的玩家"。
+     * 本家的犬坐骑没这个毛病：它没有子碰撞箱，而且 {@code getPassengersRidingOffset()}
+     * 是 {@code bbHeight * 0.9 - 0.25}（<b>跟着膨胀后的判定箱走</b>），人永远在箱子顶面附近。
+     * 这里就是同一条思路：座位跟着"自己判定箱的实际高度"抬，而不是写死一个模型像素值。
+     *
+     * <p>正常体型下这个抬升量算出来是负的（不需要抬），所以那档手感一个像素都不会变。
+     */
+    private static final double SEAT_EYE_CLEARANCE = 0.1D;
+    /** 判断"这个子箱在不在座位正上方"时额外放宽的量（格），免得浮点误差把箱子漏掉。 */
+    private static final double SEAT_BOX_MARGIN = 0.05D;
+
+    /**
      * 乘客坐在背上：<b>沿机体轴向排座</b>。
      *
      * <p>这是本家狗的排座公式（{@code positionRider}）搬到龙身上：驾驶座（index 0）靠前、
-     * 其余乘客依次向后。区别只是改成沿龙的机体方向、并复用本类已有的
+     * 其余乘客依次向后（座位号由 {@link #seatIndexOf} 算，玩家永远排在最前）。
+     * 区别只是改成沿龙的机体方向、并复用本类已有的
      * {@link #rotateAndLift} 换算（所以龙低头/抬头时整排座位跟着转）。
      *
      * <p>返回值必须相对 {@code this.getX()/getY()/getZ()}（实体原点是脚底）。
@@ -755,7 +830,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         if (!this.hasPassenger(passenger)) {
             return;
         }
-        int index = this.getPassengers().indexOf(passenger);
+        int index = this.seatIndexOf(passenger);
         if (index < 0) {
             return;
         }
@@ -767,16 +842,91 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         double yaw = Math.toRadians(this.yBodyRot);
         double forwardX = -Math.sin(yaw);
         double forwardZ = Math.cos(yaw);
-        setPos.accept(passenger,
-                this.getX() + forwardX * upForward[1],
-                this.getY() + upForward[0] + passenger.getMyRidingOffset(),
-                this.getZ() + forwardZ * upForward[1]);
+        double x = this.getX() + forwardX * upForward[1];
+        double z = this.getZ() + forwardZ * upForward[1];
+        double y = this.getY() + upForward[0] + passenger.getMyRidingOffset();
+        // 座椅净空（见 SEAT_EYE_CLEARANCE）：模型位置会把眼睛埋进"龙自己的判定箱"里时往上抬，
+        // 抬到眼睛刚好在箱子上面。正常体型下这里算出来比模型位置低，所以座椅一动不动。
+        double minEyeY = this.ownHitboxTopAt(x, z) + SEAT_EYE_CLEARANCE;
+        double minY = minEyeY - passenger.getEyeHeight();
+        if (y < minY) {
+            y = minY;
+        }
+        setPos.accept(passenger, x, y, z);
+    }
+
+    /**
+     * "龙自己在这个水平位置上最高的那个判定箱顶面"（<b>含膨胀过的拾取箱</b>）。
+     *
+     * <p>本体判定箱一直在脚下（它是以实体原点为中心的水平方柱），子箱则要按位置挑：
+     * 头/颈在正前方、尾巴在后面、双翼在两侧，只有<b>水平方向确实罩住这个点</b>的那些才可能
+     * 把乘客的眼睛关进去。膨胀量取各自的 {@link #getPickRadius()}，和原版
+     * {@code ProjectileUtil} 里那个 {@code aabb.contains(起点)} 判定用的是同一个箱子。
+     */
+    private double ownHitboxTopAt(double x, double z) {
+        double top = this.getBoundingBox().maxY + this.getPickRadius();
+        for (DragonGolemPartEntity part : this.parts) {
+            AABB box = part.getBoundingBox().inflate(part.getPickRadius());
+            if (x >= box.minX - SEAT_BOX_MARGIN && x <= box.maxX + SEAT_BOX_MARGIN
+                    && z >= box.minZ - SEAT_BOX_MARGIN && z <= box.maxZ + SEAT_BOX_MARGIN) {
+                top = Math.max(top, box.maxY);
+            }
+        }
+        return top;
+    }
+
+    /**
+     * 本体的额外拾取半径（格，见 {@link DragonGolemConfig#bodyPickRadius()}）。
+     *
+     * <p>原版默认是 0，也就是"选中范围 = 碰撞箱本身"。龙的本体判定箱只有 2.6 × 2.2（身体重心那一块），
+     * 而模型有 26 格长 —— 玩家看着龙身点下去经常点不到，回收/开界面都别扭。给一点余量之后
+     * 明显好点中；再大的余量交给子碰撞箱那边（它们本来就盖住整条龙）。
+     *
+     * <p><b>不能给太大</b>：这个膨胀同样会参与上面那条"眼睛在箱子里就被无条件抓住"的判定，
+     * 而乘客就坐在本体判定箱上方一点。真的调大了也不会出 bug（座椅净空会跟着抬），
+     * 只是龙背上的人会坐得越来越高。
+     */
+    @Override
+    public float getPickRadius() {
+        return (float) DragonGolemConfig.bodyPickRadius();
     }
 
     /** 相邻两个座位之间沿机体方向的距离（模型像素，1 格 = 16 像素）。 */
     private static final double RIDER_SEAT_SPACING_PX = 9.0D;
     /** 傀儡乘客比驾驶座再抬高多少（模型像素）：免得和玩家的腿重叠。 */
     private static final double RIDER_PASSENGER_UP_PX = 3.0D;
+
+    /**
+     * 这个乘客坐在第几号座位（{@code 0} = 驾驶座，{@code < 0} = 不是乘客）。
+     *
+     * <p><b>刻意不用</b> {@code getPassengers().indexOf(passenger)}：座位分区是
+     * "<b>玩家在前、傀儡在后</b>"，而乘客列表的顺序是<b>原版的规则</b> ——
+     * {@code Entity#addPassenger} 只在服务端把玩家插到 0 号位（{@code list.add(0, player)}，
+     * 客户端那次 {@code addPassenger} 走的是"追加到末尾"），客户端最终顺序靠服务端下发的
+     * {@code SetPassengers} 包重建（{@code ClientPacketListener#handleSetEntityPassengersPacket}
+     * 逐个 {@code startRiding(force=true)}）。正常两边一致，把分区规则写在这里是多一层保险：
+     * 顺序真错位时顶多"谁坐前排"要重新算，而不是让驾驶者被排到后排去。
+     */
+    private int seatIndexOf(Entity passenger) {
+        boolean driver = passenger instanceof Player;
+        int players = 0;
+        for (Entity p : this.getPassengers()) {
+            if (p instanceof Player) {
+                players++;
+            }
+        }
+        // 傀儡从"玩家数量"这一位开始排（没有玩家时就是 0 号驾驶座，和以前一样）
+        int seat = driver ? 0 : players;
+        for (Entity p : this.getPassengers()) {
+            if (p == passenger) {
+                return seat;
+            }
+            if ((p instanceof Player) == driver) {
+                seat++;
+            }
+        }
+        return -1;
+    }
 
     /**
      * 乘客跟着机体转 —— <b>但驾驶者的视角必须是自由的</b>。
@@ -842,28 +992,48 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
-     * 玩家现在是不是拿着"骑乘手杖"（本家 {@code modulargolems:rider_wand} / 万能手杖的骑乘模式）。
+     * 玩家现在是不是拿着"骑乘手杖"。
      *
      * <p><b>按物品 id 认，不按类认。</b>手杖类在 {@code dev.xkmc.modulargolems} 里，
-     * 而本家有些构建把它 jarjar 进别的包（龙这个包编译时就不一定拿得到那个类）；
-     * 万能手杖虽然同一个类，但它的"模式"是 l2itemselector 的选中态，会换成
-     * {@code omnipotent_wand_rider} 这个 id 出现，所以拿"包含 rider_wand"来认最稳。
+     * 而本家有些构建把它 jarjar 进别的包（龙这个包编译时就不一定拿得到那个类）。
+     *
+     * <p><b>两种形态都要认</b>：普通骑乘手杖 {@code modulargolems:rider_wand}，以及万能手杖切到
+     * "骑乘"模式后换成的 {@code modulargolems:omnipotent_wand_rider} —— 后者是<b>另一个已注册物品</b>
+     * （l2itemselector 切模式 = 换物品），只认路径里含 {@code rider_wand} 的那个会让这条路整条漏掉：
+     * 我们的 handler 不管，本家的 {@code RiderWandItem.ride} 又只对狗
+     * {@code startRiding}，玩家看到的就是"右键龙完全没反应"（关掉上游 mgdp 之后尤其明显）。
      */
     public static boolean canRideWith(ItemStack stack) {
         if (stack.isEmpty()) {
             return false;
         }
         ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
-        return id != null && id.getPath().contains("rider_wand");
+        if (id == null) {
+            return false;
+        }
+        String path = id.getPath();
+        return path.contains("rider_wand") || path.equals("omnipotent_wand_rider");
     }
 
     /**
      * 上龙。服务端执行真正的 {@code startRiding}，客户端只回成功让手感一致
      * （和原版 {@code Animal.mobInteract} 里 {@code player.startRiding(this)} 的分端写法一致）。
      *
-     * <p><b>只有"停着"的龙能上</b>（{@link #isParked()}：手杖切"停留"，或者待机满 30 秒）。
-     * 理由很直接：正常飞行是 0.2 格/tick 起，玩家跑速 0.1 出头，追着一条正在猛冲的龙点手杖
-     * 是点不中的；而且真要骑上去也会立刻被它带飞。想放宽就改这一个判断。
+     * <p><b>不再要求"龙停着"</b>。这里原先有一道 {@link #isParked()} 闸门（"只能骑停着的龙"），
+     * 真机反馈是"跟在身边的龙右键完全没反应"—— 玩家分不出龙是停着还是在跟着走，只会认为手杖坏了。
+     * 本家的狗随时可上，上游 mgdp 的骑乘入口也没有这道限制，所以跟它们对齐：只要有空的驾驶座就让人上。
+     * 正在俯冲/冲锋时也照上 —— 骑手一上去，各个 goal 就会因为
+     * {@code getControllingPassenger()} 非空而自己收手（见 {@link #setTarget} 与
+     * {@code DragonRiderControl}）。
+     *
+     * <p><b>也不再要求"驾驶座空着"</b>：背上已经驮着傀儡（炮台乘客）时玩家照样能上 ——
+     * 原版 {@code Entity#addPassenger} 会把玩家插到 0 号位、傀儡整体后移一格，
+     * 所以"玩家比傀儡晚到"不该被挡在门外。
+     *
+     * <p>真正拦人的只剩 {@link #canAddPassenger} 那一条：这条龙上已经有一个玩家
+     * （唯一硬规则，见那里的说明）。另外还有一条<b>原版</b>的、不属于本模组的门槛：
+     * 玩家刚下过车后的 {@code boardingCooldown}（60 tick = 3 秒，{@code Entity#canRide}），
+     * 那是全游戏所有载具共用的防误触冷却，这里不动它。
      *
      * @return 这条龙现在是不是有人骑着了
      */
@@ -871,14 +1041,38 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         if (this.level().isClientSide()) {
             return true;
         }
-        if (this.hasDriverSeatOccupied() || !this.canAddPassenger(player)) {
-            return false;
-        }
-        if (!this.isParked()) {
+        // 座位规则统一由 canAddPassenger 回答；这里不再单独看"驾驶位有没有人"——
+        // 那个判据会把"傀儡先坐上去"误判成"满了"，正好是最常见的操作顺序（先放炮台再上人）。
+        if (!this.canAddPassenger(player)) {
             return false;
         }
         player.startRiding(this);
         return this.getControllingPassenger() != null;
+    }
+
+    /**
+     * 让一个傀儡作为乘客上龙。
+     *
+     * <p>入口是<b>本家的成品</b>：{@code GolemHolder.interactLivingEntity} —— 拿装好傀儡的成品右键龙，
+     * 本家会在龙的位置召唤它，并对它调 {@code checkRide(龙)}。而本家 {@code checkRide} 只认狗
+     * （金属傀儡还要求狗比它宽，类人傀儡认狗和马），所以"傀儡上龙当炮台"这条路在本家那边是断的；
+     * 由我们的 {@code GolemCheckRideMixin} 接住"目标是龙"这一种情况，转到这里上背。
+     *
+     * <p>座位规则复用 {@link #canAddPassenger}：玩家只坐第一个位子、傀儡最多
+     * {@link #MAX_GOLEM_PASSENGERS} 个乘客位。首个乘客是傀儡时它只是乘客（
+     * {@link #getControllingPassenger()} 仍为 null），龙照旧自己飞 —— 这正是"空中炮艇"。
+     *
+     * @return 这个傀儡现在是不是在龙背上
+     */
+    public boolean rideAsPassenger(AbstractGolemEntity<?, ?> golem) {
+        if (this.level().isClientSide()) {
+            return true;
+        }
+        if (!this.canAddPassenger(golem)) {
+            return false;
+        }
+        golem.startRiding(this);
+        return golem.getVehicle() == this;
     }
 
     /**
@@ -1877,16 +2071,18 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.keepAimThisTick = false;
                 this.applyHover();
             }
-            // ★ 侧倾收平必须放在分支链<b>外面</b>（真机 bug："冲刺后龙体倾斜"）。
-            //   原来 relaxRoll() 只挂在最后那个"没人管"分支里，于是：
-            //     冲刺时 faceMovement 写了一个压弯角 → 冲刺结束、玩家还骑着 →
-            //     走的是 `rider != null` 分支 → relaxRoll 永不执行 → 那个压弯角<b>永久保留</b>。
-            //   现在改成"所有分支之后统一收"，只在两个"本 tick 刚写过侧倾"的分支上跳过：
-            //     - riderDive（骑手冲锋）：faceMovement 刚按航线方向压过弯
-            //     - AI 俯冲（diveVelocity 非 null 但 riderDive 为假）：同上
-            //   普通驾驶（rider != null 但没在冲锋）也要收 —— 那正是这个 bug 的场景。
-            if (!riderDive && this.diveVelocity == null) {
-                this.relaxRoll();
+            // ★ 压弯（侧倾）统一在这里算：只看"本 tick 实际转过的角度"，所以骑手用鼠标转、
+            //   AI 巡航转（FlyingMoveControl 拧的机头）、俯冲/冲锋的航线转，三种全都吃得到。
+            //   早先压弯只在 faceMovement() 里按"它自己转了多少"算，而 AI 巡航的转向走
+            //   FlyingMoveControl、骑手的转向走 DragonRiderControl —— 两边都不经过那里，
+            //   真机表现就是"平时转弯完全不压弯，只有俯冲/冲锋才压"。
+            //   原先那个 relaxRoll() 也随之取消：yaw 不再变化时低通自己会把它 lerp 回 0。
+            if (this.bodyRollDirectThisTick) {
+                this.bodyRollDirectThisTick = false;
+                // 让位给 goal 指定的角度，但参照点要跟上，别把这一段的转角攒到下一 tick
+                this.prevRollYRot = this.getYRot();
+            } else {
+                this.tickBodyRoll();
             }
         }
         // 飞行辅助：撞墙计数、自动脱困的进出、noPhysics 的唯一写入口。
@@ -1930,12 +2126,26 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         }
     }
 
-    /** 没有运动时把侧倾慢慢收回水平。 */
-    private void relaxRoll() {
-        if (this.smoothedTurn == 0.0F) {
-            return;
+    /**
+     * 压弯（侧倾）：<b>只看本 tick 实际转过的角度</b>，谁转的都算。
+     *
+     * <p>这样 AI 巡航（{@code FlyingMoveControl} 把机头拧向运动方向）、骑手用鼠标转、
+     * 俯冲/冲锋的航线接管，三种情况都会压弯 —— 早先只在 {@link #faceMovement(Vec3)} 里按
+     * "它自己转了多少"算，于是只有后两种有压弯，平时巡航看着像"贴地平移"。
+     *
+     * <p>转角先低通再乘系数：幽匿那种 2~3 格/tick 的速度下瞬时转角经常顶到上限（±18°），
+     * 直接用会让机身一直顶在极限角度、来回甩。不再转向时低通自己 lerp 回 0，
+     * 所以不需要单独一个"收平"函数（老那版还漏了"骑手在场"的分支，会把压弯角永久留下）。
+     *
+     * <p>超过物理转速上限的转角（瞬移、强制对齐朝向）不算压弯，免得机身猛地横过来。
+     */
+    private void tickBodyRoll() {
+        float yawDelta = Mth.wrapDegrees(this.getYRot() - this.prevRollYRot);
+        this.prevRollYRot = this.getYRot();
+        if (Math.abs(yawDelta) > MAX_TURN_HARD_CAP) {
+            yawDelta = 0.0F;
         }
-        this.smoothedTurn = Mth.lerp(ROLL_TURN_LERP, this.smoothedTurn, 0.0F);
+        this.smoothedTurn = Mth.lerp(ROLL_TURN_LERP, this.smoothedTurn, yawDelta);
         if (Math.abs(this.smoothedTurn) < ROLL_DEAD_ZONE) {
             this.smoothedTurn = 0.0F;
         }
@@ -2237,15 +2447,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             applied = Mth.clamp(delta, -maxTurn, maxTurn);
             this.setYRot(this.getYRot() + applied);
         }
-        // 侧倾 = 本 tick 实际转过的角度 × 系数（像飞机压弯）。
-        // 在服务端算：客户端那边 yRot/yRotO 是插值值，推出来的"转向速率"会抖。
-        // 先低通再换算：幽匿那种 2~3 格/tick 的速度下，瞬时转角经常就是 ±18°（转速上限），
-        // 直接用瞬时值会让机身一直顶在极限角度、来回甩。
-        this.smoothedTurn = Mth.lerp(ROLL_TURN_LERP, this.smoothedTurn, applied);
-        float roll = Math.abs(this.smoothedTurn) < ROLL_DEAD_ZONE
-                ? 0.0F
-                : Mth.clamp(this.smoothedTurn * ROLL_PER_DEGREE, -MAX_ROLL, MAX_ROLL);
-        this.entityData.set(DATA_BODY_ROLL, roll);
+        // 侧倾不在这里算 —— 统一由 tickBodyRoll() 按"本 tick 实际转过的角度"处理，
+        // 这样 AI 巡航（FlyingMoveControl 拧的机头）与骑手鼠标转的也一起有压弯。
         // 直接把身体朝向也拉到 yRot：vanilla 的 BodyRotationControl 每 tick 只朝 yRot 转 15° 还带滞回，
         // 等它慢慢跟就会"转向慢半拍"。这里自己写，模型、子碰撞箱（按 yBodyRot 摆位）立刻对齐。
         this.yBodyRot = this.getYRot();
@@ -2334,6 +2537,19 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     @Override
     public void updateAttributes(ArrayList<GolemMaterial> materials, ArrayList<IUpgradeItem> upgrades, UUID owner) {
         super.updateAttributes(materials, upgrades, owner);
+        // 属性刚算完：把"被原版静默夹掉"的那些打出来（材料/升级白铸是看不出来的，见 logAttributeOverflow）
+        this.logAttributeOverflow();
+        if (DragonDebug.RENDER) {
+            // 排查第三方视觉升级（mgdp 的倒立 / 前后翻转 / 大风车 / 后空翻）为什么在龙身上没效果：
+            // 它们的判据是"这张表里有没有那条 modifier"，所以两端各打一行来对比。
+            StringBuilder sb = new StringBuilder();
+            this.getModifiers().forEach((mod, lv) -> {
+                ResourceLocation id = GolemTypes.MODIFIERS.get().getKey(mod);
+                sb.append(id == null ? mod.getDescriptionId() : id.toString()).append('x').append(lv).append(' ');
+            });
+            Dragon_golems.LOGGER.info("[render] {}端 modifier 表（{} 条）：{}",
+                    this.level().isClientSide() ? "客户" : "服务", this.getModifiers().size(), sb.toString().trim());
+        }
         if (this.level().isClientSide()) {
             return;
         }
@@ -2427,6 +2643,9 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
 
     /** 真正干活的那一半：把不想要的本家 goal 从选择器里摘掉（{@code updateAttributes} 会立刻复用一次）。 */
     private void stripNativeGoals() {
+        // 技能升级的"goal 类挂载点"：本家/compat 那批远程攻击 goal 默认整批摘掉（理由见 isForeignRangedGoal），
+        // 打开 DragonGolemConfig.nativeSkillGoals() 就原样放回来 —— 靠 goal 出手的技能升级因此能生效。
+        boolean keepSkillGoals = DragonGolemConfig.nativeSkillGoals();
         for (WrappedGoal wrapped : new ArrayList<>(this.goalSelector.getAvailableGoals())) {
             Goal goal = wrapped.getGoal();
             if (goal instanceof GolemMeleeGoal
@@ -2434,7 +2653,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                     // 这两个会把 MOVE 通道占死，或者对悬停的龙没有意义，交给 DragonIdleGoal
                     || goal instanceof FollowOwnerGoal
                     || goal instanceof GolemRandomStrollGoal
-                    || isForeignRangedGoal(goal)) {
+                    || (!keepSkillGoals && isForeignRangedGoal(goal))) {
                 this.goalSelector.removeGoal(goal);
             }
         }
@@ -2487,10 +2706,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
 
     /** 本家幽匿材料的 id（音波特判用）。 */
     private static final ResourceLocation SCULK_MATERIAL = new ResourceLocation("modulargolems", "sculk");
-    /** 龙息（普通 / 下界身体）的伤害类型，见 {@code data/dragon_golems/damage_type/dragon_breath.json}。 */
-    private static final ResourceLocation BREATH_DAMAGE_TYPE = Dragon_golems.id("dragon_breath");
-    /** 幽匿身体的音波龙息：额外穿护甲与附魔，见同目录的 {@code dragon_sonic.json} 与 {@code data/minecraft/tags/damage_type/}。 */
-    private static final ResourceLocation SONIC_DAMAGE_TYPE = Dragon_golems.id("dragon_sonic");
+    // 龙息 / 龙弹的伤害类型不再写死在这里：走数据包（content/config/DragonBodyEntry 的
+    // breathDamageType）。内置默认 = dragon_golems:dragon_breath，幽匿身体那条 = dragon_golems:dragon_sonic。
     /** 本家音波 modifier 的 id（必须按 id 取：第三方 mod 会把这条换成自己的实现）。 */
     private static final ResourceLocation SONIC_MODIFIER_ID = new ResourceLocation("modulargolems", "sonic_boom");
     /** 本家下界合金材料的 id（龙息附带凋零用）。 */
@@ -2544,41 +2761,156 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /**
      * 龙息的一跳伤害。
      *
-     * <p><b>走我们自己的伤害类型</b>（{@code data/dragon_golems/damage_type/}）：
-     * 普通 / 下界身体用 {@code dragon_breath}（吃护甲、吃抗性、吃附魔，和原版 {@code mob_attack} 同一档）；
-     * <b>幽匿身体用 {@code dragon_sonic}</b> —— 额外躺在 {@code bypasses_armor} / {@code bypasses_enchantments} 里，
-     * 穿护甲与附魔，但抗性药水仍然挡得住，和原版 {@code sonic_boom}、L2 音爆枪同一档。
+     * <p><b>伤害类型由数据包决定</b>：{@code dragon_bodies} 表里的 {@code breathDamageType}
+     * （内置：其它材料 = {@code dragon_golems:dragon_breath}，幽匿身体 = {@code dragon_golems:dragon_sonic}，
+     * 定义见 {@code data/dragon_golems/damage_type/}）。前者吃护甲 / 抗性 / 附魔，和原版 {@code mob_attack} 同一档；
+     * 后者额外躺在 {@code bypasses_armor} / {@code bypasses_enchantments} 里，穿护甲与附魔，
+     * 但抗性药水仍然挡得住，和原版 {@code sonic_boom}、L2 音爆枪同一档。
      *
      * <p><b>为什么不用原版那两条：</b>原版的 {@code minecraft:bypasses_cooldown} 标签是<b>空的</b>
      * （连 {@code sonic_boom} 自己都不免无敌帧），而这条通道每 10 tick 就打一次 ——
      * 只要把目标顶进无敌帧，旁边的地面傀儡一拳上去就会被按差值削掉一截、甚至整个被吞。
      * 我们自己那两条伤害类型都塞进了 {@code bypasses_cooldown}，再配 {@link #hurtWithoutFrames}
      * 把目标原本的无敌帧原样放回去，于是"龙的持续输出"和"地面傀儡的单发重击"互不干扰。
+     * <b>整合包换成自己的伤害类型时，要照这样也进 {@code bypasses_cooldown}</b>，
+     * 否则龙息会把目标顶在无敌帧里、把旁边地面傀儡的伤害吞掉。
      *
      * <p><b>不要改用 MG 的 {@code echo_attack}：</b>那条连抗性、药水效果、无敌帧都穿，
      * 放在"每 10 tick 跳一次"的常态群攻上会明显超模。{@link DragonSkill#SONIC} 那个大招才用它
      * （15 秒一发，一次性爆发，真伤是它的卖点）。
      *
      * <p>不带横扫 —— 龙息本来就是靠锥体覆盖多个目标的。
+     *
+     * <p><b>同一次龙息里对同一个目标递减</b>（见 {@link #beginBreathVolley()}）：龙息是唯一不吃冷却的
+     * 常态攻击，一轮 60 tick 打 6 跳，六跳都按满伤害算的话单体总量约 2.1 倍攻击力，比 30 秒一次的
+     * 俯冲还高。递减之后总量回到 1 倍攻击力出头，"覆盖一片敌人"这个定位不变（每个目标各自记次数）。
+     * 开关与步长见 {@code DragonGolemConfig.breathDiminishing*}。
      */
     public boolean breathDamage(LivingEntity target, float damageMult, double knockback) {
-        float damage = (float) this.getAttributeValue(Attributes.ATTACK_DAMAGE) * damageMult;
-        DamageSource source = this.breathSource(this.isSonicBody() ? SONIC_DAMAGE_TYPE : BREATH_DAMAGE_TYPE);
+        float damage = (float) this.getAttributeValue(Attributes.ATTACK_DAMAGE)
+                * damageMult * this.breathDiminishing(target);
+        boolean hurt = this.dealSkillDamage(target, this.breathSource(this.bodyEntry().damageType()), damage, knockback);
+        if (hurt && this.breathVolley) {
+            this.breathHits.merge(target.getId(), 1, Integer::sum);
+        }
+        return hurt;
+    }
+
+    // ---- 技能伤害的统一挂载点（技能升级靠它生效）----
+
+    /**
+     * <b>龙身上所有"技能伤害"的唯一出口 —— 技能升级要生效就必须走这里。</b>
+     *
+     * <p>傀儡装配<b>没有</b> {@code onAttack} / {@code onHit} 这类"打人时叫我一下"的回调
+     * （整个 {@code GolemModifier} 里一个函数式参数都没有），它所有的攻击类升级都是
+     * <b>靠真实伤害事件分发</b>的：
+     * <pre>
+     * target.hurt(带 golem 当攻击者的 DamageSource, 伤害)
+     *   ├─ LivingAttackEvent → modifier.onAttackTarget / onKillTarget（本家 ModifierEventListeners）
+     *   ├─ LivingHurtEvent   → modifier.onHurtTarget（药水效果 / 目标加成 / 各种命中特效）
+     *   └─ l2damagetracker 的 AttackCache 链 → modifySource（穿甲）/ modifyDamage / finalizeHurtTarget（吸血）
+     * </pre>
+     * 所以"给龙补一个普通攻击"是错的方向（龙本来就没有近战，也没有 mob_weapon_api 那套"使用"AI），
+     * <b>正确做法是让龙的技能伤害走真实伤害源</b>：攻击者 = 这条龙，来源由 {@code level.damageSources()} 造。
+     *
+     * <p><b>两个坑（都已踩过）：</b>
+     * <ol>
+     *   <li>{@code new DamageSource(...)} 直接 new 出来的源<b>不会触发 l2damagetracker 的
+     *       {@code CreateSourceEvent}</b>（那个事件挂在 {@code DamageSources.source(...)} 上），
+     *       于是"穿甲 / 破魔"这类改<b>伤害源</b>的升级对龙息完全无效 —— 这是"技能升级没效果"的主因之一。</li>
+     *   <li>本家 {@code onAttackTarget} 前面还有一道 {@code golem.canAttack(目标)} 闸门：
+     *       带 {@code PASSIVE}（坐骑升级）的龙平时连这个事件都进不去 —— 那是设计本意（被动），
+     *       玩家按键时由 {@link #riderCombat} 临时放行。</li>
+     * </ol>
+     *
+     * <p>这里统一走 {@link #hurtWithoutFrames}：把目标原本的无敌帧原样放回去，
+     * 免得"每 10 tick 一跳"的龙息替别人占住无敌帧。想给龙加新技能（或者第三方想挂自己的招式）
+     * 就直接调这个方法，其余那套升级管线会自动接上。
+     *
+     * @param source    伤害源；传 {@code null} 就退化成 {@code mobAttack(龙)}。想细分伤害类型就自己造
+     * @param knockback 命中后的击退力度，{@code <= 0} 表示不推
+     * @return 这一下有没有真的打进去（被免伤 / 无敌挡掉返回 false）
+     */
+    public boolean dealSkillDamage(LivingEntity target, @Nullable DamageSource source, float damage, double knockback) {
+        DamageSource src = source == null ? this.damageSources().mobAttack(this) : source;
+        // 先把 mob 归属记上（原版 hurt 内部也会记，这里对"绕过 hurt 的伤害类型"也保证生效）
         target.setLastHurtByMob(this);
-        boolean hurt = this.hurtWithoutFrames(target, source, damage);
+        boolean hurt = this.hurtWithoutFrames(target, src, damage);
         if (hurt && knockback > 0.0D) {
             target.knockback(knockback, this.getX() - target.getX(), this.getZ() - target.getZ());
         }
         return hurt;
     }
 
-    /** 按 id 从动态注册表里取我们自己的伤害类型；数据包被改坏时退回原版，免得整条通道哑火。 */
+    /** 一轮龙息里"每个目标已经挨了几跳"（目标 id → 次数），只在 {@link #breathVolley} 为真时有意义。 */
+    private final HashMap<Integer, Integer> breathHits = new HashMap<>();
+    /** 这一轮龙息是否在进行中（喷息开始前置真、goal 收工时置假）。 */
+    private boolean breathVolley;
+
+    /**
+     * 开一轮龙息：清空"每个目标挨了几跳"的计数。
+     *
+     * <p>由两个喷息 goal 在<b>进入前摇</b>时调用（{@code DragonRangedGoal} 的 BREATH_CHARGE、
+     * {@code DragonRiderSkillGoal.start()}），{@link #endBreathVolley()} 在它们的 {@code stop()} 里调。
+     * 计数只在一轮之内有效，所以上一轮剩下的计数不会漏到下一轮。
+     */
+    public void beginBreathVolley() {
+        this.breathHits.clear();
+        this.breathVolley = true;
+    }
+
+    /** 收一轮龙息（和 {@link #beginBreathVolley()} 配对）。 */
+    public void endBreathVolley() {
+        this.breathVolley = false;
+        this.breathHits.clear();
+    }
+
+    /** 这一轮里同一个目标已经挨了几跳（0 = 还没挨过，下一跳按满伤害）。 */
+    public int breathHitsOn(LivingEntity target) {
+        return this.breathVolley ? this.breathHits.getOrDefault(target.getId(), 0) : 0;
+    }
+
+    /** 这一跳的递减倍率：{@code max(下限, 1 - 步长 × 已命中次数)}；不在某一轮里 / 配置关掉时恒为 1。 */
+    private float breathDiminishing(LivingEntity target) {
+        if (!this.breathVolley || !DragonGolemConfig.breathDiminishing()) {
+            return 1.0F;
+        }
+        int hits = this.breathHitsOn(target);
+        if (hits <= 0) {
+            return 1.0F;
+        }
+        double step = DragonGolemConfig.breathDiminishingStep();
+        double min = DragonGolemConfig.breathDiminishingMin();
+        return (float) Math.max(min, 1.0D - step * hits);
+    }
+
+    /**
+     * 按 id 从动态注册表里取我们自己的伤害类型；数据包被改坏时退回原版，免得整条通道哑火。
+     *
+     * <p><b>关键：造源之前要先过一遍 l2damagetracker 的 {@code CreateSourceEvent}。</b>
+     * 本家所有"改<b>伤害源</b>"的升级（{@code armor_penetration} 穿甲、破魔、各种
+     * {@code modifySource}）都挂在这个事件上，而它平时是由 {@code DamageSources.source(...)}
+     * 那个<b>私有</b>重载触发的（l2damagetracker 自己 mixin 进去）——
+     * 我们直接 {@code new DamageSource(...)} 就把它整条绕过去了，表现就是"装了穿甲升级、
+     * 龙息照样被护甲挡"。所以这里手动构造同一个事件、手动调
+     * {@code AttackEventHandler.onDamageSourceCreate}（它的返回值就是被监听器改造过的源）。
+     *
+     * <p>返回 null 有两种情况：没有监听器要改（照原样造源即可），或者这是客户端
+     * （那个方法开头就 {@code if (level.isClientSide()) return null;} —— 客户端伤害只是表现，
+     * 不用管）。
+     */
     private DamageSource breathSource(ResourceLocation type) {
+        ResourceKey<DamageType> key = ResourceKey.create(Registries.DAMAGE_TYPE, type);
         try {
-            return new DamageSource(
-                    this.level().registryAccess().lookupOrThrow(Registries.DAMAGE_TYPE)
-                            .getOrThrow(ResourceKey.create(Registries.DAMAGE_TYPE, type)),
-                    this);
+            Registry<DamageType> registry = this.level().registryAccess().registryOrThrow(Registries.DAMAGE_TYPE);
+            if (!this.level().isClientSide()) {
+                DamageSource created = AttackEventHandler.onDamageSourceCreate(
+                        new CreateSourceEvent(registry, key, this, this));
+                if (created != null) {
+                    return created;
+                }
+            }
+            return new DamageSource(registry.getHolderOrThrow(key), this);
         } catch (RuntimeException e) {
             return this.damageSources().mobAttack(this);
         }
@@ -2605,11 +2937,58 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return hurt;
     }
 
-    /** 龙弹的直击/溅射：伤害类型 {@code mob_projectile}，攻击者是龙（所以药水升级照样生效）。 */
+    /**
+     * 俯冲撞击时触发"<b>只有近战才会触发</b>"的那一族升级（本家 {@code EarthquakeHelper}：地震 / 跳劈）。
+     *
+     * <h2>为什么需要单独接这一条</h2>
+     * 傀儡装配的攻击类升级其实分三族，只有中间那一族和"怎么打出去"有关：
+     * <ol>
+     *   <li><b>伤害事件族</b>（药水效果 / 目标加成 / 穿甲 / 吸血 / 击杀特效…）—— 与攻击方式无关，
+     *       任何一次真实伤害都会触发，走 {@link #dealSkillDamage} 就够了；</li>
+     *   <li><b>纯近战族</b>（{@code EarthquakeHelper} 的地震 / 跳劈，来自巨兽、猫灾、Mowzie 等材料）——
+     *       本家只从 {@code GolemMeleeGoal} 的跳劈里问 {@code EarthquakeHelper.findInstance}，
+     *       <b>龙没有近战攻击，所以这一族在龙身上原本完全是死的</b>（这就是"技能升级没效果"里
+     *       最典型的一类）。这里把<b>俯冲撞击</b>当成龙的近战：撞上去那一刻按本家同一套冷却判定触发；</li>
+     *   <li><b>goal 族</b>（炽焰喷射 / 死光 / 音波炮…）—— 各自生成自己的投射物，归
+     *       {@code DragonGolemConfig.nativeSkillGoals()} 那个开关管，不是这里的事。</li>
+     * </ol>
+     *
+     * <p><b>本家自己的闸门照旧遵守</b>：{@code findInstance} 在"带着乘客"时返回 null
+     * （本家不想让驮着人的傀儡震地），被动（装坐骑升级）的龙不算 —— 这两条都不是我们加的。
+     * 第一枪用 {@code findInstance}（带目标与射程判定，和本家近战完全一致），
+     * 打不着（大体型的接触盒可能比 modifier 自己的射程更远）再退一步用
+     * {@code findMountInstance}（"载具式撞击"那条路，狗骑乘时用的就是它），
+     * 两者都尊重各自 modifier 的冷却。
+     *
+     * @param target 这一下撞到的目标（触发一次即可，调用方负责"一轮只调一次"）
+     * @return 这一下有没有真的放出地震 / 跳劈
+     */
+    public boolean triggerMeleeUpgradesOnDive(LivingEntity target) {
+        if (this.level().isClientSide() || !DragonGolemConfig.diveTriggersMelee() || target == null) {
+            return false;
+        }
+        EarthquakeHelper.Instance instance = EarthquakeHelper.findInstance(this, target, this.distanceToSqr(target));
+        if (instance == null && this.getPassengers().isEmpty()) {
+            instance = EarthquakeHelper.findMountInstance(this);
+        }
+        if (instance == null) {
+            return false;
+        }
+        instance.modifier().performEarthQuake(this, instance.lv());
+        instance.addCD();
+        return true;
+    }
+
+    /**
+     * 龙弹的直击 / 溅射：伤害类型 {@code mob_projectile}，攻击者是龙
+     * （所以药水升级、穿甲、吸血那一整套照样生效），也顺手把目标的无敌帧原样放回去。
+     *
+     * <p>击退方向按"弹丸 → 目标"算（不是龙 → 目标），这样擦边命中的推开方向看起来才对。
+     */
     public boolean rocketDamage(LivingEntity target, net.minecraft.world.entity.projectile.Projectile ball,
                                 float damageMult, double knockback) {
         float damage = (float) this.getAttributeValue(Attributes.ATTACK_DAMAGE) * damageMult;
-        boolean hurt = target.hurt(this.damageSources().mobProjectile(ball, this), damage);
+        boolean hurt = this.dealSkillDamage(target, this.damageSources().mobProjectile(ball, this), damage, 0.0D);
         if (hurt && knockback > 0.0D) {
             target.knockback(knockback, ball.getX() - target.getX(), ball.getZ() - target.getZ());
         }
@@ -2619,31 +2998,66 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /**
      * 龙息用的粒子。
      *
-     * <p>主题映射：<b>幽匿 → 音波</b>（监守者那一套）、<b>下界合金 → 灵魂火</b>、其它 → 普通火焰。
-     * （原来这里是反的：灵魂火给了幽匿，而"下界"那档反倒只是普通火焰 —— 灵魂沙/灵魂土本来就在下界。）
+     * <p><b>由数据包决定</b>：{@code dragon_bodies} 表里那条的 {@code breathParticle}
+     * （内置：幽匿身体 → {@code minecraft:sonic_boom}、下界合金身体 → {@code minecraft:soul_fire_flame}、
+     * 其它 → {@code minecraft:flame}）。整合包可以写任意粒子，包括带参数的写法
+     * （如 {@code minecraft:dust{color:[1,0,0],scale:1.5}}）。
      *
-     * <p>想整体换风格就只改这一个方法：龙息前摇、喷流、落点溅射、枪口火苗、以及音爆的前摇
+     * <p>想整体换风格只改数据包，不用碰代码：龙息前摇、喷流、落点溅射、枪口火苗、以及音爆的前摇
      * 全都读它。
      */
     public ParticleOptions breathParticle() {
-        if (this.isSonicBody()) {
-            return ParticleTypes.SONIC_BOOM;
-        }
-        return this.isNetherBody() ? ParticleTypes.SOUL_FIRE_FLAME : ParticleTypes.FLAME;
+        return this.bodyEntry().breathParticle();
     }
 
     /**
-     * 龙弹落点那团"残留云"用的粒子。
+     * 龙弹落点那团"残留云"用的粒子（{@code cloudParticle}）。
      *
      * <p>原来是硬编码的原版 {@code DRAGON_BREATH}（那种紫色），所有材料的龙都吐同一朵紫云 ——
-     * 下界龙吐紫云比龙息还违和。现在和 {@link #breathParticle()} 同一套映射，
-     * 只是云不适合用"一次性"的音波环，幽匿那档换成飘散的 {@code SCULK_SOUL}。
+     * 下界龙吐紫云比龙息还违和。现在和 {@link #breathParticle()} 同一套数据包映射，
+     * 只是云不适合用"一次性"的音波环，内置的幽匿那档换成飘散的 {@code minecraft:sculk_soul}。
      */
     public ParticleOptions breathCloudParticle() {
-        if (this.isSonicBody()) {
-            return ParticleTypes.SCULK_SOUL;
+        return this.bodyEntry().cloudParticle();
+    }
+
+    /**
+     * 这条龙该用哪一份"身体主题"配置（数据包 {@code modulargolems_config/dragon_bodies}）。
+     *
+     * <p><b>匹配顺序</b>：
+     * <ol>
+     *   <li><b>身体部件</b>那份材料的条目 —— 不看它的 {@code match}，身体是这条龙的核心；</li>
+     *   <li>其它部件里写了 {@code "match": "any"} 的条目（按材料表顺序，先命中先用）；</li>
+     *   <li>{@code dragon_golems:default} 那条（数据包可覆盖它来统一改"其它材料"的表现）；</li>
+     *   <li>都没有 → {@link DragonBodyEntry#FALLBACK}，正好等于改造前"其它材料"的老行为。</li>
+     * </ol>
+     *
+     * <p>材料列表两端同步（贴图也靠它取），所以客户端问这个问题同样有效。
+     */
+    public DragonBodyEntry bodyEntry() {
+        DragonBodyConfig cfg = DragonBodyConfig.get();
+        if (cfg == null) {
+            return DragonBodyEntry.FALLBACK;
         }
-        return this.isNetherBody() ? ParticleTypes.SOUL_FIRE_FLAME : ParticleTypes.DRAGON_BREATH;
+        // 1) 身体部件说了算
+        for (GolemMaterial mat : this.getMaterials()) {
+            if (mat.part() == DragonGolemItems.BODY.get()) {
+                DragonBodyEntry e = cfg.entry(mat.id());
+                if (e != null) {
+                    return e;
+                }
+                break;
+            }
+        }
+        // 2) 其它部件里声明了 match=any 的
+        for (GolemMaterial mat : this.getMaterials()) {
+            DragonBodyEntry e = cfg.entry(mat.id());
+            if (e != null && e.matchesAnyPart()) {
+                return e;
+            }
+        }
+        // 3) default → 4) Java 侧兜底
+        return cfg.fallback();
     }
 
     /**
@@ -2657,17 +3071,25 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      *
      * <p>音波在设定上就是幽匿 / 监守者的东西，所以这些全挂在它身上：
      * <ul>
-     *   <li>龙息的粒子和伤害类型（喷的是音波，不是火）；</li>
      *   <li>{@link DragonSkill#SONIC} 那个大招 —— <b>只有幽匿身体的龙才有</b>；
-     *       其它材料的龙回到"俯冲 / 龙息 / 龙弹"三招。</li>
+     *       其它材料的龙回到"俯冲 / 龙息 / 龙弹"三招；</li>
+     *   <li>身体是幽匿时补挂本家音波 modifier（见 {@link #updateAttributes}）。</li>
      * </ul>
      * 材料列表是两端同步的（贴图也靠它取），所以客户端问这个问题同样有效。
+     *
+     * <p><b>注意：粒子和伤害类型已经搬去数据包了</b>（见 {@link #bodyEntry()}），
+     * 这个方法现在只管"技能槽位"这一档，别再往它身上挂表现层的判断。
      */
     public boolean isSonicBody() {
         return this.bodyHasMaterial(SCULK_MATERIAL);
     }
 
-    /** 身体部件是不是下界合金（灵魂火那一系，见 {@link #isSonicBody()} 的说明）。 */
+    /**
+     * 身体部件是不是下界合金。
+     *
+     * <p>表现层（灵魂火粒子、着火 5 秒、凋零）现在由数据包的 {@code modulargolems:netherite}
+     * 那条决定；这里保留方法只为"以后要按身体材料开技能槽"时有个现成的判断。
+     */
     public boolean isNetherBody() {
         return this.bodyHasMaterial(NETHERITE_MATERIAL);
     }
@@ -2676,24 +3098,29 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 龙息 / 龙弹带来的负面效果（<b>自带的那一层</b>，和傀儡装配的药水效果升级互不影响：
      * 那些是靠 {@code LivingHurtEvent} 自动附加的，见 {@code PotionAttackModifier}）。
      *
-     * <ul>
-     *   <li>幽匿身体：黑暗 + 虚弱 I（各 5 秒，够喷息的三秒之后还留一点余味）；</li>
-     *   <li>下界合金身体：着火 5 秒 + 凋零 I；</li>
-     *   <li>其它：着火 3 秒。</li>
-     * </ul>
+     * <p><b>由数据包决定</b>：对应条目的 {@code fireSeconds} 与 {@code effects}
+     * （内置：幽匿身体 = 黑暗 + 虚弱 I（各 5 秒）；下界合金身体 = 着火 5 秒 + 凋零 I；
+     * 其它 = 着火 3 秒）。整合包写了不存在的效果 id / 时长为 0 的条目会被跳过，
+     * 只影响这一条，不会崩。
      */
     public void applyBreathEffects(LivingEntity target) {
-        if (this.isSonicBody()) {
-            target.addEffect(new MobEffectInstance(MobEffects.DARKNESS, 100, 0), this);
-            target.addEffect(new MobEffectInstance(MobEffects.WEAKNESS, 100, 0), this);
+        DragonBodyEntry entry = this.bodyEntry();
+        if (entry.fireSeconds > 0) {
+            target.setSecondsOnFire(entry.fireSeconds);
+        }
+        if (entry.effects == null) {
             return;
         }
-        if (this.isNetherBody()) {
-            target.setSecondsOnFire(5);
-            target.addEffect(new MobEffectInstance(MobEffects.WITHER, 60, 0), this);
-            return;
+        for (DragonBodyEntry.EffectEntry e : entry.effects) {
+            if (e.effect == null || e.duration <= 0) {
+                continue;
+            }
+            MobEffect effect = BuiltInRegistries.MOB_EFFECT.get(e.effect);
+            if (effect == null) {
+                continue;
+            }
+            target.addEffect(new MobEffectInstance(effect, e.duration, e.amplifier), this);
         }
-        target.setSecondsOnFire(3);
     }
 
     /**
@@ -2719,6 +3146,38 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             }
         }
         return false;
+    }
+
+    /**
+     * 属性基础值超过原版上限时打一行日志（配置项 {@code attributes.logOverflow}，默认开）。
+     *
+     * <p>原版 {@code RangedAttribute.sanitizeValue} 是<b>静默</b>夹取的：超上限的部分直接丢掉，
+     * 不报错、不留痕 —— 表现就是"材料/升级明明装上了，属性面板却顶在一个整数上不动"，
+     * 而且本家的属性界面还会用未夹取的 {@code getBaseValue()} 算 tooltip，
+     * 于是"面板显示 1024、tooltip 显示 1400"。这一行日志是唯一的提示。
+     *
+     * <p>实例：幽匿身体的龙裸装就有 1000 血（上限 1024），再挂一级体型升级或坐骑升级就会被夹走
+     * 200~576 血。默认由 {@code attributes.maxHealthCapFix}（内置版的 AttributeFix，
+     * 只放宽最大生命）把上限抬开，所以正常情况下这一行不该出现；
+     * 关掉那个开关、或者反射没能生效时，这里就是唯一的提示。
+     */
+    private void logAttributeOverflow() {
+        if (!DragonGolemConfig.logAttributeOverflow() || this.level().isClientSide()) {
+            return;
+        }
+        for (Attribute attribute : ForgeRegistries.ATTRIBUTES) {
+            AttributeInstance ins = this.getAttribute(attribute);
+            if (ins == null || !(attribute instanceof RangedAttribute ranged)) {
+                continue;
+            }
+            double base = ins.getBaseValue();
+            double max = ranged.getMaxValue();
+            if (base > max) {
+                Dragon_golems.LOGGER.info("[attr] {} 的基础值 {} 超过原版上限 {}，实际生效 {}（超出的部分被静默丢掉）",
+                        attribute.getDescriptionId(), String.format("%.2f", base),
+                        String.format("%.2f", max), String.format("%.2f", ins.getValue()));
+            }
+        }
     }
 
     private void applyHover() {
@@ -2804,10 +3263,11 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
-     * 是不是"停着不动、等人来骑"的状态：手杖切到"停留"，或者待机满 30 秒。
+     * 是不是"停着不动"的状态：手杖切到"停留"，或者待机满 30 秒。
      *
-     * <p>骑乘入口（{@link #startRidingFrom(Player)}）也用它：不允许"追着一条正在猛冲的龙骑上去"，
-     * 只能等它停下来。想放宽就把这个判断去掉（或者改成"只要没在俯冲就行"）。
+     * <p>只用于表现（{@link #hoverHeight()} 用它决定贴地还是正常档）。
+     * <b>不要拿它当骑乘闸门</b>：早先 {@link #startRidingFrom(Player)} 用过它，
+     * 真机反馈是"跟在身边的龙右键完全没反应"，已经去掉。
      */
     public boolean isParked() {
         return this.getMode() == GolemModes.STAND || (this.idleSettled && this.getTarget() == null);
@@ -2852,6 +3312,13 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /** 往下找地面时最多扫多少格。比天花板深一些：洞里悬停高度常有十几格。 */
     private static final int FLOOR_SCAN = 48;
     /**
+     * {@link #liquidTopY} 往上找液面时最多走多少格。
+     *
+     * <p>32 够覆盖"龙泡在普通湖/岩浆湖里"的情况；瀑布那种长水柱就够不到了，
+     * 但那也不该跟着爬到源头（见那里的说明）。
+     */
+    private static final int LIQUID_SCAN = 32;
+    /**
      * "局部地面"的兜底：往下扫不到任何方块时，允许向下取到世界地表再往下这么多格。
      *
      * <p>为什么要兜底：从高空往下看、或者悬在熔岩湖/虚空上方时，脚下 FLOOR_SCAN 格内
@@ -2866,22 +3333,78 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      *
      * <p>只找<b>有碰撞形状</b>的方块（草/雪层/藤蔓不算地面），和 {@code hasRoomFor}
      * 是同一套判据。这样"站在草丛上"和"站在石头上"的参照一致。
+     *
+     * <p><b>★ 液面（水 / 岩浆）也算地面 —— 这是"龙会自己扎进水里、扎进岩浆里"的根因。</b>
+     * 水和岩浆<b>都没有碰撞形状</b>，所以旧版会一路穿过它们去找湖底，于是
+     * {@code hoverTargetY = 湖底 + 1 + 悬停高度} —— 湖稍微深一点这个高度就在液面<b>以下</b>，
+     * 龙就稳稳地悬在湖底上方，也就是"飞进水里/岩浆里"。从高空下降还有第二条路：
+     * 往下 {@link #FLOOR_SCAN} 格扫不到任何东西时，兜底值（世界地表 − {@link #FLOOR_FALLBACK}）
+     * 同样落在液面以下。现在扫描先碰到液面就以<b>液面</b>为准，
+     * 所以"在湖上悬停"= 悬在液面之上 {@link #hoverHeight()} 格。
      */
     public double localFloorY() {
+        return this.scanFloor(this.blockPosition().getX(), this.blockPosition().getZ(),
+                Mth.floor(this.getY())).y();
+    }
+
+    /**
+     * 某个水平坐标下"最上面那层支撑面"是不是液体（水面 / 岩浆面）。
+     *
+     * <p>起点和 {@link #localFloorY()} 一样是龙当前的高度，所以语义就是
+     * "龙飞到这个水平坐标时，脚底下那层是不是液体"。给随机游走的取样用：
+     * 别把目标点定在湖/岩浆湖上（见 {@link #localFloorY()} 的说明）。
+     */
+    public boolean isLiquidFloorAt(int x, int z) {
+        return this.scanFloor(x, z, Mth.floor(this.getY())).liquid();
+    }
+
+    /** {@link #scanFloor} 的结果：支撑面高度 + 那一层是不是液体。 */
+    private record Floor(double y, boolean liquid) {
+    }
+
+    /**
+     * 从 {@code startY} 往下找"支撑面"：第一个有碰撞形状的方块，或者第一层液体（水面 / 岩浆面）。
+     *
+     * <p>液体那一档要往上把<b>整根液柱的顶面</b>找出来（见 {@link #liquidTopY}）：
+     * 已经泡在水里的龙若只按"当前这一格水的顶"算，就得一格一格往上磨，出水前要磨好几秒。
+     */
+    private Floor scanFloor(int x, int z, int startY) {
         Level level = this.level();
-        int x = this.blockPosition().getX();
-        int z = this.blockPosition().getZ();
-        int startY = Mth.floor(this.getY());
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
         for (int y = startY; y > startY - FLOOR_SCAN && y >= level.getMinBuildHeight(); y--) {
             cursor.set(x, y, z);
-            if (!level.getBlockState(cursor).getCollisionShape(level, cursor).isEmpty()) {
+            BlockState state = level.getBlockState(cursor);
+            if (!state.getCollisionShape(level, cursor).isEmpty()) {
                 // 方块占据 [y, y+1)，所以站在它上面的高度就是 y+1
-                return y + 1.0D;
+                return new Floor(y + 1.0D, false);
+            }
+            if (!state.getFluidState().isEmpty()) {
+                // 水草、海带这类"含水方块"的流体状态非空，所以它们和纯水一样算液面
+                return new Floor(this.liquidTopY(x, z, y) + 1.0D, true);
             }
         }
-        // 兜底：往下扫不到东西（悬在深渊/熔岩上方/高空），用世界地表作参照
-        return level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z) - FLOOR_FALLBACK;
+        // 兜底：往下扫不到东西（悬在深渊/高空），用世界地表作参照。
+        // 注意 MOTION_BLOCKING_NO_LEAVES 本身就把液体算作"挡高度"，所以这个兜底值也在液面之上。
+        return new Floor(level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z) - FLOOR_FALLBACK, false);
+    }
+
+    /**
+     * 液柱顶面所在方块的 y（从 {@code fromY} 往上走，直到不再是液体）。
+     *
+     * <p>上限 {@link #LIQUID_SCAN}：瀑布那种从头顶一路流下来的水柱不该把龙带到源头去；
+     * 够不到真正的液面也无所谓 —— 下一 tick 会重新算一次，一层层往上挪就是了。
+     */
+    private int liquidTopY(int x, int z, int fromY) {
+        Level level = this.level();
+        BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
+        int last = Math.min(fromY + LIQUID_SCAN, level.getMaxBuildHeight() - 1);
+        for (int y = fromY + 1; y <= last; y++) {
+            probe.set(x, y, z);
+            if (level.getBlockState(probe).getFluidState().isEmpty()) {
+                return y - 1;
+            }
+        }
+        return last;
     }
 
     /** 骑手冲锋专用的"上一 tick 位置"，用来算实际位移（见 aiStep 里的诊断）。 */
@@ -2978,17 +3501,19 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 伤害结算。过一遍原版 {@code hurt}，让材料/升级的伤害管线照常生效；
      * {@code knockback} 参数以前是丢掉的，现在按"龙 → 目标"方向推开（原版 hurt 内部也是这么推的），
      * 这样俯冲撞击的击退才有意义。
+     *
+     * <p>这条是<b>俯冲（含掠过）</b>的结算口，走本家的横扫管线
+     * （{@code performRangedDamage → performDamageTarget}），所以材料提供的
+     * {@code modulargolems:sweep} 会对撞击点周围一起生效。伤害源是
+     * {@code damageSources().mobAttack(龙)}，也就是一个"真正的傀儡攻击"——
+     * 技能升级那套（命中特效 / 击杀特效 / 伤害源改造）照常触发。
+     * 无敌帧同样打完就还回去（见 {@link #dealSkillDamage}），免得俯冲把旁边傀儡的伤害吞掉。
      */
     @Override
     protected boolean performDamageTarget(Entity target, float damage, double knockback) {
         if (!(target instanceof LivingEntity living)) {
             return false;
         }
-        living.setLastHurtByMob(this);
-        boolean hurt = living.hurt(damageSources().mobAttack(this), damage);
-        if (hurt && knockback > 0.0D) {
-            living.knockback(knockback, this.getX() - living.getX(), this.getZ() - living.getZ());
-        }
-        return hurt;
+        return this.dealSkillDamage(living, this.damageSources().mobAttack(this), damage, knockback);
     }
 }

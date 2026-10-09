@@ -266,8 +266,11 @@ public class DragonSonicGoal extends Goal {
         float damage = Math.max(DAMAGE_MIN,
                 (float) this.dragon.getAttributeValue(Attributes.ATTACK_DAMAGE) * DAMAGE_FACTOR);
         for (LivingEntity victim : victims) {
-            victim.hurt(source, damage);
-            double resist = 1.0D - victim.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE);
+            // 走统一技能伤害出口：过一遍升级挂载点（命中特效 / 击杀特效），并保留目标原本的无敌帧
+            this.dragon.dealSkillDamage(victim, source, damage, 0.0D);
+            // 击退抗性只用来"削"击退：夹在 0 以上，抗性拉满就是完全不推（原版 LivingEntity#knockback
+            // 也是这个语义，只不过它靠 `<= 0` 提前返回，而 Entity#push 没有那道守卫）
+            double resist = Math.max(0.0D, 1.0D - victim.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE));
             victim.push(dir.x * KNOCKBACK_H * resist, dir.y * KNOCKBACK_V * resist,
                     dir.z * KNOCKBACK_H * resist);
         }

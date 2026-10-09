@@ -9,6 +9,11 @@
 > 载一个玩家，并用 **空格上升 / Shift 下降 / WASD 前后左右 / 鼠标决定机头朝向与俯仰**
 > 在大世界里自由飞。实际做了什么、在哪几个文件里，见文末的
 > [七、已经落地了什么](#七已经落地了什么)。
+>
+> **2026 第二刀（对应"小问题"清单）**：坐骑升级现在**能装到龙身上**了（第一节的结论已作废，
+> 见 `RideUpgradeMixin`）；泰坦体型下"乘客被自己的龙挡住"也修了（子箱的 root vehicle +
+> 座椅净空，见第七节末）；选定/回收补了拾取半径与回收手杖瞄准辅助。数值与开关的统一说明在
+> [CONFIG.md](CONFIG.md)。
 
 ## 一、升级能不能装在龙身上：只有一条被挡
 
@@ -33,6 +38,13 @@ public boolean fitsOn(GolemType<?, ?> type) {
 
 结论：**除了坐骑升级（`modulargolems:mount_upgrade`，内部 id `ridding_speed_up`），
 本家其它升级现在就能装在龙身上**，不需要改任何东西。
+
+> **★ 这一条现在被我们改掉了（2026 第二刀）**：坐骑升级**也能装到龙身上**了 ——
+> `mixin/RideUpgradeMixin` 在 `fitsOn` 的 HEAD 处补一句"目标是龙 → 放行"
+> （`require = 0`，本家改了也不会崩），开关是 TOML 里的
+> `mount.mountUpgradeOnDragon`（默认开，关掉就退回下面这个原版行为）。
+> 装上之后龙会带 `GolemFlags.PASSIVE`（AI 不索敌、不被 mob 盯上），
+> 但**驾驶与骑手指令 R/G/V 完全不受影响** —— 那几条路都不看这个 flag。
 
 ## 二、升级槽：龙是 5，比狗（2）还多
 
@@ -109,7 +121,7 @@ return count <= Math.min(size * 2 - 1, 3) && total <= getBbWidth() + 1e-3;
 |---|---|---|
 | 默认 `GOLEM_SIZE` | **1**（`dog_golem` 注册属性时写死） | **5.0**（我们 `createAttributes` 里写的） |
 | 默认体积 | 0.9 × 0.9 | **2.6 × 2.2**（`DragonGolemItems` 的 `.sized(2.6F, 2.2F)`） |
-| 重铸基数 | 各部件铁砧消耗之和 | 8 + 12 + 12 + 8 + 8 = **48** |
+| 重铸基数 | 各部件铁砧消耗之和 | 64 × 5 = **320** |
 | 现在能不能载客 | 能（自带上面那 6 个覆写），骑乘杖 / 傀儡 `checkRide` 都认狗 | **不能**：龙一个载客方法都没覆写；而且三个"上龙"入口全写死了狗 |
 
 不过龙的 AI **已经给"玩家驾驶"让好路了**：`DragonIdleGoal.movable()`、`DragonRangedGoal.canUse()`、
@@ -176,14 +188,18 @@ return count <= Math.min(size * 2 - 1, 3) && total <= getBbWidth() + 1e-3;
 注意"乘客"是混着算的：1 个玩家 + 2 个傀儡就满了；`getControllingPassenger` 只看第一个乘客，
 所以谁先上去谁驾驶。
 
+> **落地时没有照搬这两条**（见第七节）：龙自己的 `canAddPassenger` 不是"数量 + 宽度"公式，
+> 而 `getControllingPassenger()` 也不是"只看 0 号位"—— 它扫一遍乘客、**有玩家就归玩家开**，
+> 所以"傀儡先坐上去、玩家后上来"时驾驶权仍然归玩家（原版会把玩家插到 0 号位）。
+
 ## 五、想落地的话，三种做法
 
 | 方案 | 改哪里 | 代价 |
 |---|---|---|
-| A. 让本家那条坐骑升级对龙生效 | mixin `RideUpgrade#fitsOn`（`@Inject(HEAD, cancellable)`，判断 `type == DragonGolemItems.TYPE.get()`） | 本仓库要开 mixin 基础设施（`dragon_golems.mixins.json` + build.gradle 的 `MixinConfigs`；`mixin.env.remapRefMap` 已经有了）。好处是玩家看到的就是本家那条升级物品 |
+| A. 让本家那条坐骑升级对龙生效 | mixin `RideUpgrade#fitsOn`（`@Inject(HEAD, cancellable)`，判断 `type == DragonGolemItems.TYPE.get()`） | ✅ **已落地**：`mixin/RideUpgradeMixin`（开关 `mount.mountUpgradeOnDragon`）。好处是玩家看到的就是本家那条升级物品 |
 | B. 自己做一条"龙用坐骑升级" | 继承本家 `RideUpgrade` 覆写 `fitsOn` + 用 `SimpleUpgradeItem` 做物品，注册进本家 `GolemTypes.MODIFIERS`（写法照军械库 `GolemUpgrades`，那边有 20 多个例子） | 不用 mixin，但要额外多一条升级物品；且**必须配合 C** 才有意义 |
 | C. 让龙真能载客 | `DragonGolemEntity` 搬入上面那 6 个方法（`canAddPassenger` / `positionRider` / `getPassengersRidingOffset` / `getControllingPassenger` / `onPassengerTurned` / `addPassenger`；公式里的 3 可以按龙的定位再定） | 纯我们自己的代码，不需要 mixin |
-| C′. 再加"上龙"入口 | 最简单：我们自己加一根骑乘道具（`user.startRiding(dragon)`）；想复用本家的骑乘杖/傀儡自动上坐骑，就得 mixin `RiderWandItem.ride`（私有静态，只对 `DogGolemEntity` 执行 startRiding；由 `m_6880_` = `interactLivingEntity` 调）、`HumanoidGolemEntity.checkRide`（认狗和马）、`MetalGolemEntity.checkRide`（只认狗，而且要求狗比它宽） | 不加就永远是"能载但没人上得去" |
+| C′. 再加"上龙"入口 | ✅ **两条都落地了**。**玩家**那条：`DragonRideHandler`（`PlayerInteractEvent.EntityInteract`，`rider_wand` 与 `omnipotent_wand_rider` 两种手杖都认，**不开 mixin**）。**傀儡乘客**那条：`GolemCheckRideMixin`（注入本家 `MetalGolemEntity` / `HumanoidGolemEntity` 的 `checkRide` HEAD，只在目标是龙时接管；本家那两个覆写只认狗 / 马）。见下文「上龙入口」与「傀儡乘客（炮台）」 | 不再需要上游 mgdp |
 
 飞行坐骑还多一层：玩家要**驾驶**的话得写 `getRiddenInput` / `getRiddenSpeed` / 跳跃那套
 （狗是地面版：`getRiddenSpeed` 用移速 × `MGConfig.riddenSpeedFactor`，`executeRidersJump` 给竖直速度），
@@ -244,18 +260,40 @@ return count <= Math.min(size * 2 - 1, 3) && total <= getBbWidth() + 1e-3;
   `return true` —— 手杖判定"成功"、人却没上去。所以加了 `DragonRideHandler`
   （Forge 的 `PlayerInteractEvent.EntityInteract`，它在实体交互之前派发），
   **不改别人的代码、不开 mixin**。
+- **必须同时认两种手杖**：普通骑乘手杖 `modulargolems:rider_wand`，以及万能手杖切到"骑乘"模式后的
+  `modulargolems:omnipotent_wand_rider`（l2itemselector 切模式 = 换物品，是另一个注册项）。
+  早先只认路径里含 `rider_wand` 的那一个，于是万能手杖这条路整条漏掉：我们的 handler 不管，
+  本家的 `ride` 又只认狗 —— 真机表现就是"右键龙完全没反应"，而装上上游 mgdp
+  （`RiderWandItemMixin` 注入 `RiderWandItem.interactLivingEntity` 的返回处，对任何非犬型
+  `AbstractGolemEntity` 直接 `startRiding`）就正常。**这条入口现在完全由我们自己负责，不需要 mgdp。**
+- **不要求"龙停着"**：`startRidingFrom` 原先有一道 `isParked()` 闸门，真机反馈同样不好用
+  （"跟在身边的龙右键没反应"）。本家的狗和上游 mgdp 都没有这道限制，已去掉。
+- **也没有别的状态门槛**：在飞、在俯冲/冲锋、在战斗、开着什么模式，都能上；点身体、头颈、
+  尾巴、翅膀都算（`PlayerInteractEvent.EntityInteract` 是 `Player#interactOn` 最前面发的，
+  那时还没走到 `DragonGolemPartEntity#interact` 的"转发给本体"，所以 handler 里先自己拆一层
+  `PartEntity#getParent()`，否则就是"点身体能骑、点翅膀没反应"）。
+- **座位一条硬规则**：一条龙上只能有**一个玩家**（见 `canAddPassenger`）。除此之外不再拦人 ——
+  背上已经驮着傀儡（炮台乘客）时玩家照样能上，**不用先把傀儡请下去**：原版
+  `Entity#addPassenger` 在服务端会把玩家**插到 0 号位**（`list.add(0, player)`，条件正是
+  "首个乘客不是玩家"），原本坐那儿的傀儡整体后移一格，座位重排由 `positionRider` 每 tick 跟着算
+  （座位号走 `seatIndexOf`：玩家在前、傀儡在后，不赌乘客列表的顺序）。另外"刚下过车 3 秒内
+  上不去"是**原版**的 `boardingCooldown`（`Entity#canRide`，60 tick），全游戏载具共用，没有动。
+- **`getControllingPassenger()` 按"乘客里有没有玩家"回答**（而不是"0 号位是不是玩家"），
+  免得列表顺序一旦错位就退化成"没人驾驶、按键全无反应"。
 - 座位：`positionRider` 沿机体轴向排座（驾驶座在前、傀儡乘客依次向后），换算和龙头/龙嘴同一套
   （`rotateAndLift`），所以龙俯仰时整排座位跟着一起转。
-- **注意 mgdp 也做了同一件事**：`mgdp` 的 `RiderWandItemMixin` 在
-  `RiderWandItem.interactLivingEntity` 的返回处注入，对任何非犬型 `AbstractGolemEntity` 直接
-  `player.startRiding(golem, false)`。我们的 handler 在更早的时机（实体交互之前）就把交互吃掉了，
-  所以**现在生效的是我们这套**（多了一条"只能骑停着的龙"的限制）。想交还给 mgdp 就把
-  `startRidingFrom` 里的 `isParked()` 判断去掉。
 
 ### 傀儡乘客（炮台）
 
-龙背上除了驾驶座还能坐傀儡（`MAX_GOLEM_PASSENGERS = 3`）。**怎么让傀儡上去**：手持骑乘手杖
-右键龙即可（这条走上游 mgdp 的 `RiderWandItemMixin`，不用我们额外做入口）。
+龙背上除了驾驶座还能坐傀儡（`MAX_GOLEM_PASSENGERS = 3`）。**怎么让傀儡上去**：拿装好傀儡的
+**成品（holder）右键龙** —— 本家的 `GolemHolder.interactLivingEntity` 会在龙的位置召唤它，
+并对它调 `checkRide(龙)`。
+
+> ✅ 这条路原先只有上游 mgdp 的 `GolemRideMixin` 补着（它在本家
+> `MetalGolemEntity` / `HumanoidGolemEntity` 的 `checkRide(LivingEntity)` HEAD 处 `ci.cancel()`，
+> 然后**无条件** `startRiding(任何目标)`）。现在换成我们自己的 `GolemCheckRideMixin`，
+> **只在目标是龙时**接管，坐不下（座位满了）就不 cancel、交回本家原逻辑；狗和马照旧走本家。
+> 上背动作统一走 `DragonGolemEntity.rideAsPassenger`，座位规则由 `canAddPassenger` 把关。
 
 - **傀儡不会顶掉驾驶权**：`getControllingPassenger()` 只在首个乘客是 `Player` 时返回非 null。
   傀儡刻意不算 —— 它没有输入源（不像本家狗那样能读 `AbstractGolemEntity` 的意图），
@@ -318,6 +356,50 @@ canBeSeenAsEnemy()  → riderCombat || super.canBeSeenAsEnemy()
 以及**冲锋直接复用 `DragonDiveGoal`**——那套航线 + 撞击结算是实测过的，重写只会引入手感差异
 （骑手按下 R 时由 `orderDive()` 手动把 DIVE 排进调度，因为驾驶期间掷骰子那条路被乘客挡住了）。
 
+### 体型与乘客：泰坦升级为什么曾经"挡住"骑手（2026 第二刀，已修）
+
+**症状**：普通体型骑着没事，一装第三方那种 +300% 体型的"泰坦"类升级（`getScale() = 4`），
+坐在龙上的人就**什么都点不了** —— 右键交互、左键攻击、放方块全部被自己的龙吃掉。
+
+**机理**（对着 1.20.1 / Forge 47.4.20 的源码核过）：Forge 的多部件实体是**独立实体**，
+而 `Entity.getRootVehicle()` 是沿"我是不是乘客"往上爬的 —— 子箱自己永远不是乘客，
+所以它返回**它自己**，和本体不是同一辆"车"。原版 `ProjectileUtil.getEntityHitResult`
+（准星选中）里有两支，其中
+
+```java
+if (aabb.contains(射线起点)) { 无条件选中它，距离 = 0 }    // ← 不看 root vehicle
+```
+
+这一支会把"眼睛落在箱子里的那个实体"直接抓成准星目标。普通体型下人的眼睛刚好在躯干箱顶面
+上面一点（约 1.6 格眼高 vs 2.36 格箱顶），泰坦时箱顶 ×4 = 9.44 格、眼高不变 → 眼睛被埋进箱子，
+于是准星锁死在离自己 0 格的箱子上。**本家的犬坐骑永远不会犯**：它没有子碰撞箱，
+整只狗就是一个实体，原版那套规则天然生效。
+
+**修法两条，都是"向狗对齐"**：
+
+| 改动 | 位置 | 作用 |
+|---|---|---|
+| 子箱如实回答自己属于本体 | `DragonGolemPartEntity.getRootVehicle()` → `parent.getRootVehicle()` | "擦到箱子"那一支会正确跳过自己的坐骑（准星不会再被自己的龙头/躯干抢走），骑手也不会打到自己的龙 |
+| 座椅净空 | `DragonGolemEntity.positionRider` + `ownHitboxTopAt` | 摆座位前算一次"龙自己在这一点的最高判定箱顶面（**含各自拾取半径**）"，要求乘客**眼睛**高出 0.1 格。跟着判定箱走，就是狗那条 `bbHeight * 0.9 - 0.25` 的思路 |
+
+> 为什么"眼睛"而不是"脚"：被抓住的是**射线起点**（玩家眼睛），脚在箱子里无所谓。
+> 普通体型下这个抬升量算出来比模型位置**低**（不需要抬），所以原来的手感一个像素都不变
+> （子箱拾取半径 1.0 会带来约 0.25 格的无感抬升）；泰坦体型下才自动抬到箱子上面。
+
+### 选定与回收（2026 第二刀）
+
+- `Entity.getPickRadius()` 原版默认 0 = 选中范围就是碰撞箱。现在本体 +0.5、
+  子箱 +1.0（`selection.bodyPickRadius` / `selection.pickRadius`）。
+  本体刻意小：它就在座位下面，吹太高会把骑手的准星重新拽回自己的龙身上
+  （座椅净空会跟着抬，所以调大不会出 bug，只是人坐得更高）。
+- **回收手杖**：本家 `RetrievalWandItem` 的射线谓词写死 `e instanceof AbstractGolemEntity`，
+  我们的子箱是 `PartEntity`，**被整个过滤掉** —— 看着龙头/尾巴/翅膀按下去什么都点不到。
+  新增 `DragonRetrieveHandler`（`PlayerInteractEvent.RightClickItem`）：自己打一条认子箱的射线，
+  命中后调用**本家自己的** `ItemStack#interactLivingEntity`（过滤/权限/收进背包全是本家逻辑）。
+  本家自己选得中、或者玩家潜行（= 回收周围全部）时一概不抢。
+- 顺带更正一条旧说法：**回收手杖的射程从来不是 3 格**。`forge:entity_reach` 只管原版
+  攻击 / `player.pick`；手杖走的是自家 64 格射线（`MGConfig.COMMON.retrieveDistance`）。
+
 ### 已知遗留
 
 0. **★ 玩家冲锋（R）骑着时失效**（2026-10 实测，尚未修复；AI 自发的俯冲正常，勿动）。
@@ -343,6 +425,10 @@ canBeSeenAsEnemy()  → riderCombat || super.canBeSeenAsEnemy()
    想修的话改这几个常量即可（躯干从 16 往 4 那一档调、头/颈从 20 往 12 那一档调），
    **推荐先在游戏里按 F3 + B 打开判定箱显示，对着模型读数再定值**
    （判定箱和模型必须同时看得见才能一次调准）。
+   > **2026 第二刀的缓解**：这一条本身没动（没有可靠的理论值，只能实机量），但"点不中"
+   > 的体感已经由两件事补上了 —— 子箱拾取半径 `selection.pickRadius`（默认 1.0 格，
+   > 会把可点区域整体外扩）、以及回收手杖的认子箱瞄准辅助
+   > （`DragonRetrieveHandler`）。详见 [CONFIG.md](CONFIG.md) 第五节。
 2. **手杖的射程**：原版选中生物的距离上限是玩家属性 `forge:entity_reach`（默认 **3.0 格**），
    而龙待机时离地 3 格、子箱又偏高，站在地面上就够不着。第 1 条修完之后这一条会自然缓解；
    真想再放宽得动玩家属性（会影响到所有生物，不建议）。

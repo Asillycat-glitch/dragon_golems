@@ -1,6 +1,8 @@
 package a_silly_cat.dragon_golems.client;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
+import a_silly_cat.dragon_golems.content.config.DragonBodyConfig;
+import a_silly_cat.dragon_golems.content.config.DragonBodyEntry;
 import a_silly_cat.dragon_golems.dragon.DragonGolemEntity;
 import a_silly_cat.dragon_golems.dragon.DragonGolemPartType;
 import a_silly_cat.dragon_golems.dragon.DragonRiderControl;
@@ -22,7 +24,9 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 傀儡龙的模型：直接复用原版末影龙的网格（{@link ModelLayers#ENDER_DRAGON}），
@@ -803,8 +807,14 @@ public class DragonGolemModel extends HierarchicalModel<DragonGolemEntity>
         ResourceLocation own = Dragon_golems.id(TEXTURE_PREFIX + path + ".png");
         if (path.endsWith("_emissive")) {
             // 发光层：本家会先问一次 "<材料>_emissive" 的贴图在不在，在才多渲染一遍。
-            // 这里绝不能走兜底，否则整条龙会被当成发光层再画一遍。也不进缓存。
+            // 这里绝不能走兜底，否则整条龙会被当成发光层再画一遍。也不进缓存。也不查数据包。
             return own;
+        }
+        // 数据包指定了贴图就用它（整合包加自己的龙时最省事的一条路）；
+        // 没指定 / 文件不存在则继续走下面的约定与回退。
+        ResourceLocation custom = customTexture(material);
+        if (custom != null) {
+            return custom;
         }
         if (exists(own)) {
             // 只缓存"确有其图"的命中：兜底结果依赖当前这条龙的身体材料，不能按材料 id 缓存。
@@ -825,6 +835,34 @@ public class DragonGolemModel extends HierarchicalModel<DragonGolemEntity>
         }
         return findFallback();
     }
+
+    /**
+     * 数据包里给这个材料指定了贴图就用它（{@code dragon_bodies} 的 {@code texture} 字段）。
+     *
+     * <p>没指定、或指定的文件不存在 → 返回 null 交给调用方走"按材料路径推 + 兜底"的老路。
+     * 文件不存在只警告一次（按材料去重），免得每帧刷屏 —— 整合包把路径写错时这条日志就是线索。
+     */
+    private static ResourceLocation customTexture(ResourceLocation material) {
+        DragonBodyConfig cfg = DragonBodyConfig.get();
+        if (cfg == null) {
+            return null;
+        }
+        DragonBodyEntry entry = cfg.entry(material);
+        if (entry == null || entry.texture == null) {
+            return null;
+        }
+        if (exists(entry.texture)) {
+            return entry.texture;
+        }
+        if (MISSING_TEXTURES.add(material)) {
+            Dragon_golems.LOGGER.warn("[dragon_bodies] {} 指定的贴图 {} 不存在，改用约定路径",
+                    material, entry.texture);
+        }
+        return null;
+    }
+
+    /** 已经警告过的"数据包贴图不存在"，按材料去重。 */
+    private static final Set<ResourceLocation> MISSING_TEXTURES = new HashSet<>();
 
     private static ResourceLocation findFallback() {
         if (exists(FALLBACK_BASE)) {

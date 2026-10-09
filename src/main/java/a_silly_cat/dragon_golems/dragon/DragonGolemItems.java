@@ -22,8 +22,9 @@ import net.minecraft.world.item.Item;
  * <p>这里用的是 Registrate（本家也是走 Registrate），原因是 {@code GolemType} 的构造函数必须拿到
  * 一个 {@code EntityEntry}，普通 {@code DeferredRegister} 给不出来。
  *
- * <p>铁砧消耗量写在 {@link GolemPart} 构造函数的第 4 个参数（count）里：
- * 头 3、身体 6、每只翼 1、四肢 4，一共 15 个铁块。
+ * <p>铁砧消耗量写在 {@link GolemPart} 构造函数的第 4 个参数（count）里：五个部件统一
+ * <b>64（一组）</b>，也就是铸满一整只龙要 5 × 64 = 320 个材料。这个数字同时决定 JEI 铁砧页上
+ * 写的材料数量，并参与本家的"重铸基数"（= 五个部件消耗之和）。
  */
 public final class DragonGolemItems {
 
@@ -80,41 +81,42 @@ public final class DragonGolemItems {
             .defaultLang()
             .register();
 
-    // 铁砧消耗（GolemPart 构造函数的第 4 个参数）：双翼 8、头 12、身 12、尾 8、四肢 8。
-    // 注意这个数字还参与本家的"重铸基数"（= 五个部件消耗之和 48）。
+    // 铁砧消耗（GolemPart 构造函数的第 4 个参数）：五个部件统一 64（一组）。
+    // 注意这个数字还参与本家的"重铸基数"（= 五个部件消耗之和 320），也决定 JEI 铁砧页上
+    // 写的材料数量。改这里要同步 docs/MOUNT.md 的重铸基数表与 docs/RENDERING.md 的缩放公式说明。
 
-    /** 双翼：装配表第一行，铁砧消耗 8。 */
+    /** 双翼：装配表第一行，铁砧消耗 64（一组）。 */
     public static final ItemEntry<GolemPart<DragonGolemEntity, DragonGolemPartType>> WINGS =
             REG.<GolemPart<DragonGolemEntity, DragonGolemPartType>>item("dragon_golem_wings",
-                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.WINGS, 8))
+                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.WINGS, 64))
                     .properties(p -> p.stacksTo(16))
                     .register();
 
-    /** 头部（含脖颈）：装配表第二行左侧，铁砧消耗 12。 */
+    /** 头部（含脖颈）：装配表第二行左侧，铁砧消耗 64（一组）。 */
     public static final ItemEntry<GolemPart<DragonGolemEntity, DragonGolemPartType>> HEAD =
             REG.<GolemPart<DragonGolemEntity, DragonGolemPartType>>item("dragon_golem_head",
-                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.HEAD, 12))
+                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.HEAD, 64))
                     .properties(p -> p.stacksTo(16))
                     .register();
 
-    /** 身体（重心那一块）：装配表正中，铁砧消耗 12。 */
+    /** 身体（重心那一块）：装配表正中，铁砧消耗 64（一组）。 */
     public static final ItemEntry<GolemPart<DragonGolemEntity, DragonGolemPartType>> BODY =
             REG.<GolemPart<DragonGolemEntity, DragonGolemPartType>>item("dragon_golem_body",
-                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.BODY, 12))
+                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.BODY, 64))
                     .properties(p -> p.stacksTo(16))
                     .register();
 
-    /** 尾巴：装配表第二行右侧，铁砧消耗 8。 */
+    /** 尾巴：装配表第二行右侧，铁砧消耗 64（一组）。 */
     public static final ItemEntry<GolemPart<DragonGolemEntity, DragonGolemPartType>> TAIL =
             REG.<GolemPart<DragonGolemEntity, DragonGolemPartType>>item("dragon_golem_tail",
-                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.TAIL, 8))
+                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.TAIL, 64))
                     .properties(p -> p.stacksTo(16))
                     .register();
 
-    /** 四肢：装配表第三行，铁砧消耗 8。 */
+    /** 四肢：装配表第三行，铁砧消耗 64（一组）。 */
     public static final ItemEntry<GolemPart<DragonGolemEntity, DragonGolemPartType>> LEG =
             REG.<GolemPart<DragonGolemEntity, DragonGolemPartType>>item("dragon_golem_limb",
-                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.LEG, 8))
+                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.LEG, 64))
                     .properties(p -> p.stacksTo(16))
                     .register();
 

@@ -119,6 +119,13 @@ public class DragonDiveGoal extends Goal {
     @Nullable
     private AABB sweepBox;
     private final Set<Integer> impacted = new HashSet<>();
+    /**
+     * 这一轮俯冲是否已经触发过"近战族"升级（地震 / 跳劈）。
+     *
+     * <p>一轮俯冲可能撞到好几个目标（掠地时一路扫过去），而地震/跳劈是<b>范围技</b>：
+     * 每个目标各触发一次会把冷却烧光、也会重复结算，所以一轮只认第一次撞击。
+     */
+    private boolean meleeFired;
     private final Map<Integer, Integer> nextHit = new HashMap<>();
     private boolean damaged;
 
@@ -267,6 +274,8 @@ public class DragonDiveGoal extends Goal {
         this.dir = null;
         this.passS = 0.0D;
         this.targetAt = null;
+        // 这一轮还没触发过"近战族"升级（地震/跳劈），见 triggerMeleeUpgradesOnDive
+        this.meleeFired = false;
         this.enter(Phase.LINEUP);
         this.dragon.setAggressive(true);
     }
@@ -484,6 +493,12 @@ public class DragonDiveGoal extends Goal {
                 }
                 this.nextHit.put(id, this.dragon.tickCount + HIT_COOLDOWN);
                 this.impactEffects(other);
+                // "近战族"升级（本家 EarthquakeHelper：地震 / 跳劈）在龙身上没有近战可挂，
+                // 这里把"俯冲撞上去那一下"当作龙的近战：一轮俯冲只触发一次（本家自己的冷却与
+                // 射程判定照旧由 EarthquakeHelper 把关）。
+                if (!this.meleeFired) {
+                    this.meleeFired = this.dragon.triggerMeleeUpgradesOnDive(other);
+                }
                 continue;
             }
             Integer next = this.nextHit.get(id);

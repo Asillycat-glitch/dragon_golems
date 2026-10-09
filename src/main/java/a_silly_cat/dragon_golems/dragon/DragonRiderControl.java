@@ -273,6 +273,11 @@ public final class DragonRiderControl {
      * <p>现在只在<b>确实高于最低离地量</b>的时候才夹（那是"快贴地了，刹住"的正常情况）；
      * 已经低于它（人在洞里、地表在头顶）就<b>不干预</b>，让玩家自由往下 ——
      * 反正真正的"钻进方块"由碰撞和自动脱困负责，不需要一个基于世界地表的猜测来管。
+     *
+     * <p><b>★ 顺带的一条：最低离地量现在把液面（水 / 岩浆）也算作地面</b>（见
+     * {@code DragonGolemEntity.localFloorY()}）。所以按 Ctrl 下降会在<b>液面之上</b>停住，
+     * 不会再把龙压进水里或岩浆里 —— 这是"龙自己不扎进液体"那条修复的连带效果，
+     * 玩家故意想潜水/泡岩浆的话这里就是拦路的那一道。
      */
     private static double clampVertical(DragonGolemEntity dragon, double vy) {
         if (vy < 0.0D) {

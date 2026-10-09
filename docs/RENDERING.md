@@ -47,8 +47,14 @@
   （量物品预览包围盒的 `measurePart(...)` 和这里的分派是一一对应的，改了一边别忘了另一边。）
 - `DragonGolemModel.setupAnim(...)` 只有这条路径会走（物品预览不走），负责摆姿势，并把"物品预览"的
   静态标记（`previewFactor` / `holderPreview`）复位（见下一节）。
-- 俯仰与侧倾不是客户端自己算的：`DragonGolemEntity.tickBodyPitch()` 在服务端插值后同步
-  （`DATA_BODY_PITCH` / `DATA_BODY_ROLL`），模型和子碰撞箱读同一个值。
+- 俯仰与侧倾不是客户端自己算的：`DragonGolemEntity.tickBodyPitch()` / `tickBodyRoll()` 在服务端算好、
+  插值后同步（`DATA_BODY_PITCH` / `DATA_BODY_ROLL`），模型和子碰撞箱读同一个值。
+  **压弯只看"本 tick 实际转过的角度"**（`wrapDegrees(yRot − 上一 tick 的 yRot)`，低通后 × `ROLL_PER_DEGREE`，
+  上限 `MAX_ROLL = 28°`；超过物理转速上限 `MAX_TURN_HARD_CAP` 的跳变不算，避免瞬移把机身甩横）。
+  因为判据是"实际转角"，AI 巡航（`FlyingMoveControl` 拧机头）、骑手用鼠标转、俯冲/冲锋航线接管
+  三种情况都会压弯 —— 早先只在 `faceMovement()` 里按"它自己转了多少"算，所以只有后两种有压弯。
+  绕圈喷息那一段由 `DragonRangedGoal` 用 `setBodyRollDirect(ORBIT_BANK × orbitSign)` 指定固定角度，
+  该 tick 跳过上面那套（并把低通状态一起拉过去，交接处不会跳）。
 - 贴图回退链：`dragon/<材料>.png` → `dragon/base.png` → `dragon/enderdragon.png`（`FALLBACK_LEGACY`，
   这个类路径下没有资源，实际会跳过）→ 原版末影龙贴图。现有贴图是 base / copper / gold / iron /
   netherite / netherite_emissive / sculk / sculk_emissive 八张。
@@ -71,8 +77,9 @@
 - 它还会进 `maxUpStep() * getScale()`、行走动画速度，以及（以后若搬狗的载客公式）`min(size*2-1, 3)`。
 - 重铸也参与：`AbstractGolemEntity.getScaleImpl() = GOLEM_SIZE × ((重铸基数 − 重铸次数) / 重铸基数)^(1/3)`，
   而重铸基数 = `getReforgeBase()` = 五个部件的铁砧消耗之和（`GolemPart.count`）。龙现在是
-  双翼 8 + 头 12 + 身体 12 + 尾巴 8 + 四肢 8 = **48**，所以每次重铸缩 `((48−n)/48)^(1/3)`。
-  （注意 `DragonGolemItems` 的类注释里还写着"头 3、身体 6、每只翼 1、四肢 4 = 15"，那是旧数字，代码里是 48。）
+  五个部件各 64 = **320**，所以每次重铸缩 `((320−n)/320)^(1/3)`。
+  （改这个数字时记得同步三处：`DragonGolemItems` 的类注释与部件注释、`docs/MOUNT.md` 的重铸基数表、
+  `docs/JEI.md` 里"要几个材料"那句。）
 - `MODEL_LIFT / MODEL_SCALE` 现在是 1.36 / 1.7 = 0.8（= 原点到脚底的模型单位数）。改 `MODEL_SCALE` 时按同一比例改
   `MODEL_LIFT`，就纯粹是"整体等比缩小"，龙站的位置和姿态都不动。
 - 物品预览那一套是**另一组旋钮**，和上面三个无关：部件用 `PREVIEW_TARGET_PX`（按部件分档的数组）、

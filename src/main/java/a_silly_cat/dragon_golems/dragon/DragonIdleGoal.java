@@ -28,6 +28,9 @@ import java.util.EnumSet;
  *
  * <p>高度始终是"脚下地形 + {@code HOVER_HEIGHT} + 呼吸"，所以山上、悬崖边都贴着地貌走
  * （到达判定只看水平，竖向永远差着 HOVER_HEIGHT 格，用三维距离会永远"没到"）。
+ * <b>"脚下地形"现在把水面与岩浆面也算进去</b>（见 {@code DragonGolemEntity.localFloorY()}），
+ * 所以湖上悬停 = 悬在液面之上，不会一头扎进水里；随机目标点也尽量避开液面
+ * （见 {@link #sampleWaypoint()}）。
  */
 public class DragonIdleGoal extends Goal {
 
@@ -40,6 +43,12 @@ public class DragonIdleGoal extends Goal {
     private static final double WANDER_RADIUS = 24.0D;
     /** 采样新目标点时，离软中心至少这么远（避免原地打转）。 */
     private static final double WANDER_MIN_RADIUS = 5.0D;
+    /**
+     * 采样时最多重采几次来避开液体（水面 / 岩浆面）。
+     *
+     * <p>见 {@link #sampleWaypoint()}：全是液体才认账用最后一个，所以次数不用多。
+     */
+    private static final int DRY_TRIES = 8;
     /** 水平走到这么近就算到了，立刻换下一个点。 */
     private static final double WANDER_REACH = 2.5D;
     /** 同一个目标点最多追这么久（tick），追不到就换（防卡地形）。 */
@@ -275,17 +284,32 @@ public class DragonIdleGoal extends Goal {
                 && !(this.dragon.getControllingPassenger() instanceof Player);
     }
 
-    /** 在软中心周围随机采一个水平目标点（离圆心 [WANDER_MIN_RADIUS, WANDER_RADIUS] × 速度倍率 格）。 */
+    /**
+     * 在软中心周围随机采一个水平目标点（离圆心 [WANDER_MIN_RADIUS, WANDER_RADIUS] × 速度倍率 格）。
+     *
+     * <p><b>★ 优先采"脚下不是液体"的点</b>（水面 / 岩浆面）。龙现在已经不会沉进液体里了
+     * （见 {@code DragonGolemEntity.localFloorY()}），但一条几十格长的龙整天在湖面上悬停、
+     * 在岩浆湖上飘着，既难看也不像"在自己地盘上巡逻"。
+     * 连采 {@link DRY_TRIES} 次都是液体（主人就站在湖心小岛、岩浆湖边）才认账用最后一个 ——
+     * 那种情况悬停高度也在液面之上，不会扎进去。
+     */
     private Vec3 sampleWaypoint() {
         double range = this.rangeScale();
-        double a = this.pickAngle();
-        double radius = (WANDER_MIN_RADIUS
-                + this.dragon.getRandom().nextDouble() * (WANDER_RADIUS - WANDER_MIN_RADIUS)) * range;
         assert this.softCenter != null;
-        return new Vec3(
-                this.softCenter.x + Math.cos(a) * radius,
-                this.dragon.getY(),
-                this.softCenter.z + Math.sin(a) * radius);
+        Vec3 last = null;
+        for (int i = 0; i < DRY_TRIES; i++) {
+            double a = this.pickAngle();
+            double radius = (WANDER_MIN_RADIUS
+                    + this.dragon.getRandom().nextDouble() * (WANDER_RADIUS - WANDER_MIN_RADIUS)) * range;
+            last = new Vec3(
+                    this.softCenter.x + Math.cos(a) * radius,
+                    this.dragon.getY(),
+                    this.softCenter.z + Math.sin(a) * radius);
+            if (!this.dragon.isLiquidFloorAt(Mth.floor(last.x), Mth.floor(last.z))) {
+                return last;
+            }
+        }
+        return last;
     }
 
     /**

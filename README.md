@@ -69,10 +69,13 @@
 
 ```
 src/main/java/a_silly_cat/dragon_golems/
-  Dragon_golems.java              主类（@Mod）：MODID / id() / 初始化注册
+  Dragon_golems.java              主类（@Mod）：MODID / id() / 初始化注册 / 配置注册
   init/ModCreativeTabs.java       自己的创造栏；另外往本家的傀儡页补物品
   compat/jei/                     JEI 说明页（JEI 不在也能正常玩）
   dragon/                         服务端与两端共用：实体 / 种类 / 部件枚举 / 装备栏 / AI / 全部注册
+  dragon/DragonRetrieveHandler    回收手杖的"认子箱"瞄准辅助（Forge 事件，不改本家代码）
+  content/config/                 TOML 配置（DragonGolemConfig）+ 数据包身体主题表（DragonBodyConfig）
+  mixin/                          往本家类里补三个口子：材料表过滤 / 傀儡上龙 / 坐骑升级可装龙
   client/                         仅客户端：模型 / 渲染器 / 装备界面底图 / 悬浮图标 / 预览摆位
 
 src/main/resources/
@@ -81,12 +84,27 @@ src/main/resources/
   data/modulargolems/tags/        往本家的标签里追加（命名空间保持 modulargolems 不动）
 
 docs/
+  CONFIG.md                       ★ 配置文件在哪 + 龙息递减/坐骑升级/泰坦压乘客/选定与回收/属性上限/技能挂载点
   DEPENDENCIES.md                 依赖与各文件用到了什么
   JEI.md                          JEI 里哪些页是本家白送的、我们补了什么
   MOUNT.md                        升级/坐骑/载客的反查结果：哪条升级被挡、龙最多载几个、怎么落地
   RENDERING.md                    界面与渲染代码地图：哪块画面归哪个文件管
   DEV-RUN.md                      开发环境为什么跑不起来、run/mods 里那三个 jar 是干嘛的
 ```
+
+## 配置
+
+```
+config/l2_configs/dragon_golems-common.toml
+```
+
+和傀儡装配、l2library 的配置**同一个目录**（本家就是这么放的）。可调项：
+龙息对同一目标的递减开关与步长、坐骑升级能否装到龙上、准星拾取半径、
+技能升级的两个挂载点（俯冲触发"近战族"地震/跳劈、是否保留本家的 `*AttackGoal`）、
+属性超上限日志、以及**内置属性修复**（等价于 AttributeFix，只放宽最大生命，默认开 ——
+幽匿龙裸装 1000 血已经是原版 1024 上限的 97.7%）。
+每一条的来龙去脉（含"为什么只放宽最大生命"）见
+[`docs/CONFIG.md`](docs/CONFIG.md)。
 
 ## 尺寸与预览：几个旋钮各管一段
 
@@ -125,8 +143,12 @@ docs/
    「五部件 → 成品」（装配台）。
    数值待定 —— 现在这个档位是"明显比金属傀儡贵、但主要开销仍在铸材料"。
 2. **装备栏是犬型两格**（头盔位 + 胸甲位），没有主手与远程槽。
-3. **载客走不通**。本家给狗留的载客通道对这条 26 格长的龙不成立（宽度预算算不过来），
-   反查过程与结论见 `docs/MOUNT.md`。
+3. **载客：玩家与傀儡都能上，一条龙只收一个玩家**。座位、驾驶、骑手指令 R/G/V 都已落地；
+   本家的「坐骑升级」现在也能装到龙身上（`RideUpgradeMixin`，装上去 = 转成被动坐骑）。
+   详见 [MOUNT.md](docs/MOUNT.md) 第七节。
+4. **子碰撞箱与模型在竖直方向上未必完全对齐**（旧文里记的"整体偏高"）。没有可靠的理论值，
+   只能开 F3 + B 实测；现在由拾取半径与回收手杖瞄准辅助兜住"点不中"的体感，
+   见 [CONFIG.md](docs/CONFIG.md) 第五节。
 
 ## 许可
 
