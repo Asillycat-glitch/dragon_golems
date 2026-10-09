@@ -1,5 +1,6 @@
 package a_silly_cat.dragon_golems.mixin;
 
+import a_silly_cat.dragon_golems.Dragon_golems;
 import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 import a_silly_cat.dragon_golems.dragon.DragonGolemItems;
 import dev.xkmc.modulargolems.content.core.GolemType;
@@ -37,10 +38,24 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(RideUpgrade.class)
 public class RideUpgradeMixin {
 
+	/**
+	 * <b>整段包 try/catch，异常绝不放出去。</b>
+	 *
+	 * <p>这条 {@code fitsOn} 不只在"装升级"时被调用：升级台的物品栏过滤
+	 * （{@code GolemUpgradeItemHandler}）、铁砧合成（{@code CraftEventListeners}）、
+	 * 以及 JEI 那边展示可用升级时<b>都会</b>走它，而且是对<b>每一种</b>傀儡类型各走一次。
+	 * 一旦这里抛异常，玩家看到的就是"升级/配方列表崩了"（JEI 会直接把那条配方标成已崩溃），
+	 * 而根因却离得很远。所以这里只做"能判就判、判不了就退回本家原行为"。
+	 */
 	@Inject(method = "fitsOn", at = @At("HEAD"), cancellable = true, require = 0)
 	private void dragonGolems$fitsOnDragon(GolemType<?, ?> type, CallbackInfoReturnable<Boolean> cir) {
-		if (type == DragonGolemItems.TYPE.get() && DragonGolemConfig.mountUpgradeForDragon()) {
-			cir.setReturnValue(true);
+		try {
+			if (type == DragonGolemItems.TYPE.get() && DragonGolemConfig.mountUpgradeForDragon()) {
+				cir.setReturnValue(true);
+			}
+		} catch (Throwable e) {
+			// fail-soft：本家原逻辑（只认狗型）照旧生效
+			Dragon_golems.LOGGER.warn("[mixin] RideUpgrade.fitsOn 的龙判定失败，按本家原行为处理：{}", e.toString());
 		}
 	}
 
