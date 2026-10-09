@@ -793,29 +793,6 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     private static final int MAX_GOLEM_PASSENGERS = 3;
 
     /**
-     * 座椅净空：乘客的<b>眼睛</b>要比"龙自己在这一点的判定箱顶面"至少高出这么多格。
-     *
-     * <p>为什么是眼睛而不是脚：原版 {@code ProjectileUtil.getEntityHitResult}（准星选中）里有一支
-     * <pre>
-     * if (aabb.contains(射线起点)) { 选中它，距离 = 0 }
-     * </pre>
-     * <b>这一支不看 root vehicle</b>（只有"射线擦过箱子"那一支才看），所以只要玩家的眼睛落在
-     * 任何一个判定箱（含膨胀过的拾取箱）里，准星就会被那个箱子无条件抓住 —— 右键交互、左键攻击、
-     * 放方块全部被自己的坐骑吃掉。
-     *
-     * <p>普通体型下人的眼睛比躯干箱顶高一点点，所以看不出来；泰坦那种 4 倍体型时箱顶长了 4 倍、
-     * 人的眼高没变，整个人就被埋进箱子里了 —— 这就是"泰坦升级会阻挡坐在其上的玩家"。
-     * 本家的犬坐骑没这个毛病：它没有子碰撞箱，而且 {@code getPassengersRidingOffset()}
-     * 是 {@code bbHeight * 0.9 - 0.25}（<b>跟着膨胀后的判定箱走</b>），人永远在箱子顶面附近。
-     * 这里就是同一条思路：座位跟着"自己判定箱的实际高度"抬，而不是写死一个模型像素值。
-     *
-     * <p>正常体型下这个抬升量算出来是负的（不需要抬），所以那档手感一个像素都不会变。
-     */
-    private static final double SEAT_EYE_CLEARANCE = 0.1D;
-    /** 判断"这个子箱在不在座位正上方"时额外放宽的量（格），免得浮点误差把箱子漏掉。 */
-    private static final double SEAT_BOX_MARGIN = 0.05D;
-
-    /**
      * 乘客坐在背上：<b>沿机体轴向排座</b>。
      *
      * <p>这是本家狗的排座公式（{@code positionRider}）搬到龙身上：驾驶座（index 0）靠前、
@@ -842,38 +819,65 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         double yaw = Math.toRadians(this.yBodyRot);
         double forwardX = -Math.sin(yaw);
         double forwardZ = Math.cos(yaw);
-        double x = this.getX() + forwardX * upForward[1];
-        double z = this.getZ() + forwardZ * upForward[1];
-        double y = this.getY() + upForward[0] + passenger.getMyRidingOffset();
-        // 座椅净空（见 SEAT_EYE_CLEARANCE）：模型位置会把眼睛埋进"龙自己的判定箱"里时往上抬，
-        // 抬到眼睛刚好在箱子上面。正常体型下这里算出来比模型位置低，所以座椅一动不动。
-        double minEyeY = this.ownHitboxTopAt(x, z) + SEAT_EYE_CLEARANCE;
-        double minY = minEyeY - passenger.getEyeHeight();
-        if (y < minY) {
-            y = minY;
-        }
-        setPos.accept(passenger, x, y, z);
+        // ★ 座椅位置<b>只由模型决定</b>（模型像素 × 体型倍率），不掺任何判定箱 / 眼高因素。
+        //   乘客与判定箱冲突时，改的是判定箱那一侧（见 pickRadiusFor：拾取箱会自动收缩，
+        //   不去包住自己乘客的眼睛），绝不能反过来把座位顶高 —— 那会让"坐在龙背上"变成
+        //   "浮在龙背上方"，大体型时尤其明显。
+        setPos.accept(passenger,
+                this.getX() + forwardX * upForward[1],
+                this.getY() + upForward[0] + passenger.getMyRidingOffset(),
+                this.getZ() + forwardZ * upForward[1]);
     }
 
     /**
-     * "龙自己在这个水平位置上最高的那个判定箱顶面"（<b>含膨胀过的拾取箱</b>）。
+     * 判定箱在"当前乘客"面前允许的最大拾取半径。
      *
-     * <p>本体判定箱一直在脚下（它是以实体原点为中心的水平方柱），子箱则要按位置挑：
-     * 头/颈在正前方、尾巴在后面、双翼在两侧，只有<b>水平方向确实罩住这个点</b>的那些才可能
-     * 把乘客的眼睛关进去。膨胀量取各自的 {@link #getPickRadius()}，和原版
-     * {@code ProjectileUtil} 里那个 {@code aabb.contains(起点)} 判定用的是同一个箱子。
+     * <h2>要解决的问题</h2>
+     * 原版选中实体时（{@code ProjectileUtil.getEntityHitResult} / {@code GameRenderer.pick}）有两支：
+     * <pre>
+     * if (拾取箱.contains(射线起点))  → 无条件选中它，距离 = 0     // ← 不看 root vehicle
+     * else if (拾取箱与射线相交)      → 同 root vehicle 的会被跳过   // ← 这一支才看
+     * </pre>
+     * 第一支就是"泰坦体型挡住骑手"的根：龙是 26 格长的多部件实体，子碰撞箱按模型等比放大，
+     * 而玩家只有 1.8 格高 —— 普通体型时人的眼睛刚好在躯干箱顶面之上，泰坦（4 倍）时箱顶长了 4 倍、
+     * 眼高没变，眼睛就被包进箱子里了，准星被离自己 0 格的箱子抓住，右键/攻击/放方块全被自己的龙吃掉。
+     *
+     * <h2>解法：收的是拾取箱，不是座位</h2>
+     * 座椅保持"模型决定"（见 {@link #positionRider}），这里把<b>拾取箱</b>收到刚好不包住乘客眼睛为止：
+     * 只要某个箱子的水平范围罩着某位乘客，它的最大半径就被限制成
+     * {@code 乘客眼高 − 箱顶 − 0.05}。于是：
+     * <ul>
+     *   <li>普通体型：算出来通常比配置值还大，配置值原样生效（只有躯干箱会被削掉一点点）；</li>
+     *   <li>泰坦体型：算出来是负数 → 拾取箱比碰撞箱还小（碰撞体积、伤害判定完全不受影响），
+     *       眼睛落在箱子外面，"起点在箱子里就无条件选中"那一支自然不再命中自己的龙；</li>
+     *   <li>{@code getRootVehicle()} 那条修复仍然负责"射线擦到箱子"那一支（见
+     *       {@link DragonGolemPartEntity#getRootVehicle()}）。两条一起才闭环。</li>
+     * </ul>
+     *
+     * <p>返回值会被夹在"不把 {@link AABB} 缩成反向"的范围内：{@code ProjectileUtil} 用
+     * {@code box.inflate(radius)} 之后要拿去做射线求交，箱子的 min 一旦超过 max，
+     * 那段除法会出现 Inf/NaN。几何上这个下限永远够用（箱高与体型成正比，而需要的收缩量比它小得多）。
+     *
+     * @param box        判定箱（本体的、或某个子箱的）
+     * @param configured 配置里写的额外拾取半径
      */
-    private double ownHitboxTopAt(double x, double z) {
-        double top = this.getBoundingBox().maxY + this.getPickRadius();
-        for (DragonGolemPartEntity part : this.parts) {
-            AABB box = part.getBoundingBox().inflate(part.getPickRadius());
-            if (x >= box.minX - SEAT_BOX_MARGIN && x <= box.maxX + SEAT_BOX_MARGIN
-                    && z >= box.minZ - SEAT_BOX_MARGIN && z <= box.maxZ + SEAT_BOX_MARGIN) {
-                top = Math.max(top, box.maxY);
+    public float pickRadiusFor(AABB box, double configured) {
+        double limit = Double.MAX_VALUE;
+        for (Entity passenger : this.getPassengers()) {
+            if (passenger.getX() < box.minX - PICK_EYE_MARGIN || passenger.getX() > box.maxX + PICK_EYE_MARGIN
+                    || passenger.getZ() < box.minZ - PICK_EYE_MARGIN || passenger.getZ() > box.maxZ + PICK_EYE_MARGIN) {
+                // 这个箱子不在该乘客身下（头/尾/翅膀通常都是这种），不必为它让步
+                continue;
             }
+            limit = Math.min(limit, passenger.getEyeY() - box.maxY - PICK_EYE_MARGIN);
         }
-        return top;
+        double pick = Math.min(configured, limit);
+        double shrinkLimit = Math.min(Math.min(box.getXsize(), box.getYsize()), box.getZsize()) * 0.5D - 0.05D;
+        return (float) Math.max(pick, -shrinkLimit);
     }
+
+    /** 判断"这个箱子是否罩着这位乘客"、以及"眼睛要留多少余量"时用的容差（格）。 */
+    private static final double PICK_EYE_MARGIN = 0.05D;
 
     /**
      * 本体的额外拾取半径（格，见 {@link DragonGolemConfig#bodyPickRadius()}）。
@@ -882,13 +886,12 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 而模型有 26 格长 —— 玩家看着龙身点下去经常点不到，回收/开界面都别扭。给一点余量之后
      * 明显好点中；再大的余量交给子碰撞箱那边（它们本来就盖住整条龙）。
      *
-     * <p><b>不能给太大</b>：这个膨胀同样会参与上面那条"眼睛在箱子里就被无条件抓住"的判定，
-     * 而乘客就坐在本体判定箱上方一点。真的调大了也不会出 bug（座椅净空会跟着抬），
-     * 只是龙背上的人会坐得越来越高。
+     * <p>实际生效值会被 {@link #pickRadiusFor} 削一次：<b>任何罩着乘客的箱子都不许把乘客的眼睛
+     * 包进拾取箱</b>（否则准星会被自己的坐骑吃掉，见那里的说明）。
      */
     @Override
     public float getPickRadius() {
-        return (float) DragonGolemConfig.bodyPickRadius();
+        return this.pickRadiusFor(this.getBoundingBox(), DragonGolemConfig.bodyPickRadius());
     }
 
     /** 相邻两个座位之间沿机体方向的距离（模型像素，1 格 = 16 像素）。 */

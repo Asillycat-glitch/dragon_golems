@@ -100,8 +100,9 @@ public final class DragonGolemConfig {
      * 头部 / 脖颈 / 躯干 / 尾巴 / 双翼这些<b>子碰撞箱</b>的额外拾取半径（格，默认 1.0）。
      *
      * <p>它只影响"能不能被准星选中 / 回收手杖能不能点到"，<b>完全不动碰撞体积</b>。
-     * 默认值会让座椅净空把乘客抬高约 0.25 格（躯干箱被吹高之后，眼睛需要跟着让位），
-     * 属于看不出来的量级；想要"一个像素都不动"就把它调到 0.5 以下。
+     * 实际生效值还会被自动削一次：罩着乘客的箱子不许把乘客的眼睛包进拾取箱
+     * （泰坦体型时那一块会变成负数），否则骑手的准星会被自己的坐骑吃掉 ——
+     * 详见 {@code DragonGolemEntity.pickRadiusFor}。座椅位置本身<b>只由模型决定</b>，不受这里影响。
      */
     public static double pickRadius() {
         return num(COMMON.pickRadius, 1.0D);
@@ -110,11 +111,10 @@ public final class DragonGolemConfig {
     /**
      * 本体那一个判定箱的额外拾取半径（格，默认 0.5）。
      *
-     * <p>刻意比子箱小：乘客的座位就在本体判定箱上方一点，这个半径会把判定箱往上"吹"，
-     * 而原版 {@code ProjectileUtil} 对"射线起点落在某个箱子里"这一支是<b>不看同车关系</b>的
-     * （见 {@code DragonGolemEntity.positionRider} 里座椅净空的说明）——
-     * 吹得太高会把骑着龙的人自己的准星重新拽回自己的龙身上。座椅净空会自动跟着这两个值抬高，
-     * 所以调大不会出 bug，只是会让龙背上的人坐得更高。
+     * <p>刻意比子箱小：本体判定箱就在座位下面，而原版
+     * {@code ProjectileUtil.getEntityHitResult} 对"射线起点落在箱子里"这一支是
+     * <b>不看同车关系</b>的，吹得太高容易把骑手的准星拽回自己的龙身上。
+     * 真的调大了也不会出 bug：{@code pickRadiusFor} 会自动把这一块收到不包住眼睛为止。
      */
     public static double bodyPickRadius() {
         return num(COMMON.bodyPickRadius, 0.5D);
@@ -252,12 +252,12 @@ public final class DragonGolemConfig {
 
             builder.comment("选定 / 拾取（准星选中、回收手杖、徒手回收都吃这一项）").push("selection");
             this.pickRadius = builder
-                    .comment("头/颈/躯干/尾/双翼这些子碰撞箱的额外拾取半径（格）")
+                    .comment("头/颈/躯干/尾/双翼这些子碰撞箱的额外拾取半径（格）",
+                            "只影响准星选中与回收手杖，不动碰撞体积；罩着乘客的那一块会自动收缩")
                     .defineInRange("pickRadius", 1.0D, 0.0D, 8.0D);
             this.bodyPickRadius = builder
                     .comment("本体判定箱的额外拾取半径（格）",
-                            "比子箱小是故意的：吹得太高会把龙背上那位乘客的准星重新拽回自己的龙身上",
-                            "（座椅净空会自动跟着它抬高，所以调大不会出 bug，只是人坐得更高）")
+                            "比子箱小是故意的：本体判定箱就在座位下面（罩着乘客的那一块会自动收缩，不会挡住骑手）")
                     .defineInRange("bodyPickRadius", 0.5D, 0.0D, 8.0D);
             builder.pop();
 

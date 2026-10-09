@@ -75,14 +75,18 @@ public class DragonGolemPartEntity extends PartEntity<DragonGolemEntity> {
      * 是照着模型摆的立方体（头 2.4、翼 5.0…），离得稍远就"点不着" —— 回收手杖、徒手回收、
      * 开装备界面这些操作全都要先被准星选中，所以这个半径直接决定"这条龙好不好点"。
      *
-     * <p>数值见 {@code DragonGolemConfig.pickRadius()}（默认 1.0）。
-     * <b>注意本体那边的半径被刻意压小</b>（{@code bodyPickRadius}）：{@code ProjectileUtil} 里
-     * "射线起点落在箱子里"这一支是不看同车关系的，本体判定箱一旦被吹得够高，就会把龙背上
-     * 那位乘客自己的准星重新拽回自己骑着的龙身上。详见 {@code DragonGolemEntity.positionRider}。
+     * <p>数值见 {@code DragonGolemConfig.pickRadius()}（默认 1.0），但实际生效值会经
+     * {@link DragonGolemEntity#pickRadiusFor} 削一次：<b>罩着乘客的箱子不许把乘客的眼睛包进
+     * 拾取箱</b>（泰坦体型时这里的值会是负数 —— 拾取箱比碰撞箱还小，但碰撞与伤害判定不受影响）。
+     * 原因见那个方法的说明：原版"射线起点落在箱子里就无条件选中"那一支不看 root vehicle。
      */
     @Override
     public float getPickRadius() {
-        return (float) DragonGolemConfig.pickRadius();
+        DragonGolemEntity parent = this.getParent();
+        if (parent == null) {
+            return (float) DragonGolemConfig.pickRadius();
+        }
+        return parent.pickRadiusFor(this.getBoundingBox(), DragonGolemConfig.pickRadius());
     }
 
     /**
@@ -108,8 +112,9 @@ public class DragonGolemPartEntity extends PartEntity<DragonGolemEntity> {
      * 如实回答"我属于本体"。
      *
      * <p>注意 {@code ProjectileUtil} 里还有一支：<b>射线起点落在箱子里</b>时是无条件选中的
-     * （不看 root vehicle）。所以光有这一条还不够 —— 座位本身也必须待在"自己所有判定箱"
-     * 的外面，那一条由 {@code DragonGolemEntity.positionRider} 的座椅净空负责。
+     * （不看 root vehicle）。所以光有这一条还不够 —— 拾取箱本身也不能包住乘客的眼睛，
+     * 那一条由 {@link DragonGolemEntity#pickRadiusFor} 负责（罩着乘客的箱子会自动收缩；
+     * 座椅位置则完全由模型决定，不会因为判定箱被顶高）。
      */
     @Override
     public Entity getRootVehicle() {
