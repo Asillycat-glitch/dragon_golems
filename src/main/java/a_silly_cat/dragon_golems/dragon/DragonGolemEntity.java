@@ -273,6 +273,27 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.entityData.set(DATA_BODY_ROLL, clamped);
     }
 
+    /**
+     * 平滑地设置飞行速度：<b>水平分量从"当前速度"按 {@code lerp} 过渡过去，竖直分量直接采用</b>。
+     *
+     * <h2>为什么需要</h2>
+     * 巡航是"永不刹停"的（到点立刻换下一个采样点，靠 {@code MIN_SPEED} 保持扇翅节奏），
+     * 但采样点可能落在身后：速度矢量一瞬间反向、而模型只能按 {@link #turnRateFor} 慢慢转，
+     * 表现就是<b>到了目的地顿一下、再往回蹭</b>（真机反馈的"违和感"来源）。
+     * 转向速度治不了这个 —— 那一瞬间是"位移已经反了、朝向还没转"。
+     *
+     * <p>所以给轨迹本身加一层加速度上限：方向变化摊到几 tick 里，模型来得及转过去。
+     * 竖直不参与平滑（悬停是双向收敛的，迟一 tick 就会撞天花板或沉下去）。
+     */
+    public void steerVelocitySmooth(Vec3 want, double lerp) {
+        Vec3 current = this.diveVelocity != null ? this.diveVelocity : this.getDeltaMovement();
+        double t = Mth.clamp(lerp, 0.0D, 1.0D);
+        this.setDiveVelocity(new Vec3(
+                Mth.lerp(t, current.x, want.x),
+                want.y,
+                Mth.lerp(t, current.z, want.z)));
+    }
+
     /** 每 tick 更新俯仰并同步出去（判定箱和客户端模型都读 {@link #getBodyPitch()}）。 */
     private void tickBodyPitch() {
         this.smoothPitch = Mth.lerp(0.25F, this.smoothPitch, pitchForPhase(this.getDivePhase()));

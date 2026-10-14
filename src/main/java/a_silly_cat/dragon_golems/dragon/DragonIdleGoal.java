@@ -1,5 +1,6 @@
 package a_silly_cat.dragon_golems.dragon;
 
+import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.player.Player;
@@ -86,6 +87,15 @@ public class DragonIdleGoal extends Goal {
      * 满 30 秒龙就停在原地不动了，主人只是绕着它走不会把它叫醒。
      */
     private static final int SETTLE_TICKS = 600;
+    /**
+     * "够不着所以换点"的最小间隔（tick）。
+     *
+     * <p>见 tick() 里的说明：寻路判定"这个点不可达"是每 tick 都为真的事件，
+     * 不做限速就会变成"每 tick 换一个目标点"，看起来是原地抖。
+     */
+    private static final int RESAMPLE_COOLDOWN = 10;
+    /** 采样新点时的"前方扇面"（度）：超出这个偏角的点算"要掉头"，尽量不选。 */
+    private static final double FORWARD_ARC = 100.0D;
 
     private final DragonGolemEntity dragon;
     /** 低通之后的"软中心"（只用 x/z）。第一次用原始位置初始化，避免从原点插值把龙甩出去。 */
@@ -97,6 +107,8 @@ public class DragonIdleGoal extends Goal {
     /** 当前要飞过去的随机目标点（水平坐标有意义，y 不参与）。 */
     @Nullable
     private Vec3 waypoint;
+    /** 上一次换点的 tick（"够不着"换点的冷却用，见 {@link #RESAMPLE_COOLDOWN}）。 */
+    private int lastResampleTick;
     private int waypointTicks;
     private boolean returning;
     private float bobOffset;
@@ -225,17 +237,22 @@ public class DragonIdleGoal extends Goal {
             maxSpeed = RETURN_SPEED;
         } else {
             this.waypointTicks++;
+            // ★ "够不着"导致的换点必须限速：B 档寻路让 noRoute() 每 tick 都会为真，
+            //   如果每 tick 都重采一个点，目标就每 tick 跳一次 —— 表现是原地抖（真机反馈的
+            //   "到了目的地顿住来回移动"里就有一份是它）。其余换点理由（到点 / 超时 / 跑出活动范围）
+            //   都是稳定事件，照旧立刻换。
+            boolean noRoute = this.dragon.pathFollower().noRoute();
+            boolean mayRetry = this.dragon.tickCount - this.lastResampleTick >= RESAMPLE_COOLDOWN;
             boolean needNew = this.waypoint == null
-                    || this.waypointTicks > WANDER_TIMEOUT
-                    // ★ B 档寻路：连续算不出路线 = 这个点够不着（在墙里 / 隔着墙），别继续拱
-                    || this.dragon.pathFollower().noRoute()
+                    || (noRoute ? mayRetry : (this.waypointTicks > WANDER_TIMEOUT
                     || this.horizontalDistance(this.dragon.getX(), this.dragon.getZ(),
                     this.waypoint.x, this.waypoint.z) < WANDER_REACH * range
                     || this.horizontalDistance(this.softCenter.x, this.softCenter.z,
-                    this.waypoint.x, this.waypoint.z) > WANDER_RADIUS * range * LEASH_SLACK;
+                    this.waypoint.x, this.waypoint.z) > WANDER_RADIUS * range * LEASH_SLACK));
             if (needNew) {
                 this.waypoint = this.sampleWaypoint();
                 this.waypointTicks = 0;
+                this.lastResampleTick = this.dragon.tickCount;
                 this.dragon.pathFollower().reset();
             }
             targetX = this.waypoint.x;
@@ -289,7 +306,10 @@ public class DragonIdleGoal extends Goal {
         // 注意现在方向主要来自 pathFollower 的航路点，这里只是"没路线可跟"时的兜底。
         Vec3 want = new Vec3(vx, vy, vz);
         Vec3 adjusted = this.dragon.flightAssist().avoidance(this.dragon, want);
-        this.dragon.setDiveVelocity(adjusted);
+        // ★ 轨迹平滑：水平分量按轨迹系数过渡（竖直直接采用，悬停要跟手）。
+        //   不这样做的话，"到点换下一个采样点"那一 tick 速度可能整个反向，
+        //   而模型只能按转速慢慢转 —— 看起来就是"到了目的地顿一下、再往回蹭"。
+        this.dragon.steerVelocitySmooth(adjusted, DragonGolemConfig.trajectoryLerp());
     }
 
     @Override
@@ -333,8 +353,12 @@ public class DragonIdleGoal extends Goal {
     }
 
     /**
-     * 采样方向：尽量不选"跟自己当前航向差 120° 以上"的点（那样每次换点都变成原地掉头，
-     * 看起来就是"撞到边界才开始慢慢转"）。最多试 4 次，实在不行就用最后一个。
+     * 采样方向：<b>尽量继续往前飞</b>，别选"跟自己当前航向差 100° 以上"的点。
+     *
+     * <p>这条是"到点以后顿一下再往回蹭"的另一半原因：巡航永不刹停（到点立刻换下一个点），
+     * 所以新点如果落在身后，速度方向就整个反过去。采样限制在前方 ±100° 之后，
+     * 绝大多数换点都是"顺着飞过去"，配合 {@code flight.trajectoryLerp} 的轨迹平滑就不再有顿挫。
+     * 最多试 6 次，实在不行（比如贴着活动范围边界）就用最后一个。
      */
     private double pickAngle() {
         Vec3 motion = this.dragon.getDeltaMovement();
@@ -342,10 +366,10 @@ public class DragonIdleGoal extends Goal {
                 ? Math.atan2(motion.z, motion.x)
                 : this.dragon.getRandom().nextDouble() * Math.PI * 2.0D;
         double best = Double.NaN;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 6; i++) {
             double a = this.dragon.getRandom().nextDouble() * Math.PI * 2.0D;
             best = a;
-            if (Math.abs(Mth.wrapDegrees(Math.toDegrees(a - heading))) <= 120.0D) {
+            if (Math.abs(Mth.wrapDegrees(Math.toDegrees(a - heading))) <= FORWARD_ARC) {
                 return a;
             }
         }

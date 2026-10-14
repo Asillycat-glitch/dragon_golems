@@ -48,6 +48,8 @@ public final class DragonPathFollower {
     private static final double MIN_NODE_REACH = 1.5D;
     /** A* 搜索半径的上限（格）：游走半径 72 + 余量就够用，再大只是白烧 CPU。 */
     private static final double MAX_RANGE = 96.0D;
+    /** 两次 A* 之间的最短间隔（tick）：目标每 tick 都在变时（换点、战斗目标乱跳）的限流。 */
+    private static final int MIN_REPATH_TICKS = 4;
 
     private final DragonGolemEntity dragon;
     /** 体型余量评估器：整个生命周期复用（它自带节点缓存，每次 {@code findPath} 前会被 prepare 清空）。 */
@@ -120,6 +122,10 @@ public final class DragonPathFollower {
     private boolean needsRecompute(Vec3 goal) {
         if (this.path == null || this.path.isDone() || this.goal == null) {
             return true;
+        }
+        // 最短重算间隔：目标每 tick 都在变时（游走换点、战斗目标乱跳）不能每 tick 算一次 A*
+        if (this.age < MIN_REPATH_TICKS) {
+            return false;
         }
         if (this.goal.distanceToSqr(goal) > GOAL_TOLERANCE * GOAL_TOLERANCE) {
             return true;

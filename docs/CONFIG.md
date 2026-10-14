@@ -350,7 +350,48 @@ public boolean dealSkillDamage(LivingEntity target, @Nullable DamageSource sourc
 - 侧倾由"本 tick 实际转过的角度"低通后算出来（AI 巡航、鼠标转、俯冲航线接管都有压弯），
   超过物理转速上限的转角（瞬移、强制对齐）不算，免得机身猛横。
 
-## 十、回退清单（哪条不想要就关哪个）
+## 十、巡航轨迹（"到目的地后顿住来回移动"）
+
+### 前提：巡航是"永不刹停"的
+
+原始设定是"龙在天上时一直保持移动"——因为要维持扇翅的观感。实现方式是
+`DragonIdleGoal` 的速度下限 `MIN_SPEED`（到点不刹停、立刻换下一个采样点）+
+`WANDER_REACH`（水平走够近就算"到了"）。这个设定本身没问题，
+问题出在"换点那一瞬间"和"换点的频率"上。
+
+### 三条原因
+
+1. **速度矢量一瞬间反向**（主因）。到点后立刻采样新点，若新点在身后，
+   `vx / vz` 当场反号 —— 而模型只能按 `turnRateFor`（22°/tick）慢慢转，
+   于是"位移已经往回走了、朝向还没转过来"，看起来就是**顿一下再往回蹭**。
+   转向速度治不了它：那一瞬间错的不是转向，是轨迹。
+2. **换点频率失控**（本次 B 档引入的）。新加的 `pathfinding` 判定
+   `noRoute()`（目标够不着）**每 tick 都会为真**，于是游走每 tick 重采一个点、
+   目标每 tick 跳一次 —— 表现是原地抖。已加 10 tick 的最小间隔
+   （`RESAMPLE_COOLDOWN`）；到点/超时/跑出活动范围这些"稳定事件"照旧立刻换。
+3. **采样方向允许大掉头**。原来的前方扇面是 ±120°，还剩三分之一的概率要掉头，
+   已收紧到 ±100°（重试 6 次，实在不行才认账）。
+
+### 修法
+
+| 位置 | 做了什么 |
+|---|---|
+| `DragonGolemEntity.steerVelocitySmooth` | 轨迹平滑：<b>水平分量</b>按 `flight.trajectoryLerp` 从当前速度过渡到期望速度；**竖直分量直接采用**（悬停是双向收敛的，迟一 tick 就会顶天花板或沉下去） |
+| 游走 / 返航 / 靠拢 / 音波靠拢 | 全部改走这个平滑入口（俯冲、骑手指令这种"脚本轨迹"仍走原来的直写） |
+| `DragonIdleGoal.RESAMPLE_COOLDOWN` | "够不着"换点最小间隔 10 tick |
+| `DragonIdleGoal.FORWARD_ARC` | 采样前方扇面 ±100°、重试 6 次 |
+| `DragonPathFollower.MIN_REPATH_TICKS` | 两次 A* 之间至少 4 tick（目标乱跳时的限流，防止每 tick 算一次寻路） |
+
+### 一个附带事实
+
+拍翅动画**本来就有悬停基准频率**（`DragonGolemModel` 的 `FLAP_BASE_RATE`，
+25 tick 一轮 ≈ 0.8 次/秒，速度越快扇得越急）—— 也就是说"必须一直移动"
+并不是动画不变突兀的**必要条件**（待机沉降状态本来就是原地悬停的）。
+所以如果以后想要"走走停停"的巡逻（到点悬停一会儿再走），
+在 `DragonIdleGoal` 里给"到点"加一个 hold 计时即可，不需要动动画。
+当前仍保持"永不刹停"的设计，只是把顿挫消掉了。
+
+## 十一、回退清单（哪条不想要就关哪个）
 
 | 不想要的效果 | 怎么办 |
 |---|---|
@@ -367,4 +408,5 @@ public boolean dealSkillDamage(LivingEntity target, @Nullable DamageSource sourc
 | 转向太灵活/太沉 | `flight.turnRadius` 与 `flight.riderTurnRate` |
 | 泰坦转弯像雨刷 | `flight.turnSizePenalty = 0.35` |
 | 压弯太夸张 | `flight.maxRoll` / `flight.rollPerDegree` 调小 |
+| 到点还是有点顿 | `flight.trajectoryLerp` 调小（0.15 更飘、1.0 = 旧的不平滑行为） |
 

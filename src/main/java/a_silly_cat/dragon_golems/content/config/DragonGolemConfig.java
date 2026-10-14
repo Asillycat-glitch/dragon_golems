@@ -1,6 +1,7 @@
 package a_silly_cat.dragon_golems.content.config;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
+import net.minecraft.util.Mth;
 import net.minecraftforge.common.ForgeConfigSpec;
 import net.minecraftforge.fml.ModContainer;
 import net.minecraftforge.fml.ModLoadingContext;
@@ -230,6 +231,17 @@ public final class DragonGolemConfig {
         return (float) num(COMMON.rollPerDegree, 1.5D);
     }
 
+    /**
+     * 巡航轨迹的平滑系数（每 tick 朝"期望速度"插值多少）。
+     *
+     * <p>巡航是"永不刹停"的：到点立刻换下一个采样点，速度方向可能整个反过去。
+     * 1.0 = 不平滑（旧行为：位移瞬间反向、模型还在慢慢转 → "到了目的地顿一下再往回蹭"）；
+     * 0.25 ≈ 十几 tick 完成掉头，模型来得及跟着转；太小则像在冰上滑。
+     */
+    public static double trajectoryLerp() {
+        return Mth.clamp(num(COMMON.trajectoryLerp, 0.25D), 0.05D, 1.0D);
+    }
+
     // ---- 属性（问题：属性快要顶到原版上限）----
 
     /**
@@ -312,6 +324,7 @@ public final class DragonGolemConfig {
         public final ForgeConfigSpec.DoubleValue turnSizePenalty;
         public final ForgeConfigSpec.DoubleValue maxRoll;
         public final ForgeConfigSpec.DoubleValue rollPerDegree;
+        public final ForgeConfigSpec.DoubleValue trajectoryLerp;
 
         public final ForgeConfigSpec.BooleanValue logAttributeOverflow;
         public final ForgeConfigSpec.BooleanValue maxHealthCapFix;
@@ -397,6 +410,10 @@ public final class DragonGolemConfig {
             this.rollPerDegree = builder
                     .comment("每 1° 转速折成多少度侧倾（1.2 原值）")
                     .defineInRange("rollPerDegree", 1.5D, 0.0D, 4.0D);
+            this.trajectoryLerp = builder
+                    .comment("巡航轨迹的平滑系数：每 tick 朝期望速度插值多少",
+                            "1.0 = 不平滑（到点瞬间反向 → 顿一下再往回蹭）；0.25 ≈ 十几 tick 完成掉头")
+                    .defineInRange("trajectoryLerp", 0.25D, 0.05D, 1.0D);
             builder.pop();
 
             builder.comment("属性").push("attributes");

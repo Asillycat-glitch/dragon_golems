@@ -1,5 +1,6 @@
 package a_silly_cat.dragon_golems.dragon;
 
+import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 import dev.xkmc.modulargolems.init.data.MGDamageTypes;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.Registries;
@@ -326,7 +327,9 @@ public class DragonSonicGoal extends Goal {
         Vec3 delta = steer.subtract(this.dragon.position());
         double len = delta.length();
         Vec3 velocity = len < 0.05D ? Vec3.ZERO : delta.scale(speed / len);
-        this.dragon.setDiveVelocity(new Vec3(velocity.x, this.hoverDelta(), velocity.z));
+        // 轨迹平滑：和目标一样，换向时位移不瞬间反过来
+        this.dragon.steerVelocitySmooth(new Vec3(velocity.x, this.hoverDelta(), velocity.z),
+                DragonGolemConfig.trajectoryLerp());
     }
 
     /** 维持离地高度的竖直速度（上限跟着速度倍率放大，和远程/待机一致）。 */

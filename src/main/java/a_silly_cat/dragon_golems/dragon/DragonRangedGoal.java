@@ -1,6 +1,7 @@
 package a_silly_cat.dragon_golems.dragon;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
+import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
@@ -406,7 +407,9 @@ public class DragonRangedGoal extends Goal {
         } else {
             velocity = new Vec3(dx / len * speed, 0.0D, dz / len * speed);
         }
-        this.dragon.setDiveVelocity(new Vec3(velocity.x, this.hoverDelta(), velocity.z));
+        // 轨迹平滑：靠拢/退开途中目标一换向，位移不会瞬间反过去（配合飞行辅助的避障）
+        this.dragon.steerVelocitySmooth(new Vec3(velocity.x, this.hoverDelta(), velocity.z),
+                DragonGolemConfig.trajectoryLerp());
     }
 
     /** 维持离地高度的竖直速度（和待机/俯冲拉升同一套写法）。上限跟着速度倍率放大，否则高速时爬不动。 */
