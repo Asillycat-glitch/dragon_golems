@@ -13,8 +13,11 @@ import org.jetbrains.annotations.Nullable;
  * 飞行辅助：<b>自由穿墙开关 + 卡住自动脱困 + 更主动的避障</b>。
  *
  * <h2>要解决的问题</h2>
- * 龙的判定箱是 {@code bodyScale() × (2.6 宽 × 2.2 高)}，而 {@code FlyingPathNavigation}
- * 是<b>按一格宽的实体</b>假设来寻路的 —— 它认为能过的缝，龙其实挤不过去。
+ * 龙的判定箱是 {@code bodyScale() × (2.6 宽 × 2.2 高)}，而原版<b>飞行</b>节点评估器
+ * （{@code FlyNodeEvaluator}）判定节点时<b>只看方块格、完全不看实体尺寸</b>
+ * （{@code entityWidth/Height} 在飞行这一支里没参与判定）—— 它认为能过的缝，龙其实挤不过去。
+ * 现在这一条由 {@link DragonFlyNodeEvaluator}（寻路侧的体型余量）先兜一道，
+ * 这里负责"事后卡住了怎么办"。
  * 结果就是在矿洞、走廊、树丛这类地方：寻路给出路径、龙照着走、一路撞墙，
  * 概率性地卡在墙里或者贴着墙原地磨。
  *
@@ -234,10 +237,8 @@ public final class DragonFlightAssist {
         }
 
         // ★ 卡住就强制重算路径。
-        //   这条才是"撞墙后不会重新找路线"的正解：原版只在 goal 需要新路径时才 createPath，
-        //   Mob 里没有"撞墙就重算"的调用，所以龙会一直朝同一个路径点推、直到当前路径走完。
-        //   而原版 recomputePath() 自带 20 tick 节流（超出就只置一个没人消费的标记），
-        //   光调它没用 —— 所以我们的 DragonFlyingNavigation 把节流去掉了。
+        //   "撞墙之后不会重新找路线"的根因：原版只在该换路线时才算路，撞墙本身不是触发条件，
+        //   所以龙会一直朝同一个路径点推、直到当前路径走完。
         //
         //   ★ 真机补充："遇到死角（凹陷处）不会回头（或者回头概率小）"。
         //   原因是重算出来的候选点经常还是同一个（凹陷的几何没变），于是无限重复
@@ -261,14 +262,14 @@ public final class DragonFlightAssist {
                 this.repathAttempts = 1;
                 this.lastRepathNode = node;
             }
-            dragon.getNavigation().recomputePath();
+            dragon.pathFollower().invalidate();
             if (DragonDebug.RIDE) {
                 Dragon_golems.LOGGER.info("[fly] 卡住 {} tick → 强制重算路径（第 {} 次）", this.stuckTicks,
                         this.repathAttempts);
             }
         } else if (this.stuckTicks > REROUTE_AFTER && this.stuckTicks % REROUTE_EVERY == 0) {
             // 还是出不去就持续重算（每次重算都会按"当前所在位置"重新规划）
-            dragon.getNavigation().recomputePath();
+            dragon.pathFollower().invalidate();
         }
 
         if (this.rescueTicks >= 0) {
@@ -423,13 +424,23 @@ public final class DragonFlightAssist {
         return flat.normalize();
     }
 
-    /** 当前路径点（世界坐标）或 null。 */
+    /**
+     * 当前路径点（世界坐标）或 null。
+     *
+     * <p>B 档寻路上线后，<b>真正在跟的路线归 {@link DragonPathFollower}</b>（它自己算 A*，
+     * 不往 {@code PathNavigation} 里写状态）；导航对象那边因为从来没人 {@code moveTo}，
+     * 路径永远是 null。所以这里先问跟随器，再退回导航（万一以后有人用起导航）。
+     */
     @Nullable
     private Vec3 pathNodeVec(DragonGolemEntity dragon) {
-        if (!(dragon.getNavigation() instanceof DragonFlyingNavigation nav)) {
-            return null;
+        Vec3 steer = dragon.pathFollower().steerPoint();
+        if (steer != null) {
+            return steer;
         }
-        return nav.currentPathNode();
+        if (dragon.getNavigation() instanceof DragonFlyingNavigation nav) {
+            return nav.currentPathNode();
+        }
+        return null;
     }
 
     /** 当前路径点所在的方块坐标（用来判断"重算之后目标换没换"）或 null。 */

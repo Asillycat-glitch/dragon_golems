@@ -154,6 +154,82 @@ public final class DragonGolemConfig {
         return bool(COMMON.diveTriggersMelee, true);
     }
 
+    // ---- 飞行寻路（B 档：A* 出航路点，我们只负责按航路点飞）----
+
+    /**
+     * 是否启用"真寻路"：给目标点算一条 A* 路线，然后<b>只把路线的下一个节点当作转向目标</b>，
+     * 速度与高度仍然由原来的 goal 控制。
+     *
+     * <p>为什么要这样：龙原先的移动是"朝目标点直接推速度"，而目标点（随机游走点 / 主人的 XZ）
+     * <b>不做任何校验</b> —— 主人在墙后、目标点在墙里，龙就会一直朝那个点拱，卡住了靠扇面探测和
+     * no-clip 救援硬挤（"老是隔着墙找目的地"）。开着这个开关之后，绕墙由原版 A*
+     * （{@code FlyNodeEvaluator}，实心方块是 {@code BLOCKED}、节点直接排除）负责，
+     * 龙照旧按自己的速度与悬停高度飞。
+     *
+     * <p>关掉就退回旧行为（直奔目标 + 硬挤），用于对照排查。
+     */
+    public static boolean pathEnabled() {
+        return bool(COMMON.pathEnabled, true);
+    }
+
+    /** 每隔多少 tick 重算一次路线（目标移动超过 2 格也会立刻重算）。 */
+    public static int pathRepathTicks() {
+        return Math.max(2, (int) num(COMMON.pathRepathTicks, 20.0D));
+    }
+
+    /**
+     * 寻路时是否考虑"这条龙很宽"。
+     *
+     * <p>原版 {@code FlyNodeEvaluator} 只按方块格判定，<b>完全不吃实体尺寸</b>（2.6 格宽的龙
+     * 照样会被规划进 1 格缝，然后一路蹭墙）。开着这个开关会给它加一层体型余量：
+     * 节点处按龙的身体盒子采样，塞不下就判 {@code BLOCKED}。
+     */
+    public static boolean pathBodyClearance() {
+        return bool(COMMON.pathBodyClearance, true);
+    }
+
+    /** 连续算不出路线这么多 tick 之后，目标判定为"不可达"（游走 goal 会因此换一个点）。 */
+    public static int pathGiveUpTicks() {
+        return Math.max(10, (int) num(COMMON.pathGiveUpTicks, 40.0D));
+    }
+
+    // ---- 旋转（转向速度与压弯）----
+
+    /** 基础转向速度（度/tick）：慢速时的下限，速度上来后按 {@code turnRadius} 一起放大。 */
+    public static float turnRateBase() {
+        return (float) num(COMMON.turnRateBase, 22.0D);
+    }
+
+    /** 玩家驾驶时的转向下限（度/tick）：和 AI 分开调，避免"鼠标一抖机头就抽"。 */
+    public static float riderTurnRate() {
+        return (float) num(COMMON.riderTurnRate, 10.0D);
+    }
+
+    /** 转弯半径（格）：{@code ω = v / r}，调小 = 更灵活，调大 = 更沉。 */
+    public static double turnRadius() {
+        return Math.max(0.5D, num(COMMON.turnRadius, 3.4D));
+    }
+
+    /**
+     * 体型对转速的惩罚：{@code 转速 ÷ (1 + 惩罚 × (体型倍率 − 1))}。
+     *
+     * <p>0 = 不惩罚（泰坦和 1 倍一样灵活，转弯像雨刷）；0.35 时 4 倍泰坦约 ÷2，
+     * 大体型转起来更"重"、更像一条巨龙。默认 0 保持原手感。
+     */
+    public static double turnSizePenalty() {
+        return num(COMMON.turnSizePenalty, 0.0D);
+    }
+
+    /** 侧倾上限（度）：转弯时最多压弯多少。 */
+    public static float maxRoll() {
+        return (float) num(COMMON.maxRoll, 35.0D);
+    }
+
+    /** 每 1° 转速折成多少度侧倾（转弯越急压得越狠）。 */
+    public static float rollPerDegree() {
+        return (float) num(COMMON.rollPerDegree, 1.5D);
+    }
+
     // ---- 属性（问题：属性快要顶到原版上限）----
 
     /**
@@ -225,6 +301,18 @@ public final class DragonGolemConfig {
         public final ForgeConfigSpec.BooleanValue nativeSkillGoals;
         public final ForgeConfigSpec.BooleanValue diveTriggersMelee;
 
+        public final ForgeConfigSpec.BooleanValue pathEnabled;
+        public final ForgeConfigSpec.DoubleValue pathRepathTicks;
+        public final ForgeConfigSpec.BooleanValue pathBodyClearance;
+        public final ForgeConfigSpec.DoubleValue pathGiveUpTicks;
+
+        public final ForgeConfigSpec.DoubleValue turnRateBase;
+        public final ForgeConfigSpec.DoubleValue riderTurnRate;
+        public final ForgeConfigSpec.DoubleValue turnRadius;
+        public final ForgeConfigSpec.DoubleValue turnSizePenalty;
+        public final ForgeConfigSpec.DoubleValue maxRoll;
+        public final ForgeConfigSpec.DoubleValue rollPerDegree;
+
         public final ForgeConfigSpec.BooleanValue logAttributeOverflow;
         public final ForgeConfigSpec.BooleanValue maxHealthCapFix;
         public final ForgeConfigSpec.DoubleValue maxHealthCap;
@@ -272,6 +360,43 @@ public final class DragonGolemConfig {
                             "龙没有近战攻击，这一族升级原本在龙身上是死的；开着就是『俯冲 = 龙的近战』",
                             "本家规则照旧：带乘客的傀儡、被动（装坐骑升级）的龙都不会触发")
                     .define("diveTriggersMelee", true);
+            builder.pop();
+
+            builder.comment("飞行寻路（B 档：A* 出航路点，龙只负责按航路点飞）").push("pathfinding");
+            this.pathEnabled = builder
+                    .comment("给目标点算 A* 路线、按路线节点转向（关掉退回『直奔目标 + 卡住硬挤』）")
+                    .define("enabled", true);
+            this.pathRepathTicks = builder
+                    .comment("每隔多少 tick 重算一次路线（目标移动超过 2 格会立刻重算）")
+                    .defineInRange("repathTicks", 20.0D, 2.0D, 200.0D);
+            this.pathBodyClearance = builder
+                    .comment("寻路时是否考虑龙的体型（原版飞行评估器只看方块格，会把 2.6 格宽的龙规划进 1 格缝）")
+                    .define("bodyClearance", true);
+            this.pathGiveUpTicks = builder
+                    .comment("连续算不出路线这么多 tick 就认定目标不可达（游走 goal 会换一个点）")
+                    .defineInRange("giveUpTicks", 40.0D, 10.0D, 400.0D);
+            builder.pop();
+
+            builder.comment("旋转（转向速度与压弯）").push("flight");
+            this.turnRateBase = builder
+                    .comment("基础转向速度（度/tick）：慢速时的下限；18 原值、22 ≈ 0.8 秒掉头 180°")
+                    .defineInRange("turnRateBase", 22.0D, 2.0D, 180.0D);
+            this.riderTurnRate = builder
+                    .comment("玩家驾驶时的转向下限（度/tick）：调大 = 更跟手，调小 = 更沉")
+                    .defineInRange("riderTurnRate", 10.0D, 2.0D, 180.0D);
+            this.turnRadius = builder
+                    .comment("转弯半径（格）：ω = v / r。调小更灵活、调大更沉")
+                    .defineInRange("turnRadius", 3.4D, 0.5D, 40.0D);
+            this.turnSizePenalty = builder
+                    .comment("体型对转速的惩罚：转速 ÷ (1 + 惩罚 × (体型倍率 − 1))",
+                            "0 = 泰坦和 1 倍一样灵活；0.35 时 4 倍泰坦约 ÷2")
+                    .defineInRange("turnSizePenalty", 0.0D, 0.0D, 2.0D);
+            this.maxRoll = builder
+                    .comment("侧倾上限（度）：转弯时最多压弯多少（28 原值）")
+                    .defineInRange("maxRoll", 35.0D, 0.0D, 80.0D);
+            this.rollPerDegree = builder
+                    .comment("每 1° 转速折成多少度侧倾（1.2 原值）")
+                    .defineInRange("rollPerDegree", 1.5D, 0.0D, 4.0D);
             builder.pop();
 
             builder.comment("属性").push("attributes");

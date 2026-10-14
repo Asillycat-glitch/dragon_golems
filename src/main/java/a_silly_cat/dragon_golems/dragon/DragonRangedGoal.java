@@ -388,10 +388,17 @@ public class DragonRangedGoal extends Goal {
         return CONE_LENGTH * this.dragon.combatGeoScale();
     }
 
-    /** 朝一个水平点飞（保持悬停高度），转向交给实体的 faceMovement。 */
+    /**
+     * 朝一个水平点飞（保持悬停高度），转向交给实体的 faceMovement。
+     *
+     * <p>★ B 档寻路：<b>靠拢也走 A* 的航路点</b>。目标在墙后时，旧写法是直线撞墙
+     * （"隔着墙找目标"），现在由路线绕过去；算不出路线时 {@code steer()} 原样返回目标点，
+     * 也就是退回旧行为。速度仍按"离最终目标还有多远"决定，贴着航路点飞不会掉到最低速。
+     */
     private void moveToward(Vec3 point, double speed) {
-        double dx = point.x - this.dragon.getX();
-        double dz = point.z - this.dragon.getZ();
+        Vec3 steer = this.dragon.pathFollower().steer(new Vec3(point.x, this.dragon.getY(), point.z), 1);
+        double dx = steer.x - this.dragon.getX();
+        double dz = steer.z - this.dragon.getZ();
         double len = Math.sqrt(dx * dx + dz * dz);
         Vec3 velocity;
         if (len < 0.05D) {

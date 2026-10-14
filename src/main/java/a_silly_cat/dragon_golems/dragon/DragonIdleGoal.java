@@ -26,6 +26,11 @@ import java.util.EnumSet;
  * 看起来就是一顿一顿；现在主人移动只会让"软中心"慢慢跟着走，龙继续飞自己那个点，
  * 只有在超出活动范围（{@code WANDER_RADIUS}）时才重新采样。
  *
+ * <p><b>B 档寻路：方向不再直接朝目标点。</b>每 tick 先问 {@link DragonPathFollower}
+ * "A* 路线上的下一个节点在哪"，朝那个节点飞；目标点只决定飞多快。于是"目标在墙后"
+ * 这件事由原版寻路绕开，而采样点在墙里时路线会是截断的（{@code canReach == false}）——
+ * {@code noRoute()} 一为真就立刻换点，不再对着墙拱。
+ *
  * <p>高度始终是"脚下地形 + {@code HOVER_HEIGHT} + 呼吸"，所以山上、悬崖边都贴着地貌走
  * （到达判定只看水平，竖向永远差着 HOVER_HEIGHT 格，用三维距离会永远"没到"）。
  * <b>"脚下地形"现在把水面与岩浆面也算进去</b>（见 {@code DragonGolemEntity.localFloorY()}），
@@ -189,6 +194,7 @@ public class DragonIdleGoal extends Goal {
             // "离地三格"是个给以后骑乘用的固定高度，上下浮动会让人站不稳；想要那点浮动的话
             // 把下面 wantY 末尾的 + this.bob() 加回来即可。
             this.waypoint = null;
+            this.dragon.pathFollower().reset();
             // 用 hoverTargetY() 而不是自己再算一遍：那个方法会把目标压到"头顶天花板之下"
             // （洞里的龙否则会朝世界地表高度一直爬，实测过：surface=70 / y=-6 → 目标 80）。
             double settleY = this.dragon.hoverTargetY();
@@ -201,9 +207,11 @@ public class DragonIdleGoal extends Goal {
         if (!this.returning && distToCenter > RETURN_START * range) {
             this.returning = true;
             this.waypoint = null;
+            this.dragon.pathFollower().reset();
         } else if (this.returning && distToCenter < RETURN_STOP * range) {
             this.returning = false;
             this.waypoint = null;
+            this.dragon.pathFollower().reset();
         }
 
         // ---- 选一个目标点 ----
@@ -219,6 +227,8 @@ public class DragonIdleGoal extends Goal {
             this.waypointTicks++;
             boolean needNew = this.waypoint == null
                     || this.waypointTicks > WANDER_TIMEOUT
+                    // ★ B 档寻路：连续算不出路线 = 这个点够不着（在墙里 / 隔着墙），别继续拱
+                    || this.dragon.pathFollower().noRoute()
                     || this.horizontalDistance(this.dragon.getX(), this.dragon.getZ(),
                     this.waypoint.x, this.waypoint.z) < WANDER_REACH * range
                     || this.horizontalDistance(this.softCenter.x, this.softCenter.z,
@@ -226,6 +236,7 @@ public class DragonIdleGoal extends Goal {
             if (needNew) {
                 this.waypoint = this.sampleWaypoint();
                 this.waypointTicks = 0;
+                this.dragon.pathFollower().reset();
             }
             targetX = this.waypoint.x;
             targetZ = this.waypoint.z;
@@ -233,15 +244,23 @@ public class DragonIdleGoal extends Goal {
         }
 
         // ---- 水平速度：朝目标点，限速但有最低速度（保证一直在动） ----
+        // ★ B 档寻路：方向来自 A* 路线的"下一个节点"，目标点只决定"飞多远/多快"。
+        //   于是绕墙由原版寻路负责，而巡航速度、悬停高度、避障全都保持原样。
+        //   算不出路线时 steer() 会原样返回目标点 —— 也就是退回旧行为（直奔目标）。
+        Vec3 steer = this.dragon.pathFollower().steer(new Vec3(targetX, this.dragon.getY(), targetZ), 1);
+        double dx = steer.x - this.dragon.getX();
+        double dz = steer.z - this.dragon.getZ();
+        double dh = Math.sqrt(dx * dx + dz * dz);
+        // 速度按"离最终目标还有多远"算（否则贴着路径节点飞会一路掉到最低速）
+        double dxFinal = targetX - this.dragon.getX();
+        double dzFinal = targetZ - this.dragon.getZ();
+        double dhFinal = Math.sqrt(dxFinal * dxFinal + dzFinal * dzFinal);
         // 巡航/回位速度都要乘"飞行速度倍率"，材料与速度升级的移速加成在这里生效
         double factor = this.dragon.flightSpeedFactor();
-        double dx = targetX - this.dragon.getX();
-        double dz = targetZ - this.dragon.getZ();
-        double dh = Math.sqrt(dx * dx + dz * dz);
         double vx = 0.0D;
         double vz = 0.0D;
         if (dh > 0.05D) {
-            double speed = Mth.clamp(dh * GAIN, MIN_SPEED * factor, maxSpeed * factor);
+            double speed = Mth.clamp(dhFinal * GAIN, MIN_SPEED * factor, maxSpeed * factor);
             vx = dx / dh * speed;
             vz = dz / dh * speed;
         }
@@ -266,7 +285,8 @@ public class DragonIdleGoal extends Goal {
 
         // 主动避障：撞墙时不再只是"往上顶 0.15"，而是在扇面里找真正塞得下龙的方向。
         // 原实现只有上面那一行，在矿洞/树丛里表现为"贴着同一面墙磨很久"
-        // （龙判定箱 2.6 格宽，寻路按一格宽假设，它以为能过的缝其实挤不过去）。
+        // （龙判定箱 2.6 格宽，而原版飞行寻路只看方块格、不看实体尺寸，它以为能过的缝龙挤不过去）。
+        // 注意现在方向主要来自 pathFollower 的航路点，这里只是"没路线可跟"时的兜底。
         Vec3 want = new Vec3(vx, vy, vz);
         Vec3 adjusted = this.dragon.flightAssist().avoidance(this.dragon, want);
         this.dragon.setDiveVelocity(adjusted);

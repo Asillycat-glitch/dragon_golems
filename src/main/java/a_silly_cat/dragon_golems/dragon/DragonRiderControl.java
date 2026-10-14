@@ -1,6 +1,7 @@
 package a_silly_cat.dragon_golems.dragon;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
+import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
@@ -56,13 +57,16 @@ public final class DragonRiderControl {
     /** 竖直速度的收敛系数：空格/Shift 放开后是平移收住，不是一刀切成 0。 */
     private static final double RIDER_VERTICAL_LERP = 0.35D;
 
-    /** 骑乘时的基础转向速度（度/tick）：6°/tick = 120°/秒。
+    /**
+     * 骑乘时的转向下限已经挪进配置：{@code flight.riderTurnRate}（默认 10°/tick）。
      *
-     * <p>不能像原版地面坐骑那样"朝向 = 玩家视角"（那种一帧 360° 都行）：这条龙有 26 格长的身体和
-     * 一条 70 格的尾巴，瞬间掉头看起来就是整条龙在原地拧过去。这里复用
-     * {@link DragonGolemEntity#turnRateFor}，所以低速是 6°/tick、高速按转弯半径一起涨。
+     * <p>早先写死 6°/tick = 120°/秒（180° 掉头 1.5 秒），真机反馈"转不够、跟不上鼠标"，
+     * 所以抬到 10°/tick，并且和 AI 那一档分开调 —— 玩家驾驶的手感与 AI 巡航的手感不是一回事。
+     *
+     * <p>上限仍然取 {@code max(该下限, turnRateFor(速度) * 0.5)}：不能像原版地面坐骑那样
+     * "朝向 = 玩家视角"（那种一帧 360° 都行）—— 这条龙有 26 格长的身体和一条 70 格的尾巴，
+     * 瞬间掉头看起来就是整条龙在原地拧过去。
      */
-    private static final float RIDER_TURN = 6.0F;
 
     /**
      * 骑乘时允许的最大机体俯仰（度）：跟着玩家视角抬头/低头，模型和判定箱一起动。
@@ -149,9 +153,10 @@ public final class DragonRiderControl {
         if (horizontal > 1.0E-4D) {
             float yaw = (float) (Mth.atan2(look.z, look.x) * 180.0D / Math.PI) - 90.0F;
             float delta = Mth.wrapDegrees(yaw - dragon.getYRot());
-            // 上限取 max(基础转速, 按转弯半径算出来的转速的一半)：高速时不会"锁死在 6°/tick"，
-            // 但也不会像 faceMovement 那样一 tick 直接把机头拧过去。
-            float cap = Math.max(RIDER_TURN, dragon.turnRateFor(
+            // 上限取 max(玩家驾驶下限, 按转弯半径算出来的转速的一半)：
+            // 下限来自配置 flight.riderTurnRate（原来写死 6°/tick，180° 掉头要 1.5 秒，实测反馈"转不够"），
+            // 高速时再按转弯半径一起放大，但只有 faceMovement 的一半 —— 鼠标一抖机头不跟着抽。
+            float cap = Math.max(DragonGolemConfig.riderTurnRate(), dragon.turnRateFor(
                     Math.max(RIDER_SPEED, dragon.getDeltaMovement().horizontalDistance())) * 0.5F);
             dragon.setYRot(dragon.getYRot() + Mth.clamp(delta, -cap, cap));
             dragon.yRotO = dragon.getYRot();

@@ -152,30 +152,19 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /** 下降速度上限（格/tick）。悬停得是双向的，不然被顶高了就再也下不来。 */
     private static final double HOVER_FALL_SPEED = 0.12D;
     /**
-     * 基础转向速度（度/tick）：18°/tick = 360°/秒，180° 掉头约 0.5 秒。
+     * 转向速度与侧倾现在全部走配置（{@code flight.*}），这里只留"物理上限"。
      *
-     * <p>这是<b>慢速时的下限</b>，不是固定值：速度上来之后实际转速由 {@link #turnRateFor} 按
-     * {@link #TURN_RADIUS} 一起放大。
+     * <p>为什么挪进配置：这两组数就是"这条龙转得动不动"的全部手感来源 ——
+     * 基础转速 {@code flight.turnRateBase}、玩家驾驶下限 {@code flight.riderTurnRate}、
+     * 转弯半径 {@code flight.turnRadius}（ω = v / r）、体型惩罚 {@code flight.turnSizePenalty}、
+     * 侧倾 {@code flight.maxRoll} / {@code flight.rollPerDegree}。
+     * 以前它们写死在代码里，调一次要重新打包；现在测试的人自己就能拧。
+     *
+     * <p>为什么必须有"转弯半径"这一条：龙的飞行是 goal 直接写 {@code deltaMovement}，
+     * 运动方向一 tick 就能掉头，而模型的 yaw 只能按转速慢慢转。没有它的话，
+     * 高速时龙在画大圈而模型还朝着上一个方向，表现就是"转不过来 / 横着飞"。
      */
-    private static final float MAX_TURN_PER_TICK = 18.0F;
-    /**
-     * 转弯半径（格）：速度一超过"基础转向能维持的半径"，转向速度就按 {@code ω = v / r} 一起涨，
-     * 于是<b>不管飞多快，转弯半径都钉在这个值附近</b>。
-     *
-     * <p>为什么必须有这个：龙的飞行是 goal 直接写 {@code deltaMovement}，运动方向一 tick 就能掉头，
-     * 而模型的 yaw 只能按转速慢慢转。原来转速写死 18°/tick —— 1 格/tick 时转弯半径约 3 格，模型跟得上；
-     * 幽匿 / 泰坦那种 3 格/tick 时转弯半径变成 9.5 格，龙在画大圈而模型还朝着上一个方向，
-     * 表现就是"转不过来 / 横着飞"。
-     *
-     * <p>调它 = 调"这条龙有多灵活"：调大转弯更沉更重，调小更灵活。
-     */
-    private static final double TURN_RADIUS = 4.0D;
-    /** 转向速度上限（度/tick）：96°/tick ≈ 0.26 秒转 360°，再高就纯属防极端数值了。 */
     private static final float MAX_TURN_HARD_CAP = 96.0F;
-    /** 侧倾：本 tick 转过 1° → 机身倾斜多少度（转弯越急压弯越明显）。 */
-    private static final float ROLL_PER_DEGREE = 1.2F;
-    /** 侧倾上限（度）。原来 42° 在高速转弯时会一直顶格，看起来像在甩尾。 */
-    private static final float MAX_ROLL = 28.0F;
     /** 侧倾用的"转向速率"平滑系数：用低通后的值算倾斜，急转不会一帧打到顶。 */
     private static final float ROLL_TURN_LERP = 0.3F;
     /** 低于这个转速就算"没在转"，直接把侧倾归零（避免悬停时留着一丝压弯）。 */
@@ -277,9 +266,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * {@link #tickBodyRoll()} 接手时不会从 0 重新起跳（交接处看不到"先回正、再压下去"）。
      */
     public void setBodyRollDirect(float deg) {
-        float clamped = Mth.clamp(deg, -MAX_ROLL, MAX_ROLL);
+        float limit = DragonGolemConfig.maxRoll();
+        float clamped = Mth.clamp(deg, -limit, limit);
         this.bodyRollDirectThisTick = true;
-        this.smoothedTurn = clamped / ROLL_PER_DEGREE;
+        this.smoothedTurn = clamped / Math.max(0.01F, DragonGolemConfig.rollPerDegree());
         this.entityData.set(DATA_BODY_ROLL, clamped);
     }
 
@@ -1590,6 +1580,18 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 服务端是权威，客户端顶多差一两 tick 的表现。
      */
     private final DragonFlightAssist flightAssist = new DragonFlightAssist();
+    /**
+     * B 档寻路：A* 出航路点，龙只按航路点转向（见 {@link DragonPathFollower}）。
+     *
+     * <p>它是"目标点校验"的唯一出口：游走 / 返航 / 战斗靠拢都问它"现在该朝哪飞"，
+     * 于是绕墙由原版 A* 负责，而速度、悬停高度、俯冲航线仍然由各自的 goal 管。
+     */
+    private final DragonPathFollower pathFollower = new DragonPathFollower(this);
+
+    /** B 档路径跟随器（服务端 AI 用；客户端不参与寻路）。 */
+    public DragonPathFollower pathFollower() {
+        return this.pathFollower;
+    }
 
     /** 每次回血回复的血量。和原版末影龙一致：1 点 = 半颗心。 */
     private static final float CRYSTAL_HEAL_AMOUNT = 1.0F;
@@ -2182,7 +2184,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             this.smoothedTurn = 0.0F;
         }
         this.entityData.set(DATA_BODY_ROLL,
-                Mth.clamp(this.smoothedTurn * ROLL_PER_DEGREE, -MAX_ROLL, MAX_ROLL));
+                Mth.clamp(this.smoothedTurn * DragonGolemConfig.rollPerDegree(),
+                        -DragonGolemConfig.maxRoll(), DragonGolemConfig.maxRoll()));
     }
 
     // ---- 攻击调度（供 DragonDiveGoal / DragonRangedGoal 查询）----
@@ -2444,15 +2447,22 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /**
      * 当前水平速度下允许的转向速度（度/tick）。
      *
-     * <p>速度低于"基础转向能维持的半径"时保持 {@link #MAX_TURN_PER_TICK}（慢速手感不变）；
-     * 超过之后按 {@code ω = v / TURN_RADIUS} 一起涨，转弯半径就钉在 {@link #TURN_RADIUS} 附近 ——
+     * <p>速度低于"基础转向能维持的半径"时保持 {@code flight.turnRateBase}（慢速手感不变）；
+     * 超过之后按 {@code ω = v / flight.turnRadius} 一起涨，转弯半径就钉在那个值附近 ——
      * 这样不管飞多快，模型都能真的朝着自己在飞的方向，而不是横着飘。
      *
      * @param horizontalSpeed 这一 tick 的水平速度（格/tick）
      */
     public float turnRateFor(double horizontalSpeed) {
-        float byRadius = (float) Math.toDegrees(Math.max(0.0D, horizontalSpeed) / TURN_RADIUS);
-        return Mth.clamp(Math.max(MAX_TURN_PER_TICK, byRadius), MAX_TURN_PER_TICK, MAX_TURN_HARD_CAP);
+        float byRadius = (float) Math.toDegrees(Math.max(0.0D, horizontalSpeed) / DragonGolemConfig.turnRadius());
+        float base = Math.min(DragonGolemConfig.turnRateBase(), MAX_TURN_HARD_CAP);
+        float rate = Math.max(base, byRadius);
+        // 体型惩罚（默认 0 = 不惩罚）：大体型转起来更"重"，免得泰坦像雨刷一样原地甩
+        double penalty = DragonGolemConfig.turnSizePenalty();
+        if (penalty > 0.0D) {
+            rate /= (float) (1.0D + penalty * Math.max(0.0D, this.bodyScale() - 1.0D));
+        }
+        return Mth.clamp(rate, 1.0F, MAX_TURN_HARD_CAP);
     }
 
     /**
@@ -3511,11 +3521,12 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
 
     @Override
     protected PathNavigation createNavigation(Level level) {
-        // 用我们自己的飞行寻路：按体型放宽路径点容忍度、并让"卡住时重算"真的生效。
-        // 原版 FlyingPathNavigation 有两个坑（详见 DragonFlyingNavigation 的类注释）：
-        //   1. maxDistanceToWaypoint 默认 0.75 格，几格宽的龙永远"够不到"路径点，不切下一个；
-        //   2. recomputePath() 自带 20 tick 节流，超出就只置一个没人消费的标记 →
-        //      "撞墙了赶紧重算"这个请求被静默丢弃。
+        // 用我们自己的飞行导航：按体型放宽路径点容忍度 + 换带体型余量的节点评估器。
+        //
+        // 注意：<b>真正在用的寻路不在这里</b>。龙的 AI 走 DragonPathFollower 自己算 A* 路线
+        // （理由：PathNavigation.tick() 一旦发现有路径就会去驱动 MoveControl，
+        // 而这条龙的速度与悬停高度必须由各自的 goal 掌着）。这个导航对象是"万一以后有人
+        // 改用原版导航开龙"的兜底，两边的口径（体型余量、容忍度）保持一致。
         DragonFlyingNavigation nav = new DragonFlyingNavigation(this, level);
         nav.setCanOpenDoors(false);
         nav.setCanFloat(true);

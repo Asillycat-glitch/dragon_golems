@@ -73,7 +73,8 @@ public final class DragonRiderKeys {
      * 自由飞行（穿墙）开关。默认 <b>H</b>。
      *
      * <p>为什么需要它：龙的判定箱是 {@code bodyScale × (2.6 宽 × 2.2 高)}，
-     * 而原版寻路是按"一格宽的实体"假设的 —— 它以为能过的缝，龙其实挤不过去。
+     * 而"能钻多窄的缝"这件事<b>原版飞行寻路是不看的</b>（{@code FlyNodeEvaluator} 只判方块格，
+     * 不参与实体尺寸；我们另加了 {@code DragonFlyNodeEvaluator} 补体型余量）。
      * 在矿洞、走廊、树丛里表现为概率性撞墙甚至卡死。与其做一堆半吊子的
      * "只穿树叶不穿石头"，不如给一个明确的开关，外加服务端的自动脱困兜底
      * （见 {@code DragonFlightAssist}）。

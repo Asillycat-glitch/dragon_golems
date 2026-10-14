@@ -314,10 +314,16 @@ public class DragonSonicGoal extends Goal {
         this.dragon.setDiveVelocity(new Vec3(0.0D, this.hoverDelta(), 0.0D));
     }
 
-    /** 朝目标飞（保持悬停高度）；转向交给实体的 faceMovement。 */
+    /**
+     * 朝目标飞（保持悬停高度）；转向交给实体的 faceMovement。
+     *
+     * <p>★ B 档寻路：靠拢走 A* 的航路点（目标在墙后时绕过去，而不是直线撞墙）；
+     * 算不出路线时 {@code steer()} 原样返回目标点 = 退回旧行为。
+     */
     private void moveToward(LivingEntity target, double speed) {
-        Vec3 delta = new Vec3(target.getX(), this.dragon.getY(), target.getZ())
-                .subtract(this.dragon.position());
+        Vec3 steer = this.dragon.pathFollower().steer(
+                new Vec3(target.getX(), this.dragon.getY(), target.getZ()), 1);
+        Vec3 delta = steer.subtract(this.dragon.position());
         double len = delta.length();
         Vec3 velocity = len < 0.05D ? Vec3.ZERO : delta.scale(speed / len);
         this.dragon.setDiveVelocity(new Vec3(velocity.x, this.hoverDelta(), velocity.z));

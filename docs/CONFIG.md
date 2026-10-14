@@ -274,7 +274,83 @@ public boolean dealSkillDamage(LivingEntity target, @Nullable DamageSource sourc
   我们没动）；各自 modifier 的冷却与射程也照旧；
 - 开关：`skills.diveTriggersMelee`（默认开）。
 
-## 八、回退清单（哪条不想要就关哪个）
+## 八、飞行寻路（B 档：A* 出航路点，龙只负责按航路点飞）
+
+### 症状的机理（"老是隔着墙寻找目的地"）
+
+龙的移动是 goal 直接写 `deltaMovement`（`setDiveVelocity`），而**目标点从来不校验可达性**：
+
+- `DragonIdleGoal.sampleWaypoint()` 在 `[5, 24×速度倍率]` 环带里随机采样，只做一件事 ——
+  重采几次避开"落点下方是液体"，**不看视线、不看连通性、不看这条龙塞不塞得进去**；
+- `RETURN` 的目标就是软中心（= 主人的 XZ）——主人躲进屋/山洞，龙就朝那个 XZ 一直推；
+- 撞墙之后不是绕路，而是 `DragonFlightAssist` 在扇面里找"塞得下"的方向硬挤，
+  长时间卡住还会进 no-clip 救援 / 常驻幽灵。
+
+更根本的一条：**"寻路"从来没被调用过。** 全 mod 只有三处碰 `getNavigation()` ——
+`DragonFlightAssist` 的 `recomputePath()`、读路径点、`DragonFollowTeleportGoal` 的 `stop()`，
+<b>没有任何一处 `moveTo(...)`/`createPath(...)`</b>。于是 `PathNavigation.targetPos` 恒为 null，
+`DragonFlyingNavigation.recomputePath()` 第一行就返回，路径一次都没生成过，
+"顺着寻路路径点避障"那条分支是死代码。
+
+### 修法：只借路线，不借方向盘
+
+`DragonPathFollower`（服务端，每只龙一个）：
+
+1. 自己用 `PathFinder` + `DragonFlyNodeEvaluator` 算 A*（参数和原版
+   `PathNavigation.createPath(pos, reach)` 一致：搜索区域 = 当前位置 ±(跟随距离 + 8)，
+   路线长度上限同样是这个值）；
+2. 每 tick 把"还没走到的第一个节点"作为**转向目标**交给 goal，节点走完就前进一个；
+3. 目标点只决定"飞多快"，**速度与悬停高度仍归原来的 goal** —— 龙的手感不变；
+4. 路线是**截断**的（`Path.canReach() == false`，即 A* 只能走到离目标最近的可达点）时
+   `noRoute()` 为真：游走 goal 立刻换点，而不是继续对着墙拱；战斗靠拢则沿截断路线飞到
+   最远处停下（最后一个节点），也不撞墙。
+
+**为什么不干脆让原版 `FlyingPathNavigation` 开龙**：`PathNavigation.tick()` 只要发现
+`path != null` 就会去驱动 `MoveControl`，而这条龙的高度是"脚下地形 + 悬停高度 + 呼吸"
+算出来的（还要被头顶天花板夹住），交给 `MoveControl` 等于把这套全部推翻 ——
+所以跟随器<b>一个字段都不写回导航对象</b>，两套逻辑不打架。
+
+### 体型余量（`pathfinding.bodyClearance`）
+
+原版 `FlyNodeEvaluator` 判定节点只看**方块格**：实心方块是 `BLOCKED`（malus −1）会被排除
+（所以它本来就不会规划穿墙路线），但它**完全不看实体多大** ——
+`NodeEvaluator` 里按体型算出来的 `entityWidth/Height` 在飞行这一支里没参与判定。
+2.6 格宽（泰坦 10 格宽）的龙因此会被规划进"1 格缝"，然后一路蹭墙。
+
+`DragonFlyNodeEvaluator` 在 `super` 判为可走之后再按**龙自己的身体盒子**采样：
+四个角柱 + 中柱 × 三个高度（共 15 个采样点），任何一个点落进有碰撞箱的方块 → 判 `BLOCKED`。
+采样尺寸封顶 8 格（泰坦下逐方块遍历会变成性能黑洞），异常一律按"能过"处理。
+
+### 可调项
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `pathfinding.enabled` | true | 关掉退回旧行为（直奔目标 + 卡住硬挤），用于对照排查 |
+| `pathfinding.repathTicks` | 20 | 每隔多少 tick 重算路线（目标移动超过 2 格会立刻重算） |
+| `pathfinding.bodyClearance` | true | 寻路时是否考虑龙的体型（见上） |
+| `pathfinding.giveUpTicks` | 40 | 连续算不出路线这么久就认定目标不可达 |
+
+## 九、旋转（转向速度与压弯）
+
+真机反馈"龙旋转效果不够好"。原来的数值写死在代码里（基础 18°/tick、转弯半径 4.0、
+玩家驾驶下限 6°/tick、侧倾 1.2×28°），现在全部进配置，并且把两组明显偏保守的值抬了一档：
+
+| 键 | 原值 | 现在 | 作用 |
+|---|---|---|---|
+| `flight.turnRateBase` | 18 | **22** | 慢速时的转向下限（度/tick）。22 ≈ 0.8 秒掉头 180° |
+| `flight.riderTurnRate` | 6 | **10** | 玩家驾驶时的转向下限：6°/tick 掉头要 1.5 秒，跟不上鼠标 |
+| `flight.turnRadius` | 4.0 | **3.4** | 转弯半径（格），`ω = v / r`：调小更灵活、调大更沉 |
+| `flight.turnSizePenalty` | — | **0.0** | `转速 ÷ (1 + 惩罚 × (体型倍率 − 1))`；0.35 时 4 倍泰坦约 ÷2（转起来更"重"） |
+| `flight.maxRoll` | 28 | **35** | 侧倾上限（度） |
+| `flight.rollPerDegree` | 1.2 | **1.5** | 每 1° 转速折成多少度侧倾（压弯更明显） |
+
+- 转向速度仍然是"慢速取下限、高速按转弯半径一起涨"（`turnRateFor`），上限 96°/tick；
+- 玩家驾驶的上限是 `max(riderTurnRate, turnRateFor(速度) × 0.5)` —— 一半是故意的：
+  鼠标一抖机头不跟着抽（这条龙 26 格长、尾巴 70 格，瞬间掉头看着像原地拧）；
+- 侧倾由"本 tick 实际转过的角度"低通后算出来（AI 巡航、鼠标转、俯冲航线接管都有压弯），
+  超过物理转速上限的转角（瞬移、强制对齐）不算，免得机身猛横。
+
+## 十、回退清单（哪条不想要就关哪个）
 
 | 不想要的效果 | 怎么办 |
 |---|---|
@@ -286,3 +362,9 @@ public boolean dealSkillDamage(LivingEntity target, @Nullable DamageSource sourc
 | 不要放宽最大生命上限 | `attributes.maxHealthCapFix = false`（超上限的部分会重新被夹掉，也可以改装 AttributeFix） |
 | 让 `*AttackGoal`（goal 族）回来 | `skills.nativeSkillGoals = true` |
 | 俯冲不再触发地震/跳劈 | `skills.diveTriggersMelee = false` |
+| 寻路（退回直奔目标 + 硬挤） | `pathfinding.enabled = false` |
+| 寻路别管龙的体型 | `pathfinding.bodyClearance = false` |
+| 转向太灵活/太沉 | `flight.turnRadius` 与 `flight.riderTurnRate` |
+| 泰坦转弯像雨刷 | `flight.turnSizePenalty = 0.35` |
+| 压弯太夸张 | `flight.maxRoll` / `flight.rollPerDegree` 调小 |
+

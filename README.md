@@ -84,6 +84,8 @@ src/main/java/a_silly_cat/dragon_golems/
   init/ModCreativeTabs.java       自己的创造栏；另外往本家的傀儡页补物品
   compat/jei/                     JEI 说明页（JEI 不在也能正常玩）
   dragon/                         服务端与两端共用：实体 / 种类 / 部件枚举 / 装备栏 / AI / 全部注册
+  dragon/DragonPathFollower       ★ 寻路：自己算 A* 航路点，只把"下一个节点"当转向目标
+  dragon/DragonFlyNodeEvaluator   带体型余量的飞行节点评估器（原版飞行评估器不看实体尺寸）
   dragon/DragonRetrieveHandler    回收手杖的"认子箱"瞄准辅助（Forge 事件，不改本家代码）
   content/config/                 TOML 配置（DragonGolemConfig）、内置属性修复（DragonAttributeFix）、
                                   数据包身体主题表（DragonBodyConfig）
@@ -96,7 +98,8 @@ src/main/resources/
   data/modulargolems/tags/        往本家的标签里追加（命名空间保持 modulargolems 不动）
 
 docs/
-  CONFIG.md                       ★ 配置文件在哪 + 龙息递减/坐骑升级/泰坦压乘客/选定与回收/属性上限/技能挂载点
+  CONFIG.md                       ★ 配置文件在哪 + 龙息递减/坐骑升级/泰坦压乘客/选定与回收/属性上限/
+                                  技能挂载点/飞行寻路/转向与压弯
   DEPENDENCIES.md                 依赖与各文件用到了什么
   JEI.md                          JEI 里哪些页是本家白送的、我们补了什么
   MOUNT.md                        升级/坐骑/载客的反查结果：哪条升级被挡、龙最多载几个、怎么落地
@@ -113,8 +116,10 @@ config/l2_configs/dragon_golems-common.toml
 和傀儡装配、l2library 的配置**同一个目录**（本家就是这么放的）。可调项：
 龙息对同一目标的递减开关与步长、坐骑升级能否装到龙上、准星拾取半径、
 技能升级的两个挂载点（俯冲触发"近战族"地震/跳劈、是否保留本家的 `*AttackGoal`）、
-属性超上限日志、以及**内置属性修复**（等价于 AttributeFix，只放宽最大生命，默认开 ——
-幽匿龙裸装 1000 血已经是原版 1024 上限的 97.7%）。
+属性超上限日志、**内置属性修复**（等价于 AttributeFix，只放宽最大生命，默认开 ——
+幽匿龙裸装 1000 血已经是原版 1024 上限的 97.7%）、
+**飞行寻路**（是否用 A* 出航路点、重算间隔、体型余量、目标够不着多久放弃）、
+**转向与压弯**（基础转速 / 玩家驾驶下限 / 转弯半径 / 体型惩罚 / 侧倾上限与系数）。
 每一条的来龙去脉（含"为什么只放宽最大生命"）见
 [`docs/CONFIG.md`](docs/CONFIG.md)。
 
@@ -138,7 +143,7 @@ config/l2_configs/dragon_golems-common.toml
 
 ## 最近一版改了什么（0.4）
 
-七项修复，机理与开关都在 [`docs/CONFIG.md`](docs/CONFIG.md)：
+九项修复，机理与开关都在 [`docs/CONFIG.md`](docs/CONFIG.md)：
 
 1. **坐骑升级能装到龙身上**（本家原先写死只认狗型）——`RideUpgradeMixin`；
 2. **泰坦体型不再把骑手埋进模型 / 挡住操作**——座椅锚在模型背脊表面（下沉量封顶在 1 倍体型）、
@@ -148,7 +153,13 @@ config/l2_configs/dragon_golems-common.toml
 5. **技能升级有挂载点了**——技能伤害统一走真实伤害源（穿甲/破魔/吸血等一律生效），
    俯冲撞击触发本家的地震/跳劈族（那一族原先只挂在本家近战上）；
 6. **龙息递减**（同一次喷息对同一目标）；
-7. **配置统一进 `config/l2_configs/dragon_golems-common.toml`**（和傀儡装配同目录）。
+7. **配置统一进 `config/l2_configs/dragon_golems-common.toml`**（和傀儡装配同目录）；
+8. **真寻路**——以前"寻路"一次都没被调用过（没有任何 goal 调 `moveTo`），龙是
+   "朝不校验的采样点直推速度、卡住就硬挤/穿墙"。现在 `DragonPathFollower` 用 A* 出航路点、
+   龙按航路点转向（速度与悬停高度不变），并给原版飞行评估器补上**体型余量**
+   （它只看方块格、不看实体多大），目标够不着（`Path.canReach() == false`）就立刻换点；
+9. **旋转可调**——转向速度、转弯半径、体型惩罚、侧倾上限与系数全进配置，
+   并把两组偏保守的值抬了一档（玩家驾驶下限 6 → 10°/tick、侧倾 1.2×28° → 1.5×35°）。
 
 ## 移植说明
 

@@ -10,34 +10,27 @@ import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * 龙的飞行寻路：<b>按体型放宽"切下一个路径点"的容忍度 + 让重算请求一定生效</b>。
+ * 龙的飞行导航：<b>按体型放宽"切下一个路径点"的容忍度</b>。
  *
- * <h2>为什么要自己做（本家的答案）</h2>
- * 模块化傀儡本家有一个 {@code FastGroundPathNavigation extends GroundPathNavigation}，
- * 它只重写了一个方法 —— {@code recomputePath()}，在里面做了两件事：
+ * <h2>先纠正三条早先写错的注释（对着 2.7.3 字节码核过）</h2>
  * <ol>
- *   <li><b>按体型调大"允许偏航"的阈值</b>：把 {@code maxDistanceToWaypoint} 设成
- *       {@code max(0.75, mob.getBbWidth() / 2)}。原版默认 0.75 格，对判定箱几个格宽的巨物
- *       太苛刻 —— 它很难精确走到路径点上，于是永远"够不到"当前路径点、不切下一个，
- *       最后表现为原地磨或绕圈。</li>
- *   <li><b>绕过原版的重算节流</b>。这一条比看上去重要：原版
- *       {@code PathNavigation.recomputePath()} 自己就带节流 ——
- *       <pre>
- *       if (level.getGameTime() - timeLastRecompute &gt; 20) { ...真重算... }
- *       else { hasDelayedRecomputation = true; }      // 不够 20 tick 就只置个标记
- *       </pre>
- *       而那个 {@code hasDelayedRecomputation} 标记<b>没有任何地方消费</b>
- *       （{@code isDone()} 只看 {@code path == null || path.isDone()}）。
- *       也就是说：<b>20 tick 内的重算请求等于被静默丢弃</b>。
- *       本家干脆整个重写、不做这个节流。</li>
+ *   <li>本家的 {@code FastGroundPathNavigation} 重写的是 {@code followThePath()}，<b>不是</b>
+ *       {@code recomputePath()}；{@code recomputePath()} 原样继承原版（含 20 tick 节流）。</li>
+ *   <li>它那行 {@code maxDistanceToWaypoint} 的赋值<b>和原版逐字相同</b>
+ *       （{@code bbWidth > 0.75 ? bbWidth / 2 : 0.75 - bbWidth / 2}），并不是"按体型调大"。</li>
+ *   <li>原版的 {@code hasDelayedRecomputation} <b>是被消费的</b>（{@code PathNavigation.tick()}
+ *       开头就会调 {@code recomputePath()}），20 tick 内的请求只是延后一 tick，不是被丢弃。</li>
  * </ol>
+ * 也就是说：<b>不需要为了"重算生效"去删节流</b>。
  *
- * <h2>我们额外要解决的那一条</h2>
- * 原版<b>只在 goal 需要新路径时才 createPath</b> —— {@code Mob} 里没有任何
- * "撞墙就重算"的调用。所以龙撞上墙之后会<b>继续朝同一个路径点推</b>，直到当前路径走完。
- * 这就是"撞墙后不会停止寻路、重新找路线"的根因。
- * 对策在 {@link DragonFlightAssist}：判定卡住就显式调 {@link #recomputePath()}。
- * <b>正因为本类去掉了节流，那一下才会真的重算</b> —— 原版那版会被丢弃。
+ * <h2>现在这个类实际上不负责寻路</h2>
+ * 龙的 AI 走 {@link DragonPathFollower} 自己算路线（速度与悬停高度都还归各自的 goal，
+ * 不能让 {@code PathNavigation.tick()} 抢走 {@code MoveControl}）。所以这里的
+ * {@link #trimPath()} 在这个类被真正用来"跟路"之前都是备用逻辑 ——
+ * 注意 {@code followThePath()} 每 tick 都会重写那个字段，真跟路时它也会被覆盖。
+ *
+ * <p>保留它是因为：万一以后有人改用原版导航开龙，这里的容忍度与
+ * {@link DragonFlyNodeEvaluator}（体型余量）都是同一个口径的兜底。
  */
 public class DragonFlyingNavigation extends FlyingPathNavigation {
 
@@ -56,6 +49,21 @@ public class DragonFlyingNavigation extends FlyingPathNavigation {
 
     public DragonFlyingNavigation(Mob mob, Level level) {
         super(mob, level);
+    }
+
+    /**
+     * 换成带<b>体型余量</b>的评估器（见 {@link DragonFlyNodeEvaluator}）。
+     *
+     * <p>原版 {@code FlyNodeEvaluator} 只看方块格、不看实体尺寸，2.6 格宽的龙会被规划进 1 格缝。
+     * 注意：<b>现在真正在用的寻路不在这个导航对象上</b> —— 龙的 AI 走 {@link DragonPathFollower}
+     * 自己算路线（理由见那里的类注释：不让 {@code PathNavigation.tick()} 抢走移动控制权）。
+     * 这里换评估器是为了"万一以后有人真的用起导航"时行为一致，属于同一个口径的兜底。
+     */
+    @Override
+    protected net.minecraft.world.level.pathfinder.PathFinder createPathFinder(int maxPathLength) {
+        this.nodeEvaluator = new DragonFlyNodeEvaluator();
+        this.nodeEvaluator.setCanFloat(true);
+        return new net.minecraft.world.level.pathfinder.PathFinder(this.nodeEvaluator, maxPathLength);
     }
 
     /** 缓存 goal 指定的射程，供 {@link #recomputePath()} 复用。 */
@@ -84,16 +92,16 @@ public class DragonFlyingNavigation extends FlyingPathNavigation {
     }
 
     /**
-     * 重算路径，<b>不做任何节流</b>。
+     * 重算当前路径（不节流），供"撞墙了就重新规划"使用。
      *
-     * <p>走的是和原版一样的重建流程（清 path → {@code createPath(targetPos, reachRange)}
-     * → 记时间），只是把那两个 {@code if (距上次重算 > 20 tick)} 判断去掉 —— 见类注释：
-     * 原版那条 else 分支只置一个没人消费的标记，所以"想重算"根本得不到执行。
+     * <p><b>纠正</b>：原版的 20 tick 节流并不会把请求丢掉 —— {@code PathNavigation.tick()}
+     * 开头就会消费 {@code hasDelayedRecomputation} 并调用 {@code recomputePath()}，
+     * 20 tick 内提的请求只是延后一 tick 生效。这里做成"立刻生效"是为了配合
+     * {@link DragonFlightAssist} 的卡住判定（它本身已经有 20 ticket 门槛与重试上限），
+     * 不是为了绕过什么。
      *
-     * <p>没有加频率保护是有意的：{@link DragonFlightAssist} 只在"判定卡住"时调它，
-     * 而那个判定本身带 20 tick 门槛与 60 tick 的脱困上限，不会每 tick 触发。
-     * 万一将来别处高频调用，应该在那一边限制，而不是把节流加回来
-     * （加回来就等于又变回"请求被丢弃"）。
+     * <p>当前 AI 走的是 {@link DragonPathFollower}，它自己算路线、不写这里的字段，
+     * 所以这个方法只在"有人真的用导航开龙"时才有意义。
      */
     @Override
     public void recomputePath() {
