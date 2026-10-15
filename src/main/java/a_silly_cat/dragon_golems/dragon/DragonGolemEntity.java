@@ -60,6 +60,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -3430,6 +3431,12 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      *
      * <p>液体那一档要往上把<b>整根液柱的顶面</b>找出来（见 {@link #liquidTopY}）：
      * 已经泡在水里的龙若只按"当前这一格水的顶"算，就得一格一格往上磨，出水前要磨好几秒。
+     *
+     * <p><b>★ 流水（瀑布 / 水渠）不算支撑面</b>（见 {@code hover.flowingFluidIsFloor}）：
+     * 流水柱可以很长（瀑布从崖顶一路到崖底），龙飞进去之后支撑面就成了"瀑布顶"，
+     * 于是它每 tick 往上挪一格；从瀑布边缘蹭出去时支撑面又瞬间掉回地面 ——
+     * 悬停目标在两者之间反复跳，表现就是"穿过瀑布时抽搐"。现在流水一律跳过、继续往下找，
+     * 静水（湖泊、水池、海洋 —— 自然水体都是静水方块）照旧算支撑面。
      */
     private Floor scanFloor(int x, int z, int startY) {
         Level level = this.level();
@@ -3441,7 +3448,11 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 // 方块占据 [y, y+1)，所以站在它上面的高度就是 y+1
                 return new Floor(y + 1.0D, false);
             }
-            if (!state.getFluidState().isEmpty()) {
+            FluidState fluid = state.getFluidState();
+            if (!fluid.isEmpty()) {
+                if (!fluid.isSource() && !DragonGolemConfig.flowingFluidIsFloor()) {
+                    continue;   // 流水：不是支撑面，继续往下找
+                }
                 // 水草、海带这类"含水方块"的流体状态非空，所以它们和纯水一样算液面
                 return new Floor(this.liquidTopY(x, z, y) + 1.0D, true);
             }
@@ -3455,7 +3466,12 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 液柱顶面所在方块的 y（从 {@code fromY} 往上走，直到不再是液体）。
      *
      * <p>上限 {@link #LIQUID_SCAN}：瀑布那种从头顶一路流下来的水柱不该把龙带到源头去；
-     * 够不到真正的液面也无所谓 —— 下一 tick 会重新算一次，一层层往上挪就是了。
+     * 够不到真正的液面也无所谓 —— 下一 tick 会重新算一次，一层层往上挪就是了
+     * （<b>注意</b>：那说的是旧行为；现在流水不参与支撑面判定，见 {@link #scanFloor}）。
+     *
+     * <p><b>★ 往上走时遇到流水就停</b>（{@code hover.flowingFluidIsFloor} 为 false 时）：
+     * 否则"瀑布砸进水池"那种地方，从池水往上会一路数到瀑布顶，
+     * 龙又被带到瀑布顶上去了。停下来的位置就是<b>静水水体的真正液面</b>。
      */
     private int liquidTopY(int x, int z, int fromY) {
         Level level = this.level();
@@ -3463,11 +3479,27 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         int last = Math.min(fromY + LIQUID_SCAN, level.getMaxBuildHeight() - 1);
         for (int y = fromY + 1; y <= last; y++) {
             probe.set(x, y, z);
-            if (level.getBlockState(probe).getFluidState().isEmpty()) {
+            FluidState fluid = level.getBlockState(probe).getFluidState();
+            if (fluid.isEmpty()) {
                 return y - 1;
+            }
+            if (!fluid.isSource() && !DragonGolemConfig.flowingFluidIsFloor()) {
+                return y - 1;   // 上面是流水（瀑布/水渠）：静水液面到此为止
             }
         }
         return last;
+    }
+
+    /**
+     * 水流 / 岩浆流能不能推动这条龙（{@code hover.pushedByFluid}，默认不能）。
+     *
+     * <p>原版用它决定要不要把流体的流向施加到实体上（浮力与游泳走的是另一套，不受影响）。
+     * 龙是"悬停 + 每 tick 由 goal 直接写速度"的单位，被水流推着走只会和它的速度控制打架：
+     * 瀑布里竖直方向被水往下拽、控制端在往上抬，表现就是原地抽搐。
+     */
+    @Override
+    public boolean isPushedByFluid() {
+        return DragonGolemConfig.pushedByFluid();
     }
 
     /** 骑手冲锋专用的"上一 tick 位置"，用来算实际位移（见 aiStep 里的诊断）。 */

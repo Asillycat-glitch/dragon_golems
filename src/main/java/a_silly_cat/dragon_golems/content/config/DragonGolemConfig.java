@@ -242,6 +242,39 @@ public final class DragonGolemConfig {
         return Mth.clamp(num(COMMON.trajectoryLerp, 0.25D), 0.05D, 1.0D);
     }
 
+    // ---- 悬停参照系（支撑面 / 液体）----
+
+    /**
+     * <b>流水（瀑布、水渠、岩浆瀑布）能不能当"支撑面"。</b>默认 <b>false</b>（不能）。
+     *
+     * <h2>为什么要这样</h2>
+     * 悬停高度是"脚下的支撑面 + 悬停高度"，而 {@code scanFloor} 撞到液体时会往上找
+     * <b>整根液柱的顶面</b>（{@code liquidTopY}）。流水柱在竖直方向上可以很长：
+     * 龙一旦飞进瀑布，支撑面就成了"瀑布顶"，于是它<b>每 tick 往上挪一格</b>；
+     * 从瀑布边缘蹭出去时支撑面又瞬间掉回地面 —— 悬停目标在两者之间反复跳，
+     * 表现就是"穿过瀑布时抽搐"。关掉这条之后：
+     * <ul>
+     *   <li>流水一律忽略，继续往下找真正的地面 / <b>静水</b>液面（湖泊与水池都是静水方块，照旧悬停其上方）；</li>
+     *   <li>泡在静水里时照旧以静水液面为准（"自己爬出水池"这条能力不受影响）。</li>
+     * </ul>
+     * 设 true = 旧行为（流水也算支撑面，会顺着瀑布往上爬）。
+     */
+    public static boolean flowingFluidIsFloor() {
+        return bool(COMMON.flowingFluidIsFloor, false);
+    }
+
+    /**
+     * <b>水流 / 岩浆流能不能推动龙。</b>默认 <b>false</b>（推不动）。
+     *
+     * <p>龙是"悬停 + 每 tick 由 goal 直接写速度"的单位，原版的水流推力只会和它自己的
+     * 速度控制互相打架（瀑布里尤其明显：竖直方向被水流往下拽、控制端在往上抬）。
+     * 关掉之后它仍然会正常"落进水里"（原版的浮力与游泳逻辑不看这个开关），
+     * 只是不再被水流推着走。设 true = 原版行为。
+     */
+    public static boolean pushedByFluid() {
+        return bool(COMMON.pushedByFluid, false);
+    }
+
     // ---- 属性（问题：属性快要顶到原版上限）----
 
     /**
@@ -325,6 +358,9 @@ public final class DragonGolemConfig {
         public final ForgeConfigSpec.DoubleValue maxRoll;
         public final ForgeConfigSpec.DoubleValue rollPerDegree;
         public final ForgeConfigSpec.DoubleValue trajectoryLerp;
+
+        public final ForgeConfigSpec.BooleanValue flowingFluidIsFloor;
+        public final ForgeConfigSpec.BooleanValue pushedByFluid;
 
         public final ForgeConfigSpec.BooleanValue logAttributeOverflow;
         public final ForgeConfigSpec.BooleanValue maxHealthCapFix;
@@ -414,6 +450,19 @@ public final class DragonGolemConfig {
                     .comment("巡航轨迹的平滑系数：每 tick 朝期望速度插值多少",
                             "1.0 = 不平滑（到点瞬间反向 → 顿一下再往回蹭）；0.25 ≈ 十几 tick 完成掉头")
                     .defineInRange("trajectoryLerp", 0.25D, 0.05D, 1.0D);
+            builder.pop();
+
+            builder.comment("悬停参照系（支撑面 / 液体）").push("hover");
+            this.flowingFluidIsFloor = builder
+                    .comment("流水（瀑布/水渠/岩浆瀑布）算不算支撑面",
+                            "false（默认）：忽略流水、继续往下找地面或静水液面 —— 修掉『飞进瀑布时顺着瀑布往上爬 + 抽搐』",
+                            "true：旧行为（流水也算支撑面）")
+                    .define("flowingFluidIsFloor", false);
+            this.pushedByFluid = builder
+                    .comment("水流/岩浆流能不能推动龙",
+                            "false（默认）：推不动 —— 否则水流推力和龙自己的速度控制互相打架（瀑布里最明显）",
+                            "true：原版行为（浮力与游泳不受这个开关影响）")
+                    .define("pushedByFluid", false);
             builder.pop();
 
             builder.comment("属性").push("attributes");
