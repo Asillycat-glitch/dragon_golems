@@ -339,6 +339,21 @@ public final class DragonGolemConfig {
         return bool(COMMON.pushedByFluid, false);
     }
 
+    // ---- 傀儡本体 ----
+
+    /**
+     * <b>龙的升级槽数量</b>（默认 5，可 0~100）。
+     *
+     * <h2>为什么要单独做一个键</h2>
+     * 本家三种傀儡各有自己的配置项（{@code largeGolemSlot = 4}、{@code humanoidGolemSlot = 3}、
+     * {@code dogGolemSlot = 2}），而 {@code GolemType.getUpgradeSlots()} 的<b>基类默认值</b>是
+     * "部件枚举的数量"——我们刚好有 5 个部件，所以龙一直是 5 槽，而且<b>没法调</b>。
+     * 这条把它变成和本家三个键同级的配置项（{@link #upgradeSlots()} → {@code DragonGolemType} 的覆盖）。
+     */
+    public static int upgradeSlots() {
+        return Mth.clamp((int) num(COMMON.upgradeSlots, 5.0D), 0, 100);
+    }
+
     // ---- 幽灵（穿墙）状态 ----
 
     /**
@@ -489,6 +504,8 @@ public final class DragonGolemConfig {
         public final ForgeConfigSpec.BooleanValue flightLog;
         public final ForgeConfigSpec.DoubleValue flightLogInterval;
 
+        public final ForgeConfigSpec.DoubleValue upgradeSlots;
+
         public final ForgeConfigSpec.BooleanValue logAttributeOverflow;
         public final ForgeConfigSpec.BooleanValue maxHealthCapFix;
         public final ForgeConfigSpec.DoubleValue maxHealthCap;
@@ -624,6 +641,13 @@ public final class DragonGolemConfig {
             this.ghostCombatMemoryTicks = builder
                     .comment("『战斗中』的记忆窗口（tick）：最近这么久内有目标/打过/被打过都算战斗中（100 = 5 秒）")
                     .defineInRange("combatMemoryTicks", 100.0D, 20.0D, 1200.0D);
+            builder.pop();
+
+            builder.comment("傀儡本体").push("golem");
+            this.upgradeSlots = builder
+                    .comment("龙的升级槽数量（默认 5 = 部件数量；本家对照：大型 4 / 人形 3 / 犬型 2）",
+                            "0 = 完全不能装升级；上限 100")
+                    .defineInRange("upgradeSlots", 5.0D, 0.0D, 100.0D);
             builder.pop();
 
             builder.comment("诊断日志").push("debug");
