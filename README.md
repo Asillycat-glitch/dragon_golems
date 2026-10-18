@@ -85,6 +85,7 @@ src/main/java/a_silly_cat/dragon_golems/
   compat/jei/                     JEI 说明页（JEI 不在也能正常玩）
   dragon/                         服务端与两端共用：实体 / 种类 / 部件枚举 / 装备栏 / AI / 全部注册
   dragon/DragonPathFollower       ★ 寻路：自己算 A* 航路点，只把"下一个节点"当转向目标
+  dragon/DragonFlightController   ★ 飞行执行层：每 tick 唯一的速度出口 + flightBand 高度带
   dragon/DragonFlyNodeEvaluator   带体型余量的飞行节点评估器（原版飞行评估器不看实体尺寸）
   dragon/DragonRetrieveHandler    回收手杖的"认子箱"瞄准辅助（Forge 事件，不改本家代码）
   content/config/                 TOML 配置（DragonGolemConfig）、内置属性修复（DragonAttributeFix）、

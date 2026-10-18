@@ -146,14 +146,9 @@ public final class DragonFlightAssist {
             return;
         }
         handleStuck(dragon);
-        // ★ 最后一道保险（速度层面）：身体正和方块重合时，速度绝不允许向上。
-        //   实体那边已经把"重合"分支排在 goal 速度之前，但这条独立于分支顺序 ——
-        //   万一以后又有人往别处写速度（技能、避障、外力…），这里也会把它拧回去。
-        //   真机依据：[fly] embedded=true noPhysics=true dy=+1.008，y 从 88 升到 109（在墙里上升）。
-        if (this.embedded && dragon.getDeltaMovement().y > 0.0D) {
-            Vec3 v = dragon.getDeltaMovement();
-            dragon.setDeltaMovement(v.x, 0.0D, v.z);
-        }
+        // 注意：原来这里有一条"重合时把向上的速度归零"的补丁，已经并进
+        // DragonFlightController 的安全层（按 flightBand 夹竖直分量 + ESCAPE 模式接管方向）。
+        // 速度出口只剩一处，这里不再重复否决。
     }
 
     /**

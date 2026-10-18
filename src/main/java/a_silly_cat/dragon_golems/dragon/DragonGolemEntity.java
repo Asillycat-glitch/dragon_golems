@@ -92,7 +92,7 @@ import java.util.UUID;
  *
  * <p>飞行沿用原版"悦灵/蜜蜂"那一套（{@link FlyingMoveControl} + 我们自己的
  * {@link DragonFlyingNavigation}（继承自 {@code FlyingPathNavigation}）三维寻路），
- * 另外在 {@link #aiStep()} 里补上"离地 N 格"的悬停高度（见 {@link #applyHover()}）。这里没有搬末影龙的
+ * 另外在 {@link #aiStep()} 里补上"离地 N 格"的悬停高度（见 applyHover()）。这里没有搬末影龙的
  * {@code DragonPhaseManager}——那套 phase AI 会和傀儡的跟随/指令系统打架。
  *
  * <p><b>待办：三种攻击（撞人 / 吐息 / 吐龙弹）。</b>接入点先记在这里：
@@ -101,7 +101,7 @@ import java.util.UUID;
  *       独立技能用 {@code GolemModifier.onRegisterGoals} 或这里的 {@code addGoal} 加自己的 Goal，
  *       Goal 里 {@code canUse()} 判断"有目标 + 距离合适 + 冷却好了"。</li>
  *   <li>撞人：可以直接复用本家 {@code GolemMeleeGoal} 的判定思路，照着写一段
- *       "锁定落点 → 直线冲刺 → 路径上结算伤害"；冲刺期间要暂时关掉 {@link #applyHover()} 的抬升
+ *       "锁定落点 → 直线冲刺 → 路径上结算伤害"；冲刺期间要暂时关掉 applyHover() 的抬升
  *       （俯冲到目标高度）。</li>
  *   <li>吐息 / 吐龙弹：属于远程，需要在 Goal 里播放前摇 + 生成投射物（本家
  *       {@code BaseRangedAttackGoal} / 各 compat 的 {@code *AttackGoal} 是现成范例），
@@ -1613,6 +1613,14 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 于是绕墙由原版 A* 负责，而速度、悬停高度、俯冲航线仍然由各自的 goal 管。
      */
     private final DragonPathFollower pathFollower = new DragonPathFollower(this);
+    /**
+     * <b>飞行执行层</b>：每 tick 唯一的速度出口（见 {@link DragonFlightController}）。
+     *
+     * <p>之前"谁能写 {@code deltaMovement}"散落在实体、四个 goal、飞行辅助里，每修一个 bug
+     * 就多一条否决规则、彼此打架 —— 抽搐/穿墙/"想往上飞"都是这么来的。
+     * 现在统一走：<b>goal 表意图 → 控制器选模式 → 安全层夹进高度带 → 写一次</b>。
+     */
+    private final DragonFlightController flightController = new DragonFlightController(this);
 
     /** B 档路径跟随器（服务端 AI 用；客户端不参与寻路）。 */
     public DragonPathFollower pathFollower() {
@@ -1712,6 +1720,59 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         server.sendParticles(ParticleTypes.END_ROD,
                 this.getX(), this.getY() + this.getBbHeight() * 0.6D, this.getZ(),
                 3, this.getBbWidth() * 0.4D, this.getBbHeight() * 0.25D, this.getBbWidth() * 0.4D, 0.01D);
+    }
+
+    /** 飞行执行层（诊断/日志用）。 */
+    public DragonFlightController flightController() {
+        return this.flightController;
+    }
+
+    // ---- 执行层要用的访问器（同包可见） ----
+
+    /** 技能航线速度（俯冲/拉升写的那个；{@code null} = 没人在跑技能）。 */
+    @Nullable
+    Vec3 scriptVelocity() {
+        return this.diveVelocity;
+    }
+
+    /** 技能航线速度用掉了（和原来的 {@code this.diveVelocity = null} 等价）。 */
+    void clearScriptVelocity() {
+        this.diveVelocity = null;
+    }
+
+    /** 这一 tick 是否要"保持瞄准"（开火时朝向由 goal 管）。 */
+    boolean keepAim() {
+        return this.keepAimThisTick;
+    }
+
+    /**
+     * 悬停模式要用的<b>竖直速度</b>（{@code null} = 已经在目标高度附近，这一 tick 什么都不写）。
+     *
+     * <p>这是从原来的 {@code applyHover()} 拆出来的：只算竖直分量，水平分量由调用方保留
+     * （原实现就是 {@code cur.x, fall, cur.z}），写速度统一交给
+     * {@link DragonFlightController}。判据与原来逐行一致：
+     * <ul>
+     *   <li>{@code |dy| ≤ 0.2} → 不动；</li>
+     *   <li>高于目标 → 慢慢压回去（下限 -0.02，避免"永远差一点"）；</li>
+     *   <li>低于目标但天花板已经把目标压低（{@code hoverTargetY < unclamped - 0.1}）→ 不往上顶；</li>
+     *   <li>否则按 {@code 0.03 + dy × 0.05} 上升，上限 {@link #HOVER_RISE_SPEED}。</li>
+     * </ul>
+     */
+    @Nullable
+    Double hoverYSpeed() {
+        double dy = hoverTargetY() - this.getY();
+        if (Math.abs(dy) <= 0.2D) {
+            return null;
+        }
+        if (dy < 0.0D) {
+            return Mth.clamp(dy * 0.05D, -HOVER_FALL_SPEED, -0.02D);
+        }
+        // 天花板已经把悬停目标压低了 → 别硬往上顶（贴着天花板抽搐的老毛病）
+        double unclamped = this.localFloorY() + this.hoverHeight();
+        if (this.hoverTargetY() < unclamped - 0.1D) {
+            return null;
+        }
+        return Mth.clamp(0.03D + dy * 0.05D, 0.03D, HOVER_RISE_SPEED);
     }
 
     /** 飞行辅助（goal 拿它做避障修正，按键拿它开关自由飞行）。 */
@@ -2041,16 +2102,20 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /**
      * 一个 tick：AI、骑乘移动、碰撞全在这里面。
      *
-     * <p><b>{@link #applyHover()} 为什么要写在 {@code super.aiStep()} 之后</b>（这条以前记在悬停那一段，
-     * 顺手挪到这里，因为它同样约束着驾驶时的竖直速度）：{@code Mob.aiStep} 里会调
+     * <p><b>速度的唯一出口是 {@link DragonFlightController}</b>（见它的类注释）：
+     * 本方法末尾那段 {@code if (!level.isClientSide)} 里只做三件事 —— 掷技能骰子、摘本家 goal、
+     * 调 {@code flightController.tick(rider)}。以前这里是一大串
+     * {@code riderDive / rider / embedded / diveVelocity / rescuing / hover} 的 if-else，
+     * 每加一个需求就多一条"谁覆盖谁"的规则、彼此打架（抽搐 / 穿墙 / "想往上飞"都是这么来的）。
+     *
+     * <p><b>为什么必须写在 {@code super.aiStep()} 之后</b>：{@code Mob.aiStep} 里会调
      * {@code moveControl.tick()} 把竖直速度清零，接着原版骑乘管线（{@code travelRidden}）会用
      * {@code getRiddenInput × getRiddenSpeed} 重算水平与竖直速度 —— 先让它清、我们再覆盖，
-     * 下一 tick 的 {@code travel} 才用得上。所以"高度"这一类直接写 {@code deltaMovement.y} 的东西
-     * （悬停、俯冲、驾驶升降）统统在 {@code super.aiStep()} 之后补。
+     * 下一 tick 的 {@code travel} 才用得上。
      *
      * <p><b>不要改寻路/移动控制的目标高度</b>：寻路判断"有没有走到路径点"用的是三维距离，
      * 把目标 Y 抬高三格会让它永远差三格、卡在第一个路径点上不动（上一版就是这么把龙整不会动的）。
-     * 所以高度只在实体自己身上补速度，寻路照旧只管水平。
+     * 高度只通过"执行层夹进 flightBand"来约束。
      */
     @Override
     public void aiStep() {
@@ -2090,99 +2155,17 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             this.tickSkillRoll();
             // 摘掉本家挂上去的、我们不想要的 goal（近战 / 三维距离传送）
             this.disableNativeGoals();
-            // 竖直速度的三种来源，<b>互斥</b>：
-            //   1) 有骑手：由 tickVertical 在 super.aiStep() 之后写（见上面的调用），
-            //      这里两个分支都不能走 —— 尤其不能走 applyHover()，它会按"回悬停目标高度"
-            //      把刚写进去的上升速度压回去。这正是"按空格反而被压下来、上限卡在待机高度 3 格"
-            //      的原因（真机日志：服务端确实收到了 up=true 并写了 +0.08，随后被悬停覆盖）。
-            //   2) 技能接管（diveVelocity 非 null）：俯冲/拉升直接写速度。
-            //   3) 都没人管：悬停自己维持高度。
-            // 竖直速度的四个来源，<b>互斥</b>（按优先级）：
-            //   1) 骑手冲锋（isRiderOrderedDive + diveVelocity）：<b>航线接管</b>，连玩家输入都让位。
-            //   2) 有骑手：由 tickVertical 在 super.aiStep() 之后写，这里什么都不做。
-            //   3) 技能接管（diveVelocity 非 null，AI 自发的俯冲/拉升）：直接写速度。
-            //   4) 都没人管：悬停自己维持高度。
-            //
-            // ★ 第 1 条是后来补的，也是"骑着时冲锋不动、下龙才冲出去"的真正原因：
-            //   原来 `rider != null` 排在最前面早退，于是骑手冲锋那条航线的 diveVelocity
-            //   <b>被直接丢弃</b>（本轮诊断"骑手冲锋速度"一条都没打出来就是证据 ——
-            //   那行日志在 else-if 里面，根本没被执行）。
-            //   现在让"骑手冲锋"优先于"有骑手"：冲锋那几秒的控制权属于航线。
-            boolean riderDive = rider != null && this.isRiderOrderedDive() && this.diveVelocity != null;
             // 冲锋（骑手指令 或 AI 自发）期间把背上的傀儡逼进近战模式 —— 撞过去那一下
             // 必须拿近战武器才有意义，见 forceGolemPassengersMelee() 的说明。
+            boolean riderDive = rider != null && this.isRiderOrderedDive() && this.diveVelocity != null;
             if (riderDive || this.getDivePhase() != DIVE_PHASE_NONE) {
                 this.forceGolemPassengersMelee();
             }
-            if (riderDive) {
-                this.setNoGravity(true);
-                Vec3 vel = this.diveVelocity;
-                this.setDeltaMovement(vel);
-                this.fallDistance = 0.0F;
-                if (DragonDebug.RIDE && this.tickCount % 10 == 0) {
-                    Dragon_golems.LOGGER.info(
-                            "[dive] 骑手冲锋速度 vel={} prevPos={} nowPos={} noPhysics={} hColl={}",
-                            vel, this.riderDivePrevPos, this.position(),
-                            this.noPhysics, this.horizontalCollision);
-                }
-                this.riderDivePrevPos = this.position();
-                if (this.keepAimThisTick) {
-                    this.keepAimThisTick = false;
-                } else {
-                    this.faceMovement(vel);
-                }
-                this.diveVelocity = null;
-            } else if (rider != null) {
-                this.keepAimThisTick = false;
-            } else if (this.flightAssist.isEmbedded()) {
-                // ★ 身体正和方块重合：noPhysics 只是<b>物理安全</b>（不开会被碰撞解算每 tick 弹飞十几格），
-                //   不是飞行能力。真机日志（[fly] room=false embedded=true noPhysics=true dy=+1.008，
-                //   y 从 88 一路升到 109，途中 hColl/vColl 都是 false —— 它就是"在墙里自由上升"）
-                //   说明"重合期间没人接管速度 → goal 把竖直目标指向头顶 → 带着 no-clip 穿出去"。
-                //
-                //   ★★ 这个分支必须排在 {@code diveVelocity} 之前：
-                //   goal（待机/远程/音波）几乎每 tick 都会 {@code setDiveVelocity(...)}，
-                //   如果先处理 diveVelocity，这条永远走不到（上一版就是这么失效的，日志里 dy 仍是正的）。
-                //
-                //   重合期间<b>整个速度都由 embeddedEscape 接管</b>：它只给"探过 hasRoomFor、
-                //   确认塞得下"的方向（先往下、再扇面，且向上的分量被压成 0），
-                //   于是不会一边穿墙一边朝敌人滑，也不会继续往上顶。脱出后 goal 立刻恢复。
-                this.setNoGravity(true);
-                Vec3 escape = this.flightAssist.embeddedEscape(this);
-                this.setDeltaMovement(escape);
-                if (!this.keepAimThisTick) {
-                    this.faceMovement(escape);
-                }
-                this.keepAimThisTick = false;
-                this.diveVelocity = null;
-                this.fallDistance = 0.0F;
-            } else if (this.diveVelocity != null) {
-                // AI 自发的俯冲 / 拉升：技能直接接管速度，悬停必须让位（它只会往上顶）。
-                this.setNoGravity(true);
-                Vec3 vel = this.diveVelocity;
-                this.setDeltaMovement(vel);
-                this.fallDistance = 0.0F;
-                if (this.keepAimThisTick) {
-                    // 开火中：朝向由 goal 的 aimAt 管（绕圈喷息时运动方向是切线，不能拿来当朝向）
-                    this.keepAimThisTick = false;
-                } else {
-                    // 我们自己写速度就没有 move control 帮忙转向了，这里补上"朝向 = 运动方向"
-                    this.faceMovement(vel);
-                }
-                this.diveVelocity = null;
-            } else if (this.flightAssist.isRescuing()) {
-                // 卡在方块里（自动脱困中）：交给飞行辅助往开阔处飞，别让悬停把它按回墙里
-                this.setNoGravity(true);
-                Vec3 escape = this.flightAssist.rescueVelocity(this);
-                if (escape != null) {
-                    this.setDeltaMovement(escape);
-                    this.faceMovement(escape);
-                }
-                this.fallDistance = 0.0F;
-            } else {
-                this.keepAimThisTick = false;
-                this.applyHover();
-            }
+            // ★ 本 tick 的速度全部由飞行执行层决定（唯一出口）：
+            //   骑手冲锋 > 骑手驾驶 > 重合脱出 > 技能航线 > 自动脱困 > 悬停，
+            //   并统一在 flightBand() 的高度带内夹取竖直分量。
+            //   以前这一大段 if/else 直接写在这里，每加一个需求就多一条"谁覆盖谁"的规则。
+            this.flightController.tick(rider);
             // ★ 压弯（侧倾）统一在这里算：只看"本 tick 实际转过的角度"，所以骑手用鼠标转、
             //   AI 巡航转（FlyingMoveControl 拧的机头）、俯冲/冲锋的航线转，三种全都吃得到。
             //   早先压弯只在 faceMovement() 里按"它自己转了多少"算，而 AI 巡航的转向走
@@ -2673,7 +2656,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      *
      * <p>转速由 {@link #turnRateFor} 按当前速度给出，所以速度越快转得越快、转弯半径不会跟着膨胀。
      */
-    private void faceMovement(Vec3 velocity) {
+    /** 朝向 = 运动方向（执行层调用；同包可见）。 */
+    void faceMovement(Vec3 velocity) {
         double horizontal = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
         float applied = 0.0F;
         if (horizontal > 1.0E-3D) {
@@ -3417,45 +3401,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         }
     }
 
-    private void applyHover() {
-        double dy = hoverTargetY() - this.getY();
-        if (Math.abs(dy) <= 0.2D) {
-            return;
-        }
-        if (dy < 0.0D) {
-            // 高于目标高度：慢慢压回去。
-            // 原来只有"往上顶"这一半，所以被顶高过（比如俯冲拉升过头）就再也降不下来，
-            // 表现就是"离地至少 5 格"。
-            this.setNoGravity(true);
-            Vec3 cur = this.getDeltaMovement();
-            double fall = Mth.clamp(dy * 0.05D, -HOVER_FALL_SPEED, -0.02D);
-            this.setDeltaMovement(cur.x, fall, cur.z);
-            this.fallDistance = 0.0F;
-            return;
-        }
-        // 头顶顶着方块（矿洞、屋里）就别硬往上顶了，免得贴着天花板抽搐。
-        //
-        // ★ 这里原来只看"一个方块坐标"（BlockPos.containing(getY() + getBbHeight())），
-        //   而那个点是浮点取整的 —— 只要那**一个**位置恰好是空气就允许上升，
-        //   可实际挡路的是判定箱（高 2.2 格）跨到的那几个方块。
-        //   真机表现：龙卡在 y=-0.20、头上 2.0 处有方块，但那个单点判成空气，
-        //   于是每个 tick 都给它 +0.19 的上升速度 → vColl=true、y 却纹丝不动。
-        //   现在改成问"天花板有没有把悬停目标压低" —— 一句话同时覆盖"多个方块挡路"
-        //   和"实际可用空间"，不再依赖单个方块的取整巧合。
-        //   注意比较基准也要用局部地面（不再用世界地表），否则洞里会误判。
-        double unclamped = this.localFloorY() + this.hoverHeight();
-        if (this.hoverTargetY() < unclamped - 0.1D) {
-            return;
-        }
-        this.setNoGravity(true);
-        // 直接给竖直速度。注意<b>不能</b>只 setYya：yya 是"输入"，还要乘以 moveControl 设的速度，
-        // 而空闲悬停时飞行移动控制压根不设速度（还是 0），乘出来永远是 0——上一版就是这么没升起来的。
-        // 直接改 deltaMovement 不会被 travel 清掉（moveRelative 是往现有速度上叠，不是覆盖）。
-        Vec3 v = this.getDeltaMovement();
-        double vy = Mth.clamp(0.03D + dy * 0.05D, 0.03D, HOVER_RISE_SPEED);
-        this.setDeltaMovement(v.x, vy, v.z);
-        this.fallDistance = 0.0F;
-    }
+    // applyHover() 已经拆成 hoverYSpeed()（见上面"执行层要用的访问器"那一节）：
+    // 这里只保留历史说明，避免后来的人再在实体里写 deltaMovement。
 
     /** 待机 goal 每 tick 同步"是不是已经进入原地悬停待机"。 */
     public void setIdleSettled(boolean settled) {
@@ -3607,6 +3554,38 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
+     * <b>飞行高度带</b>：脚允许落在 {@code [minFeet, maxFeet]} 之间。
+     *
+     * <h2>为什么要有"带"，而不是"目标高度"</h2>
+     * 以前每个模式各算一个目标高度，再各自加一条否决（悬停检查天花板、脱出检查重合、
+     * 一票否决检查 {@code verticalCollision}…）—— 补丁叠补丁，彼此打架。
+     * 现在只留这一个真相：<b>任何模式的竖直分量都会被夹进这条带</b>（见
+     * {@link DragonFlightController} 的安全层），于是"顶着天花板往上飞"在结构上不可能发生。
+     *
+     * <ul>
+     *   <li>{@code minFeet} = 局部地面 + {@link #MIN_HOVER_CLEARANCE}（别沉进地板）；</li>
+     *   <li>{@code maxFeet} = 头顶天花板 − 身体高度 − {@code flight.ceilingClearance}
+     *       （{@link #maxFeetYUnderCeiling}；没有天花板就是 {@code +∞}）；</li>
+     *   <li>{@code fits} = 这个空间塞不塞得下整条龙（房间比身体还矮时为 false，
+     *       此时带被压成一个点，龙只能贴着地板悬停，并且应该靠寻路离开）。</li>
+     * </ul>
+     */
+    public record FlightBand(double minFeet, double maxFeet, boolean fits) {
+    }
+
+    /** 当前这一列（脚下）的飞行高度带，每 tick 算一次即可（{@link DragonFlightController} 用）。 */
+    public FlightBand flightBand() {
+        double floor = this.localFloorY();
+        double min = floor + MIN_HOVER_CLEARANCE;
+        double max = this.maxFeetYUnderCeiling(this.blockPosition().getX(), this.blockPosition().getZ(),
+                this.ceilingScanStart());
+        if (max == NO_CEILING) {
+            return new FlightBand(min, Double.MAX_VALUE, true);
+        }
+        return new FlightBand(min, max, min <= max);
+    }
+
+    /**
      * 头顶还有没有 {@code margin} 格以上的余量（相对于"脚 + 身体"）。
      *
      * <p>给"撞墙就抬一点"这类启发式用：没有这条的话，低房间里会出现
@@ -3651,11 +3630,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         if (limit != NO_CEILING) {
             target = Math.min(target, limit);
         }
-        // ★ 一票否决：这一 tick 头顶正压着方块（vColl）→ 竖直目标不允许高于当前位置。
-        //   不管这个目标是"航线给的"还是"悬停算的"，都别再往上 —— 这是"依然在向上尝试飞行"的最终保险。
-        if (this.verticalCollision) {
-            target = Math.min(target, this.getY());
-        }
+        // 注意：这里不再单独处理 verticalCollision —— 那条否决已经并进
+        // DragonFlightController 的安全层（按 flightBand 夹竖直分量），只留一处。
         return target;
     }
 
@@ -3853,8 +3829,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /** {@link #inCombat()} 的记忆窗口（tick，逐 tick 递减）。 */
     private int combatTicks;
 
-    /** 骑手冲锋专用的"上一 tick 位置"，用来算实际位移（见 aiStep 里的诊断）。 */
-    private Vec3 riderDivePrevPos = Vec3.ZERO;
+    /** 骑手冲锋的"上一 tick 位置"已经挪进 {@link DragonFlightController}（只用于诊断日志）。 */
 
     /**
      * 头顶第一层挡路方块的下沿 Y（再往下留一格余量）；正上方 {@link #CEILING_SCAN} 格内

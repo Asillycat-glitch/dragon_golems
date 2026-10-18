@@ -643,7 +643,65 @@ edge = groundHeight(x, z) + entryAlt()        // entryAlt() = max(12, hoverHeigh
 | `debug.flightLog` | false | 打开上面这些行 |
 | `debug.flightLogInterval` | 10 | `[move]` 的间隔（tick） |
 
-## 十七、回退清单（哪条不想要就关哪个）
+## 十七、飞行执行层（`DragonFlightController`）
+
+### 为什么要有它
+
+到 0.4 后期，"谁能写 `deltaMovement`"已经散落在五处：实体 `aiStep` 的 if-else 链、四个 goal
+（待机/远程/音波/俯冲各写 `diveVelocity`）、飞行辅助的避障、悬停、脱出。每修一个 bug 就多一条
+否决规则，而规则之间互不知情 —— **抽搐 / 穿墙 / "想往上飞" 都是这么来的**
+（真机事故：脱出分支排在 goal 速度之后 → 成了死代码 → 带着 no-clip 在墙里上升）。
+所以 S0+S1 把执行层收成一条流水线：
+
+```
+goal（只表达意图）
+   │  setDiveVelocity(...) / 悬停高度 / 脱困 / 俯冲航线
+   ▼
+DragonFlightController.tick(rider)          ← 每 tick 唯一的速度出口
+   ① 选模式（优先级写死在一处）：
+      RIDER_DIVE 骑手冲锋 > RIDER 骑手驾驶 > ESCAPE 重合脱出
+      > SCRIPT 技能航线 > RESCUE 自动脱困 > HOVER 悬停
+   ② 该模式算出"期望速度"
+   ③ 唯一安全层：竖直分量夹进 flightBand()
+   ④ 写 deltaMovement 一次
+   ▼
+Entity.move()（原版物理）
+```
+
+### `flightBand()`：高度的唯一真相
+
+```
+minFeet = 局部地面 + 0.5                          （别沉进地板）
+maxFeet = 头顶天花板 − 身体高度 − ceilingClearance  （别顶穿天花板；无天花板 = +∞）
+fits    = minFeet ≤ maxFeet                       （房间比龙还矮 → false）
+```
+
+控制器拿到任何期望速度后：
+
+```java
+if (getY() + v.y > band.maxFeet) v.y = min(v.y, 0);   // 带外上方：绝不许再上升
+if (getY() + v.y < band.minFeet) v.y = max(v.y, 0);   // 带外下方：绝不许继续下沉
+```
+
+于是"顶着天花板往上飞"在**构造上**不可能发生，不需要再给每个模式单独打补丁。
+这条同时替代了以前两处重复补丁：`flightVerticalTarget` 里的 `verticalCollision` 否决、
+以及飞行辅助里"重合时把向上速度归零"——**速度出口只剩一处**。
+
+### 这一版改了什么 / 没改什么
+
+| | 内容 |
+|---|---|
+| **S0（搬家）** | `aiStep` 的 if-else 链、`applyHover` 的竖直计算、骑手冲锋的诊断日志，原样搬进控制器；实体只留 `flightController.tick(rider)` 和压弯/诊断 |
+| **S1（收口）** | 引入 `flightBand()` 与唯一安全层；删掉上述两处重复否决；`applyHover()` → `hoverYSpeed()`（只算竖直分量，水平由执行层保留） |
+| **没改** | goal 的决策（何时喷息 / 抽不抽俯冲 / 打谁）、悬停目标高度的算法、寻路、渲染、配置、配方 |
+
+### 接下来（S2+，还没做）
+
+- **S2**：俯冲超出高度带时**降级成浅俯冲 / 贴顶掠过**，而不是像现在这样"被夹平 + 靠中止补丁退出"；
+- **S3**：goal 只发 INTENT（`WANDER/ENGAGE/SCRIPT`），彻底删掉 goal 里的 `setDiveVelocity`；
+- **S4**：ESCAPE/幽灵规则（含"战斗中不穿墙"）也收进控制器。
+
+## 十八、回退清单（哪条不想要就关哪个）
 
 | 不想要的效果 | 怎么办 |
 |---|---|
