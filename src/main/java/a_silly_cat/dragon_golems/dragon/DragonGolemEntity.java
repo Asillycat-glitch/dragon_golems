@@ -1694,6 +1694,26 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 SoundSource.NEUTRAL, 0.7F, 1.5F);
     }
 
+    /**
+     * <b>回血"生效中"的常驻光效</b>：每 10 tick 在机身周围撒几颗 END_ROD。
+     *
+     * <p>为什么需要它：原来的光效<b>只在真的回血那一 tick 触发</b>（受伤 + 32 格内有存活水晶 +
+     * 30 秒判定通过 + 不满血），其余时间完全静默 —— 所以"满血时靠近水晶"或"刚进 32 格还没到判定周期"
+     * 看起来就是"没特效"。加上这一层之后，只要这一轮回血是<b>开启</b>状态（{@code isActive()}），
+     * 机身周围就一直有能量流动，玩家能直接看出"水晶正在供能"。
+     */
+    private void crystalHealAura() {
+        if (!this.crystalHeal.isActive() || this.tickCount % 10 != 0) {
+            return;
+        }
+        if (!(this.level() instanceof ServerLevel server)) {
+            return;
+        }
+        server.sendParticles(ParticleTypes.END_ROD,
+                this.getX(), this.getY() + this.getBbHeight() * 0.6D, this.getZ(),
+                3, this.getBbWidth() * 0.4D, this.getBbHeight() * 0.25D, this.getBbWidth() * 0.4D, 0.01D);
+    }
+
     /** 飞行辅助（goal 拿它做避障修正，按键拿它开关自由飞行）。 */
     public DragonFlightAssist flightAssist() {
         return this.flightAssist;
@@ -2192,6 +2212,9 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             if (usedCrystal != null) {
                 this.setHealth(Math.min(this.getMaxHealth(), this.getHealth() + CRYSTAL_HEAL_AMOUNT));
                 this.crystalHealEffects(usedCrystal);
+            } else {
+                // 没在回血这一 tick 也要有"生效中"的常驻光效（见 crystalHealAura 的说明）
+                this.crystalHealAura();
             }
         }
         // 诊断：定期报一次"竖直相关的全部状态"。排查"按了上升却不动 / 一直往上飞"
@@ -2279,14 +2302,14 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /** 诊断用：头顶天花板方块 Y（没有 → "∞"）。 */
     private String ceilBlockForLog() {
         double ceil = this.ceilingBlockYAt(this.blockPosition().getX(), this.blockPosition().getZ(),
-                this.getY() + this.getBbHeight() + 0.5D);
+                this.ceilingScanStart());
         return ceil == NO_CEILING ? "∞" : fmt2(ceil);
     }
 
     /** 诊断用：天花板允许的最高脚部 Y（没有 → "∞"）。 */
     private String maxFeetForLog() {
         double limit = this.maxFeetYUnderCeiling(this.blockPosition().getX(), this.blockPosition().getZ(),
-                this.getY() + this.getBbHeight() + 0.5D);
+                this.ceilingScanStart());
         return limit == NO_CEILING ? "∞" : fmt2(limit);
     }
 
@@ -3530,12 +3553,32 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /** {@link #hoverTargetY()} / {@link #hoverTargetYAt} 的公共部分（已给定局部地面）。 */
     private double hoverTargetYAtBlocks(int x, int z, double floor) {
         double target = floor + this.hoverHeight();
-        double limit = this.maxFeetYUnderCeiling(x, z, this.getY() + this.getBbHeight() + 0.5D);
+        double limit = this.maxFeetYUnderCeiling(x, z, this.ceilingScanStart());
         if (limit != NO_CEILING) {
             target = Math.min(target, limit);
         }
         // 房间比龙还矮：贴着"能塞下的最低高度"，绝不沉到地板以下
         return Math.max(target, floor + MIN_HOVER_CLEARANCE);
+    }
+
+    /**
+     * <b>头顶扫描的起点：脚上方半格</b>（不是头顶上方）。
+     *
+     * <h2>★ 这是"仍然会向上飞"的最后一个漏洞</h2>
+     * 原来起点是 {@code getY() + bbHeight + 0.5}（头顶上方）。真机日志里：
+     * <pre>
+     * 龙在 y=85.0，hoverTarget=88.55，vColl=true（头顶撞着东西），[ride] surface=108
+     * 扫描起点 = 85 + 2.2 + 0.5 = 87.7 → floor = 87 ← 从 87 往上扫
+     * 挡它的方块在 y=86 ← 在起点下面，被跳过 → 判定"头顶没有天花板"
+     * </pre>
+     * 于是悬停目标保持 88.55（在挡块之上）→ 它继续往上顶 → 撞进去变成重合 → 脱出逻辑压下来
+     * → 不重合了 → 目标又指回 88.55 → <b>来回抖 = "仍然想往上飞"</b>。
+     *
+     * <p>从<b>脚上方</b>开始扫，身体高度范围内的任何方块都会被视为"天花板"，
+     * 于是 {@code 脚上限 = 那个方块 − bbHeight − 余量} 永远在挡块之下。
+     */
+    private double ceilingScanStart() {
+        return this.getY() + 0.5D;
     }
 
     /**
@@ -3568,7 +3611,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      */
     public boolean hasHeadroomFor(double margin) {
         double limit = this.maxFeetYUnderCeiling(this.blockPosition().getX(), this.blockPosition().getZ(),
-                this.getY() + this.getBbHeight() + 0.5D);
+                this.ceilingScanStart());
         return limit == NO_CEILING || limit - this.getY() > margin;
     }
 
