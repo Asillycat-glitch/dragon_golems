@@ -1,0 +1,20 @@
+{
+  "type": "modulargolems:golem_replace_part",
+  "category": "misc",
+  "key": {
+    "H": {
+      "item": "dragon_golems:dragon_golem_holder"
+    },
+    "P": {
+      "item": "dragon_golems:dragon_golem_body"
+    }
+  },
+  "pattern": [
+    "H",
+    "P"
+  ],
+  "result": {
+    "item": "dragon_golems:dragon_golem_holder"
+  },
+  "show_notification": false
+}
