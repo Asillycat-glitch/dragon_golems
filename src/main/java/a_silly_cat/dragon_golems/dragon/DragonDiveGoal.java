@@ -215,14 +215,26 @@ public class DragonDiveGoal extends Goal {
         }
         double dist = this.horizontalDistance(this.dragon.getX(), this.dragon.getZ(), target.getX(), target.getZ());
         boolean ok = dist >= this.dragon.diveMinH() && dist <= this.dragon.diveMaxH();
+        // ★ 竖直空间不够就不打俯冲（"40 格天花板 + 30 格平台"那种室内场地）：
+        //   入场高度在天花板外面，龙会一路往天花板里爬，而竖直碰撞不会触发任何"卡住"判定，
+        //   结果是白等 LINEUP 超时 + 挨打。这一轮让给龙息/龙弹/音爆（它们不需要爬升）。
+        //   骑手指令（按 R）例外：那是玩家明确要的，航线会被 ceilingMargin() 压平，照打。
+        boolean room = this.dragon.isRiderOrderedDive() || this.dragon.diveRoomOk(target);
+        if (!room && trace) {
+            Dragon_golems.LOGGER.info("[dive] canUse=false: 竖直空间不足 room={} need={} target={}",
+                    String.format("%.1f", this.dragon.headroomAbove(target)),
+                    String.format("%.1f", this.dragon.diveMinRoom()),
+                    target.getName().getString());
+        }
+        boolean allowed = ok && room;
         if (trace) {
-            Dragon_golems.LOGGER.info("[dive] canUse={} dist={} allowed={}..{} riderOrdered={} target={}",
-                    ok, String.format("%.1f", dist),
+            Dragon_golems.LOGGER.info("[dive] canUse={} dist={} allowed={}..{} riderOrdered={} room={} target={}",
+                    allowed, String.format("%.1f", dist),
                     String.format("%.1f", this.dragon.diveMinH()),
                     String.format("%.1f", this.dragon.diveMaxH()),
-                    this.dragon.isRiderOrderedDive(), target.getName().getString());
+                    this.dragon.isRiderOrderedDive(), room, target.getName().getString());
         }
-        return ok;
+        return allowed;
     }
 
     /**
@@ -378,10 +390,31 @@ public class DragonDiveGoal extends Goal {
     }
 
     /**
+     * 把航线顶点压在头顶天花板之下时要留的余量（格）。
+     *
+     * <p>模型最低点在原点下方约 {@code MODEL_DROP_PER_SCALE × 体型} 格，再留 1 格给判定箱，
+     * 所以"身体中心"必须待在天花板下沿以下这么多 —— 否则模型会穿进天花板里。
+     */
+    private double ceilingMargin() {
+        return MODEL_DROP_PER_SCALE * this.geo() + 1.0D;
+    }
+
+    /**
      * 弧线上的一个点：{@code 目标 + 方向 × s}，高度 = 两端 {@link #entryAlt()}、中间贴地的平滑曲线。
      *
      * <p>中间那个高度取 {@code max(目标脚下地形 + skimHeight(), 目标的脚 Y)}，
      * 所以打飞行目标时弧线会从它所在的高度穿过，而不是扎到地上。
+     *
+     * <p><b>★ 天花板夹取（"穿过天花板俯冲但没能成功"的根因修复）：</b>
+     * 原来这里只有 {@code 地面高度 + entryAlt()}，完全没有天花板约束 ——
+     * 在"平台 30 格、天花板 40 格"的房间里，1 倍体型的入场高度是 {@code 30 + 12 = 42}、
+     * 泰坦是 {@code 30 + 22 = 52}，<b>都在天花板外面</b>。于是龙每一轮俯冲都在命令自己往天花板里爬；
+     * 而竖直碰撞不产生 {@code horizontalCollision}、也没有嵌进方块，所以三条"卡住/穿墙"判定
+     * 一条都不响 —— 它只能等 {@link #LINEUP_MAX}(160 tick) 超时，同时被围住集火。
+     *
+     * <p>现在：按<b>端点所在坐标</b>扫天花板（{@code ceilingYAt}，不是龙脚下的），
+     * 再用 {@link #ceilingMargin()} 留出模型往原点下方垂的那段高度。天花板比目标还低时
+     * 弧线会被压平（甚至压到目标高度），那属于"这招在这里打不了"，由 {@link #canUse} 提前挡掉。
      */
     private Vec3 curvePoint(double s) {
         assert this.dir != null && this.targetAt != null;
@@ -391,6 +424,13 @@ public class DragonDiveGoal extends Goal {
         double u = Mth.clamp(Math.abs(s) / span, 0.0D, 1.0D);
         double ue = Math.pow(u, ALT_EXP);
         double edge = this.groundHeight(x, z) + this.entryAlt();
+        double ceiling = this.dragon.ceilingYAt(Mth.floor(x), Mth.floor(z),
+                this.dragon.getY() + this.dragon.getBbHeight() + 0.5D);
+        if (ceiling != DragonGolemEntity.NO_CEILING) {
+            edge = Math.min(edge, ceiling - this.ceilingMargin());
+        }
+        // 夹过头时至少别低于掠过高度（否则弧线会插进地里）
+        edge = Math.max(edge, this.skimY);
         double y = this.skimY + (edge - this.skimY) * ue;
         return new Vec3(x, y, z);
     }

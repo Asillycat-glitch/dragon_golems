@@ -429,7 +429,50 @@ public boolean dealSkillDamage(LivingEntity target, @Nullable DamageSource sourc
 | `hover.flowingFluidIsFloor` | false | true = 旧行为（流水也算支撑面，会顺着瀑布往上爬） |
 | `hover.pushedByFluid` | false | true = 原版行为（水流 / 岩浆流推得动龙） |
 
-## 十二、回退清单（哪条不想要就关哪个）
+## 十二、俯冲与天花板（"龙尝试穿过天花板俯冲，但没能成功"）
+
+### 症状与根因（对着代码算出来的数）
+
+地牢房间：**天花板 40 格、作战平台 30 格往上、安全点在 34 格以上**。龙已经进了房间、被围住，
+传送又落不下去（拥挤的高台，候选点全 `noCollision` 失败），于是它只能靠俯冲 —— 而俯冲的航线高度是
+
+```
+edge = groundHeight(x, z) + entryAlt()        // entryAlt() = max(12, hoverHeight() + 2)
+```
+
+**原来完全没有天花板约束**，代入这个场地：
+
+| 体型 | `groundHeight`（平台面） | `entryAlt()` | 航线顶点 | 天花板 |
+|---|---|---|---|---|
+| 1 倍 | ≈30 | max(12, 10+2) = **12** | **42** | 40 → 高出 2 格 |
+| 泰坦 4 倍 | ≈30 | max(12, 20+2) = **22** | **52** | 40 → 高出 12 格 |
+
+所以它每一轮俯冲都在命令自己爬到**天花板外面**去"对线"。而撞天花板是**竖直**碰撞：
+
+- `horizontalCollision == false`（不累加 `totalHits`、`stuckTicks` 不涨）；
+- 没有嵌进方块（`noRoom == false`，`embedded` 一直 false）；
+- 于是"自动脱困 / 常驻幽灵"三条通道**一条都不响**，它只能卡在 `LINEUP` 等 160 tick（8 秒）超时，
+  一轮一轮重试，同时被围住集火。
+
+所以这不是"穿墙阈值太严"，而是**它根本不该往那个方向飞**。
+
+### 修法两条
+
+| 位置 | 做了什么 |
+|---|---|
+| `DragonDiveGoal.curvePoint` | 航线端点按**该点所在坐标**的天花板夹住（`DragonGolemEntity.ceilingYAt(x, z, fromY)`），再留 `ceilingMargin() = 1.5 × 体型 + 1` 格给模型下垂的那段。平台 30 / 天花板 40 时，1 倍顶点从 42 压到 **37.5**，泰坦从 52 压到 **33** |
+| `DragonGolemEntity.diveRoomOk` + `DragonDiveGoal.canUse` + `pickSkill` | 目标上方空间低于 `diveMinRoom() = 4 + 1.5 × 体型`（1 倍 5.5、泰坦 10 格）时，**AI 干脆不抽俯冲**，这一轮交给龙息 / 龙弹 / 音爆（这三招不需要爬升）。骑手指令（按 R）不受影响 —— 那是玩家明确要的，航线压平后照打 |
+
+顺带把 `hoverCeilingY()` 拆成了可传坐标的 `ceilingYAt(x, z, fromY)`：俯冲端点离龙有十几到几十格
+（泰坦 64 格），拿**龙脚下**的天花板去夹航线是错的，必须按端点位置扫。
+
+### 可调项
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `skills.diveRoomCheck` | true | 关掉 = 旧行为（只剩天花板夹取，AI 仍会尝试够不着的高入场点） |
+
+## 十三、回退清单（哪条不想要就关哪个）
 
 | 不想要的效果 | 怎么办 |
 |---|---|
@@ -449,4 +492,5 @@ public boolean dealSkillDamage(LivingEntity target, @Nullable DamageSource sourc
 | 到点还是有点顿 | `flight.trajectoryLerp` 调小（0.15 更飘、1.0 = 旧的不平滑行为） |
 | 想让流水也算支撑面（旧行为） | `hover.flowingFluidIsFloor = true` |
 | 想让水流推得动龙（原版行为） | `hover.pushedByFluid = true` |
+| 室内也不想打俯冲（纯远程） | `skills.diveRoomCheck = true`（默认）+ 把 `skills.nativeSkillGoals` 关着；想反过来回到旧行为就设 `skills.diveRoomCheck = false` |
 

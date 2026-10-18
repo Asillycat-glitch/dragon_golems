@@ -2273,7 +2273,11 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         double hDist = Mth.sqrt((float) ((target.getX() - this.getX()) * (target.getX() - this.getX())
                 + (target.getZ() - this.getZ()) * (target.getZ() - this.getZ())));
         boolean los = this.hasLineOfSight(target);
-        boolean diveOk = this.diveCooldown <= 0 && hDist >= this.diveMinH() && hDist <= this.diveMaxH();
+        boolean diveOk = this.diveCooldown <= 0 && hDist >= this.diveMinH() && hDist <= this.diveMaxH()
+                // ★ 竖直空间不够就别抽俯冲：40 格天花板 + 30 格平台那种场地里，
+                //   俯冲的入场高度（平台 + 12~22）在天花板外，龙会一直往天花板里爬，
+                //   而竖直碰撞不会触发任何"卡住"判定 —— 结果是白白挨打。让龙息/龙弹/音爆接手。
+                && this.diveRoomOk(target);
         // 龙弹和音爆共享一条 CD：CD 没好两个都不能上。
         // 音爆还要身体是幽匿（音波系），其它材料的龙不参与这个骰子。
         boolean blastReady = this.blastCooldown <= 0;
@@ -3369,10 +3373,14 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return ceiling == NO_CEILING ? target : Math.min(target, ceiling);
     }
 
-    /** {@link #hoverTargetY()} 里"没找到天花板"的哨兵值。 */
-    private static final double NO_CEILING = Double.MAX_VALUE;
+    /** {@link #hoverTargetY()} 里"没找到天花板"的哨兵值；也是 {@link #ceilingYAt} 的返回值。 */
+    public static final double NO_CEILING = Double.MAX_VALUE;
     /** 往上找天花板时最多扫多少格（超过就当作开阔地，避免在高空做长扫描）。 */
     private static final int CEILING_SCAN = 32;
+    /** 俯冲最低竖直空间的基础值（格），再按体型加 {@link #DIVE_MODEL_DROP}。 */
+    private static final double DIVE_MIN_ROOM_BASE = 4.0D;
+    /** 模型最低点在原点下方多少格（每 1 倍体型）；和 {@code DragonDiveGoal.skimHeight} 同一个数。 */
+    private static final double DIVE_MODEL_DROP = 1.5D;
     /** 往下找地面时最多扫多少格。比天花板深一些：洞里悬停高度常有十几格。 */
     private static final int FLOOR_SCAN = 48;
     /**
@@ -3513,13 +3521,23 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 这些没有碰撞箱的方块不算天花板 —— 和 {@code DragonFlightAssist.hasRoomFor} 是同一套判据。
      */
     private double hoverCeilingY() {
+        return this.ceilingYAt(this.blockPosition().getX(), this.blockPosition().getZ(),
+                this.getY() + this.getBbHeight() + 0.5D);
+    }
+
+    /**
+     * <b>任意水平坐标</b>处、{@code fromY} 之上的第一层挡路方块的下沿 Y
+     * （正上方 {@link #CEILING_SCAN} 格内全是空气就返回 {@link #NO_CEILING}）。
+     *
+     * <p>为什么需要"任意坐标"：俯冲的航线端点离龙有十几到几十格（泰坦 64 格），
+     * 用龙脚下的天花板去夹那条航线是错的 —— 必须按<b>航线端点所在位置</b>扫。
+     * 这也是"龙在 40 格天花板的房间里往天花板外爬着俯冲"的直接修法（见 {@code DragonDiveGoal.curvePoint}）。
+     */
+    public double ceilingYAt(int x, int z, double fromY) {
         Level level = this.level();
-        double from = this.getY() + this.getBbHeight() + 0.5D;
-        int x = this.blockPosition().getX();
-        int z = this.blockPosition().getZ();
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
         for (int i = 0; i < CEILING_SCAN; i++) {
-            int y = Mth.floor(from) + i;
+            int y = Mth.floor(fromY) + i;
             if (y >= level.getMaxBuildHeight()) {
                 break;
             }
@@ -3530,6 +3548,36 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             }
         }
         return NO_CEILING;
+    }
+
+    /** 目标头顶到天花板之间还有多少竖直空间（格）；头顶没有天花板就是 {@link Double#MAX_VALUE}。 */
+    public double headroomAbove(LivingEntity target) {
+        double ceiling = this.ceilingYAt(Mth.floor(target.getX()), Mth.floor(target.getZ()),
+                target.getY() + target.getBbHeight() + 0.5D);
+        return ceiling == NO_CEILING ? Double.MAX_VALUE : ceiling - target.getY();
+    }
+
+    /**
+     * 一次俯冲需要的最低竖直空间（格）。
+     *
+     * <p>模型最低点在原点下方约 {@code 1.5 × 体型} 格（见 {@code DragonDiveGoal.skimHeight}），
+     * 再加上一段弧线余量 —— 比这个矮就别俯冲了：那不是"俯冲"，是拿脑门顶天花板。
+     * 1 倍约 5.5 格、泰坦 4 倍约 10 格。
+     */
+    public double diveMinRoom() {
+        return DIVE_MIN_ROOM_BASE + DIVE_MODEL_DROP * Math.max(1.0D, this.combatGeoScale());
+    }
+
+    /**
+     * 目标上方够不够打一轮俯冲。
+     *
+     * <p>只给 AI 用：骑手指令（按 R）不看这条 —— 那是玩家明确要的，见 {@code DragonDiveGoal.canUse}。
+     */
+    public boolean diveRoomOk(LivingEntity target) {
+        if (!DragonGolemConfig.diveRoomCheck()) {
+            return true;
+        }
+        return this.headroomAbove(target) >= this.diveMinRoom();
     }
 
     /**

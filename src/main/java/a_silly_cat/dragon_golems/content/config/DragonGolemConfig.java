@@ -155,6 +155,31 @@ public final class DragonGolemConfig {
         return bool(COMMON.diveTriggersMelee, true);
     }
 
+    /**
+     * <b>AI 俯冲前要不要检查竖直空间。</b>默认 <b>true</b>（要检查）。
+     *
+     * <h2>为什么</h2>
+     * 俯冲的航线高度是 {@code 目标脚下地形 + entryAlt()}（1 倍 12 格、泰坦 22 格），
+     * 而它<b>原来没有任何天花板约束</b>。在"平台 30 格、天花板 40 格"的地牢房间里，
+     * 入场点在 {@code 42 / 52} 格 —— <b>在天花板外面</b>。于是龙每一轮俯冲都在命令自己
+     * 往天花板里爬；而竖直碰撞既不是 {@code horizontalCollision} 也没让它嵌进方块，
+     * 所以"卡住 / 穿墙"的三条判定一条都不响，它只能等 {@code LINEUP} 的 160 tick 超时，
+     * 同时被围住集火。
+     *
+     * <p>现在两条一起生效：
+     * <ul>
+     *   <li>航线端点按<b>该点所在坐标</b>的天花板夹住（{@code ceilingYAt}）+ 留出模型下垂的余量；</li>
+     *   <li>竖直空间低于 {@code diveMinRoom()}（1 倍约 5.5 格、泰坦约 10 格）时，AI 干脆不抽俯冲，
+     *       这一轮交给龙息 / 龙弹 / 音爆（这三招不需要爬升）。</li>
+     * </ul>
+     *
+     * <p>骑手指令（按 R 的冲锋）<b>不受这条影响</b>：那是玩家明确要的，航线被压平后照打。
+     * 关掉这个开关 = 旧行为（只剩天花板夹取，AI 仍会尝试够不着的高入场点）。
+     */
+    public static boolean diveRoomCheck() {
+        return bool(COMMON.diveRoomCheck, true);
+    }
+
     // ---- 飞行寻路（B 档：A* 出航路点，我们只负责按航路点飞）----
 
     /**
@@ -346,6 +371,8 @@ public final class DragonGolemConfig {
         public final ForgeConfigSpec.BooleanValue nativeSkillGoals;
         public final ForgeConfigSpec.BooleanValue diveTriggersMelee;
 
+        public final ForgeConfigSpec.BooleanValue diveRoomCheck;
+
         public final ForgeConfigSpec.BooleanValue pathEnabled;
         public final ForgeConfigSpec.DoubleValue pathRepathTicks;
         public final ForgeConfigSpec.BooleanValue pathBodyClearance;
@@ -409,6 +436,13 @@ public final class DragonGolemConfig {
                             "龙没有近战攻击，这一族升级原本在龙身上是死的；开着就是『俯冲 = 龙的近战』",
                             "本家规则照旧：带乘客的傀儡、被动（装坐骑升级）的龙都不会触发")
                     .define("diveTriggersMelee", true);
+            this.diveRoomCheck = builder
+                    .comment("AI 俯冲前检查竖直空间（室内/低天花板）",
+                            "俯冲入场高度 = 目标脚下地形 + 12~22 格，原本没有天花板约束 —— 40 格天花板的房间里",
+                            "它会一直往天花板里爬（竖直碰撞不触发任何『卡住』判定），白等 LINEUP 超时 + 挨打",
+                            "开着：航线按端点坐标的天花板夹住，空间不足时这一轮改用龙息/龙弹/音爆",
+                            "骑手指令（按 R）不受影响；关掉 = 旧行为")
+                    .define("diveRoomCheck", true);
             builder.pop();
 
             builder.comment("飞行寻路（B 档：A* 出航路点，龙只负责按航路点飞）").push("pathfinding");
