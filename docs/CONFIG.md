@@ -575,17 +575,21 @@ edge = groundHeight(x, z) + entryAlt()        // entryAlt() = max(12, hoverHeigh
 2. **寻路的终点用"目的地自己的悬停高度"**（`hoverTargetYAt(x, z)`）：
    以前 `DragonPathFollower` 拿"龙的当前 Y"当终点高度，A* 只能搜出一条贴着当前高度的走廊；
    现在按<b>目的地</b>的地面与天花板算高度，路线会自然地从高处绕、或爬出低房间。
-3. **航路的 Y 不再丢掉**（`flightVerticalTarget` + `advanceAlongPath` 给航路点自己的 Y）：
-   竖直目标 = 悬停高度，**除非航路点高出/低于它超过 `pathfinding.verticalDeadband`（默认 3 格）** ——
-   那时才跟着航线爬升/下降。死区是为了不破坏正常巡航的上下呼吸；
-   `holdHover()`（前摇 / 收尾）仍是纯悬停，不会被航线带跑。
+3. **竖直方向交给寻路**（`DragonPathFollower.onRoute()` + `flightVerticalTarget()`）：
+   A* 的节点本来就带空地判定（评估器按身体盒子逐节点采样），所以<b>路线本身就是"哪儿能飞、飞多高"的答案</b>。
+   - 在航线上时：竖直目标 = **航路点 Y**（爬升/下降跟着路线走，翻过梁、绕开隔层、爬出低房间都靠它）；
+   - 路线走完 / 没有路线时：才回到**悬停高度**（待机、悬停开火、`holdHover()` 都是纯悬停）。
+
+   以前只借路线的水平走向、竖向永远听悬停的 —— 于是"高台上方 N 格"这种目标被天花板挡住时，
+   没人告诉它那个高度没有空间，悬停逻辑只会**一直往上顶**（"它一直尝试向上飞"）。
+   `pathfinding.verticalDeadband`（默认 1 格）现在只是防微抖：航路点高度和悬停高度几乎相同时不动。
 
 ### 可调项
 
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `flight.ceilingClearance` | 0.25 | 天花板与身体之间的余量（模型翅膀比判定箱略高，别设太小） |
-| `pathfinding.verticalDeadband` | 3.0 | 航线高度与悬停高度的死区；调小 = 更积极跟航线，调大 = 更坚持自己的高度 |
+| `pathfinding.verticalDeadband` | 1.0 | 防微抖死区；调大更像"定高巡航"，调小更严格贴航线起伏 |
 
 ## 十六、回退清单（哪条不想要就关哪个）
 

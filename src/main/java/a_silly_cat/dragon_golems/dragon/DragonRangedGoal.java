@@ -421,8 +421,7 @@ public class DragonRangedGoal extends Goal {
      * {@code holdHover()}（前摇/收尾）保持纯悬停，不被航线带跑。
      */
     private double hoverDelta() {
-        Vec3 steer = this.dragon.pathFollower().steerPoint();
-        double wantY = this.dragon.flightVerticalTarget(steer);
+        double wantY = this.dragon.flightVerticalTarget();
         double cap = 0.18D * this.dragon.speedScale();
         return Mth.clamp((wantY - this.dragon.getY()) * 0.10D, -cap, cap);
     }

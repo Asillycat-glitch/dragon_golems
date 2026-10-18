@@ -339,8 +339,7 @@ public class DragonSonicGoal extends Goal {
      * {@link DragonGolemEntity#flightVerticalTarget}），平时仍是悬停高度。
      */
     private double hoverDelta() {
-        Vec3 steer = this.dragon.pathFollower().steerPoint();
-        double wantY = this.dragon.flightVerticalTarget(steer);
+        double wantY = this.dragon.flightVerticalTarget();
         double cap = 0.18D * this.dragon.speedScale();
         return Mth.clamp((wantY - this.dragon.getY()) * 0.10D, -cap, cap);
     }

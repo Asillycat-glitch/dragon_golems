@@ -185,8 +185,9 @@ config/l2_configs/dragon_golems-common.toml
 14. **高度控制与寻路统合（机身穿天花板）**——悬停上限原来只返回"天花板 − 1"，**没扣身体高度**：
    1 倍体型头顶穿进 1.2 格、泰坦穿 7.8 格。现在 `脚上限 = 天花板 − bbHeight − ceilingClearance`；
    寻路终点改用**目的地自己的悬停高度**（`hoverTargetYAt`，A* 不再只搜"当前高度层"）；
-   航路的 Y 也不再丢掉 —— 航路点明显高于/低于悬停高度（`pathfinding.verticalDeadband`）时
-   跟着航线爬升/下降（`flight.ceilingClearance` 可调余量）。
+   **竖直方向整个交给寻路**：在航线上时竖直目标 = 航路点 Y（A* 的节点本来就带空地判定），
+   走完路线才回悬停高度 —— 于是"高台上方 N 格"被天花板挡住时，是路线去绕/停在能到的高度，
+   而不是悬停逻辑一直往上顶（`pathfinding.verticalDeadband` 只剩防微抖）。
 
 ## 移植说明
 

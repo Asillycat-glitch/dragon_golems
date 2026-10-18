@@ -3439,23 +3439,28 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
-     * 统一的竖直目标：<b>默认悬停高度</b>；当航路点明显更高/更低时改跟航线。
+     * 统一的竖直目标：<b>有航线时跟着航路点的高度走（3D 寻路）</b>，没有航线时才回悬停高度。
      *
-     * <p>这一条就是"高度控制与寻路统合"的核心：以前两边各说各话 ——
-     * 悬停只管"脚下地面 + 悬停高度（被天花板夹）"，寻路只管水平，<b>航线里那个 Y 被整个丢掉</b>。
-     * 于是航线要它翻过一道梁、爬出低房间时，它仍然按悬停高度平飞，撞了墙才靠脱困乱挤。
-     * 现在航线的 Y 也参与决策，但有 {@code pathfinding.verticalDeadband} 的死区：
-     * 只在航线明显高于/低于悬停高度时才跟，正常巡航的上下呼吸不受影响。
+     * <h2>为什么这样才对</h2>
+     * A* 的节点本来就带"空地判定"（{@link DragonFlyNodeEvaluator} 在每个节点按身体盒子采样），
+     * 所以<b>路线本身就是"哪儿能飞、飞多高"的答案</b>。以前只借它的水平走向、竖向永远听悬停的，
+     * 于是"要到高台上方 N 格"这种目标一旦被天花板挡住，悬停逻辑只会一直往上顶
+     * （"它一直尝试向上飞"）—— 因为没人告诉它"那个高度没有空间，路线会绕 / 会停在能到的高度"。
      *
-     * @param steerPoint 当前航路点（可为 null = 没有路线，纯悬停）
+     * <p>现在：{@link DragonPathFollower#onRoute()} 为真时竖直目标 = 航路点 Y（爬升/下降跟着路线），
+     * 走完路线（{@code onRoute == false}）才回到悬停高度那套。
+     *
+     * <p>{@code pathfinding.verticalDeadband} 退化成"防微抖死区"：航路点高度和悬停高度差得太小就不动，
+     * 避免两条几乎相同的目标互相拉扯。
      */
-    public double flightVerticalTarget(@Nullable Vec3 steerPoint) {
+    public double flightVerticalTarget() {
         double hover = this.hoverTargetY();
-        if (steerPoint == null) {
+        Vec3 steer = this.pathFollower.steerPoint();
+        if (steer == null || !this.pathFollower.onRoute()) {
             return hover;
         }
         double deadband = DragonGolemConfig.pathVerticalDeadband();
-        return Math.abs(steerPoint.y - hover) > deadband ? steerPoint.y : hover;
+        return Math.abs(steer.y - hover) <= deadband ? hover : steer.y;
     }
 
     /** {@link #hoverTargetY()} 里"没找到天花板"的哨兵值；也是 {@link #ceilingYAt} 的返回值。 */

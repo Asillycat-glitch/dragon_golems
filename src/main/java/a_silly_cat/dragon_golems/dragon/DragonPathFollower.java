@@ -63,6 +63,8 @@ public final class DragonPathFollower {
     /** 这一 tick 建议朝哪个点飞；null = 没有路线，调用方自己直奔目标。 */
     @Nullable
     private Vec3 steerPoint;
+    /** {@link #steerPoint} 是航线节点（true）还是路线终点（false）；见 {@link #onRoute()}。 */
+    private boolean steerOnRoute;
     /** 距离上次重算的 tick 数。 */
     private int age;
     /** 连续多少次重算都失败。 */
@@ -114,6 +116,16 @@ public final class DragonPathFollower {
         return this.steerPoint;
     }
 
+    /**
+     * 当前转向点是不是"航线上的节点"（true）还是"路线的终点目标"（false）。
+     *
+     * <p>这个标志就是<b>把竖直方向交给寻路</b>的开关：在航线上时，龙应该跟着航路点的高度
+     * 爬升/下降（3D 跟随）；只有走完路线/没有路线时，才回到"悬停高度"那套。
+     */
+    public boolean onRoute() {
+        return this.steerOnRoute;
+    }
+
     /** 强制下一 tick 重算（撞墙时用：路线已经不可信了）。 */
     public void invalidate() {
         this.age = Integer.MAX_VALUE / 2;
@@ -125,6 +137,7 @@ public final class DragonPathFollower {
         this.path = null;
         this.goal = null;
         this.steerPoint = null;
+        this.steerOnRoute = false;
         this.age = 0;
         this.failTicks = 0;
     }
@@ -216,6 +229,7 @@ public final class DragonPathFollower {
     private void advanceAlongPath(Vec3 goal) {
         if (this.path == null) {
             this.steerPoint = null;
+            this.steerOnRoute = false;
             return;
         }
         double reach = this.nodeReach();
@@ -228,8 +242,10 @@ public final class DragonPathFollower {
             double dy = node.y + 0.5D - this.dragon.getY();
             double dz = node.z + 0.5D - this.dragon.getZ();
             if (dx * dx + dy * dy + dz * dz > reach * reach) {
-                // 节点的 Y 就是"脚能到的那个方块"（评估器也是按脚底采样的），不给 +0.5
+                // 节点的 Y 就是"脚能到的那个方块"（评估器也是按脚底采样的），不给 +0.5。
+                // ★ steerOnRoute = true：竖直方向跟着这个节点走（3D 跟随），不再由悬停逻辑接管。
                 this.steerPoint = new Vec3(node.x + 0.5D, node.y, node.z + 0.5D);
+                this.steerOnRoute = true;
                 return;
             }
             this.path.advance();
@@ -239,12 +255,14 @@ public final class DragonPathFollower {
         // 而不是继续对着墙拱。
         if (this.path.canReach()) {
             this.steerPoint = goal;
+            this.steerOnRoute = false;
             return;
         }
         Node end = this.path.getEndNode();
         this.steerPoint = end != null
                 ? new Vec3(end.x + 0.5D, end.y, end.z + 0.5D)
                 : goal;
+        this.steerOnRoute = false;
     }
 
     /** 切节点的判定半径：和 {@code maxDistanceToWaypoint} 一个思路，按体型放宽。 */

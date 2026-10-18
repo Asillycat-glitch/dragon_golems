@@ -234,16 +234,17 @@ public final class DragonGolemConfig {
     }
 
     /**
-     * 航线高度与悬停高度的"死区"（格）。默认 3。
+     * 航线高度与悬停高度的"防微抖死区"（格）。默认 1。
      *
-     * <p>高度控制与寻路统合之后，龙会<b>在航线明显更高/更低时跟着航线爬升/下降</b>
-     * （例如翻过一道梁、爬出低房间）。但正常巡航时航路点本来就贴着悬停高度上下浮动，
-     * 每次都去追会让它一直点头。所以只有差值超过这个死区才跟航线。
+     * <h2>竖直方向现在归寻路</h2>
+     * A* 的节点带空地判定（评估器按身体盒子逐节点采样），所以<b>路线本身就是"哪儿能飞、飞多高"</b>。
+     * 现在龙在航线上时竖直目标 = 航路点 Y（跟着路线爬升/下降），走完路线才回悬停高度。
+     * 这个死区只用来吸掉"航路点高度和悬停高度几乎相同"时的来回微抖。
      *
-     * <p>调大 = 更"坚持自己的高度"（更容易被矮门卡住）；调小 = 更贴航线（爬升下降更积极）。
+     * <p>调大 = 更倾向保持悬停高度（更像"定高巡航"）；调小 = 更严格地贴着航线的起伏。
      */
     public static double pathVerticalDeadband() {
-        return Math.max(0.5D, num(COMMON.pathVerticalDeadband, 3.0D));
+        return Math.max(0.1D, num(COMMON.pathVerticalDeadband, 1.0D));
     }
 
     // ---- 旋转（转向速度与压弯）----
@@ -534,9 +535,10 @@ public final class DragonGolemConfig {
                     .comment("连续算不出路线这么多 tick 就认定目标不可达（游走 goal 会换一个点）")
                     .defineInRange("giveUpTicks", 40.0D, 10.0D, 400.0D);
             this.pathVerticalDeadband = builder
-                    .comment("航线高度与悬停高度的死区（格）：超过它才跟着航线爬升/下降",
-                            "调大 = 更坚持自己的高度（容易被矮门卡住）；调小 = 更贴航线（翻梁/爬出低房间更积极）")
-                    .defineInRange("verticalDeadband", 3.0D, 0.5D, 20.0D);
+                    .comment("航线高度与悬停高度的防微抖死区（格）",
+                            "竖直方向现在归寻路：在航线上时竖直目标 = 航路点 Y（跟着路线爬升/下降），走完路线才回悬停高度",
+                            "这个死区只吸掉『两者几乎相同』时的来回微抖；调大更像定高巡航，调小更贴航线起伏")
+                    .defineInRange("verticalDeadband", 1.0D, 0.1D, 10.0D);
             builder.pop();
 
             builder.comment("旋转（转向速度与压弯）").push("flight");
