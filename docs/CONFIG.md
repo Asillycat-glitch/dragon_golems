@@ -591,7 +591,59 @@ edge = groundHeight(x, z) + entryAlt()        // entryAlt() = max(12, hoverHeigh
 | `flight.ceilingClearance` | 0.25 | 天花板与身体之间的余量（模型翅膀比判定箱略高，别设太小） |
 | `pathfinding.verticalDeadband` | 1.0 | 防微抖死区；调大更像"定高巡航"，调小更严格贴航线起伏 |
 
-## 十六、回退清单（哪条不想要就关哪个）
+## 十六、诊断日志（看它到底怎么飞的）
+
+配置里打开 `debug.flightLog = true`（默认关），日志里会多出两类行。**这是排查"它为什么这么飞"的正规入口** ——
+龙的移动是三层：goal 给目标点 → `DragonPathFollower` 算 3D 路线 → 水平/竖直速度。从外面只能看到"它在乱飞"，
+这几行把三层的中间量全部摊开。
+
+### `[move]`：每 `debug.flightLogInterval` tick（默认 10 = 0.5 秒）一行
+
+```
+[move] #1234 goal=(122.50, 0.00, 1262.00) pos=(122.86, 44.80, 1262.39) | steer=(125.50, 46.00, 1263.50) onRoute=true
+       | vert: target=46.00 来源=路线 hover=39.75 floor=30.00 ceilBlock=41.00 maxFeet=38.75
+       | vel=(0.300, 0.120, -0.200) | hColl=false vColl=true noPhys=false embed=false
+       | goals=DragonIdleGoal
+```
+
+| 字段 | 含义 |
+|---|---|
+| `goal` | **goal 交给寻路的目标点**（游走点 / 目标位置 / 主人位置） |
+| `steer` + `onRoute` | 航路点（带 Y）以及它是不是"航线上的节点" |
+| `vert: target / 来源` | 竖直目标，以及它是**跟路线**还是**悬停** |
+| `hover` / `floor` / `ceilBlock` / `maxFeet` | 悬停高度 / 局部地面 / 头顶天花板方块 Y / 天花板允许的最高脚部 Y |
+| `hColl` / `vColl` / `noPhys` / `embed` | 水平碰撞 / 竖直碰撞 / no-clip / 是否嵌在方块里 |
+| `goals` | 这一 tick 正在跑的 goal（能看出是"巡航"还是"战斗/俯冲"） |
+
+### `[path]`：每次重算路线一行
+
+```
+[path] recompute goal=(122.50, 1262.00) goalY=46.00 reach=1 → nodes=14 canReach=true
+       前6个节点=(122,46,1262)(123,46,1262)(124,45,1263)...
+```
+
+- `goalY` 是**目的地的悬停高度**（那儿的地面 + 悬停高度，被那儿的天花板按身体高度夹住）；
+- `nodes` / `canReach`：路线长度与"能否真正到达"（`canReach == false` = 截断路线，只到最近的可行点）；
+- **前 6 个节点**能直接看出它是"平飞"还是"先爬升/绕行"。
+
+### `[move] 正在上升但头顶被挡`：WARN，1 秒限流
+
+```
+[move] 正在上升但头顶被挡：vy=0.150 vertTarget=38.75 hoverTarget=38.75 steerY=na onRoute=false
+       floor=30.00 ceilBlock=41.00 maxFeet=38.75 pos=(...) goals=DragonIdleGoal
+```
+
+这一行就是"它还在想往上飞"的现场：`vertTarget` 已经等于 `maxFeet`（= 天花板允许的最高）却还有向上速度时，
+多半是**某个启发式在硬抬**（历史上就是 `DragonIdleGoal` 的"蹭到方块就抬 0.15"，现在它已经检查 `hasHeadroomFor`）。
+
+### 可调项
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `debug.flightLog` | false | 打开上面这些行 |
+| `debug.flightLogInterval` | 10 | `[move]` 的间隔（tick） |
+
+## 十七、回退清单（哪条不想要就关哪个）
 
 | 不想要的效果 | 怎么办 |
 |---|---|

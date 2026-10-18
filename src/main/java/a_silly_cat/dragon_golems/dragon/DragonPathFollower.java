@@ -1,5 +1,6 @@
 package a_silly_cat.dragon_golems.dragon;
 
+import a_silly_cat.dragon_golems.Dragon_golems;
 import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 import com.google.common.collect.ImmutableSet;
 import net.minecraft.core.BlockPos;
@@ -60,6 +61,12 @@ public final class DragonPathFollower {
     /** 当前这条路线通向哪里（判断"目标有没有动"）。 */
     @Nullable
     private Vec3 goal;
+
+    /** 当前追踪的目标点（诊断用；只含水平上有意义的坐标）。 */
+    @Nullable
+    public Vec3 goalPoint() {
+        return this.goal;
+    }
     /** 这一 tick 建议朝哪个点飞；null = 没有路线，调用方自己直奔目标。 */
     @Nullable
     private Vec3 steerPoint;
@@ -162,6 +169,9 @@ public final class DragonPathFollower {
         this.goal = goal;
         this.age = 0;
         Path found = this.computePath(withY, reach);
+        if (DragonGolemConfig.flightLog()) {
+            this.logRecompute(withY, reach, found);
+        }
         if (found == null) {
             this.path = null;
             this.steerPoint = null;
@@ -171,6 +181,31 @@ public final class DragonPathFollower {
         this.failTicks = 0;
         this.path = found;
         this.steerPoint = null;
+    }
+
+    /** 诊断：把这次寻路的输入与结果打出来（{@code debug.flightLog}）。 */
+    private void logRecompute(Vec3 goalWithY, int reach, @Nullable Path found) {
+        if (found == null) {
+            Dragon_golems.LOGGER.info("[path] recompute goal=({}, {}) goalY={} reach={} → null（连搜索都没开始）",
+                    fmt(this.goal == null ? goalWithY.x : this.goal.x),
+                    fmt(this.goal == null ? goalWithY.z : this.goal.z), fmt(goalWithY.y), reach);
+            return;
+        }
+        // 路线前几个节点：直接看出它是"平飞"还是"先爬升/绕行"
+        StringBuilder nodes = new StringBuilder();
+        int shown = Math.min(6, found.getNodeCount());
+        for (int i = 0; i < shown; i++) {
+            Node n = found.getNode(i);
+            nodes.append('(').append(n.x).append(',').append(n.y).append(',').append(n.z).append(')');
+        }
+        Dragon_golems.LOGGER.info("[path] recompute goal=({}, {}) goalY={} reach={} → nodes={} canReach={} 前{}个节点={}",
+                fmt(this.goal == null ? goalWithY.x : this.goal.x),
+                fmt(this.goal == null ? goalWithY.z : this.goal.z),
+                fmt(goalWithY.y), reach, found.getNodeCount(), found.canReach(), shown, nodes);
+    }
+
+    private static String fmt(double v) {
+        return String.format("%.2f", v);
     }
 
     /**

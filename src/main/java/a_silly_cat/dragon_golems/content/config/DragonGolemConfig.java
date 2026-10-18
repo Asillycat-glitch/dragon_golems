@@ -365,6 +365,31 @@ public final class DragonGolemConfig {
         return Math.max(20, (int) num(COMMON.ghostCombatMemoryTicks, 100.0D));
     }
 
+    // ---- 诊断日志 ----
+
+    /**
+     * <b>移动 / 寻路的诊断日志</b>（默认关）。打开后每 {@link #flightLogInterval()} tick 打一行：
+     *
+     * <pre>
+     * [move] #tick goal=... pos=... | steer=... onRoute=... | vert: target=...(来源) hover=... floor=...
+     *        ceil=... maxFeet=... | vel=... | hColl=... vColl=... noPhys=... rescue=... stuck=... | goals=...
+     * [path] recompute goal=(x,z) goalY=... reach=... → nodes=... canReach=true 路线前几节点=[(x,y,z) ...]
+     * [move] 正在上升但头顶被挡：...
+     * </pre>
+     *
+     * <p>为什么要有它：龙的移动分三层（goal 给目标点 → 寻路算 3D 路线 → 竖直/水平速度），
+     * 出问题时从外面只能看到"它在乱飞"。这三行把"<b>目标点是什么 / 路线算了什么 / 竖直目标来自哪</b>"
+     * 全部摊开，尤其第三行专门盯"想往上飞但天花板顶着"这种反馈。
+     */
+    public static boolean flightLog() {
+        return bool(COMMON.flightLog, false);
+    }
+
+    /** 诊断日志的间隔（tick）：默认 10（0.5 秒）。 */
+    public static int flightLogInterval() {
+        return Math.max(1, (int) num(COMMON.flightLogInterval, 10.0D));
+    }
+
     // ---- 属性（问题：属性快要顶到原版上限）----
 
     /**
@@ -460,6 +485,9 @@ public final class DragonGolemConfig {
 
         public final ForgeConfigSpec.BooleanValue ghostDuringCombat;
         public final ForgeConfigSpec.DoubleValue ghostCombatMemoryTicks;
+
+        public final ForgeConfigSpec.BooleanValue flightLog;
+        public final ForgeConfigSpec.DoubleValue flightLogInterval;
 
         public final ForgeConfigSpec.BooleanValue logAttributeOverflow;
         public final ForgeConfigSpec.BooleanValue maxHealthCapFix;
@@ -596,6 +624,18 @@ public final class DragonGolemConfig {
             this.ghostCombatMemoryTicks = builder
                     .comment("『战斗中』的记忆窗口（tick）：最近这么久内有目标/打过/被打过都算战斗中（100 = 5 秒）")
                     .defineInRange("combatMemoryTicks", 100.0D, 20.0D, 1200.0D);
+            builder.pop();
+
+            builder.comment("诊断日志").push("debug");
+            this.flightLog = builder
+                    .comment("移动/寻路诊断日志（默认关）",
+                            "打开后每 flightLogInterval tick 打一行 [move]：目标点 / 航路点 / 竖直目标来源 / 速度 / 碰撞",
+                            "每次重算路线打一行 [path]：goal、goalY、节点数、canReach、路线前几个节点",
+                            "另外『正在上升但头顶被挡』会单独 WARN 一行（限流 1 秒一次）")
+                    .define("flightLog", false);
+            this.flightLogInterval = builder
+                    .comment("诊断日志间隔（tick）：10 = 0.5 秒一行")
+                    .defineInRange("flightLogInterval", 10.0D, 1.0D, 200.0D);
             builder.pop();
 
             builder.comment("属性").push("attributes");

@@ -296,8 +296,9 @@ public class DragonIdleGoal extends Goal {
         double wantY = this.dragon.flightVerticalTarget() + this.bob();
         double vy = Mth.clamp((wantY - this.dragon.getY()) * VERTICAL_GAIN,
                 -VERTICAL_MAX * range, VERTICAL_MAX * range);
-        // 蹭到方块就抬一点，免得贴着树、墙原地磨
-        if (this.dragon.horizontalCollision) {
+        // 蹭到方块就抬一点，免得贴着树、墙原地磨 —— 但**头顶没有空间就别抬**：
+        // 低房间里"撞墙→往上抬→顶到天花板→再撞"是一圈死循环，正是"它一直想往上飞"的一部分。
+        if (this.dragon.horizontalCollision && this.dragon.hasHeadroomFor(0.5D)) {
             vy = Math.max(vy, 0.15D);
         }
 

@@ -2165,6 +2165,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         // 飞行辅助：撞墙计数、自动脱困的进出、noPhysics 的唯一写入口。
         // 必须在上面那段之后 —— 那里才刚决定本 tick 的速度。
         this.flightAssist.tick(this);
+        // 诊断：移动/寻路全貌（{@code debug.flightLog}，默认关）
+        this.logMovement();
         // 末地水晶治疗：每 30 秒一轮、每轮最多 12 个可用水晶，详见 DragonCrystalHeal 的说明。
         // 放在这里（服务端 tick 收尾）而不是 goal 里：它是"被动光环"，不该和 AI 决策抢调度。
         if (!this.level().isClientSide) {
@@ -2202,6 +2204,107 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             this.flightAssist.logState(this);
         }
     }
+
+    /**
+     * 诊断：一行打出"目标点 → 航路点 → 竖直目标 → 速度/碰撞"的完整链条（{@code debug.flightLog}）。
+     *
+     * <p>为什么这样组织：龙的移动是三层 —— ① 某个 goal 给一个水平目标点；②
+     * {@link DragonPathFollower} 用它算 3D 路线并给出"下一个航路点"；③ 水平/竖直速度由航路点
+     * 或悬停高度决定。从外面看只能看到"它在乱飞"，这一行把三层的中间量全部摊开，
+     * 尤其 {@code vert} 后面标了竖直目标的<b>来源</b>（"路线"还是"悬停"）。
+     *
+     * <p>另外单独抓"正在上升但头顶被挡"：那正是"一直想往上飞"的现场，WARN 级 + 1 秒限流，
+     * 免得被常规 {@code [move]} 行淹没。
+     */
+    private void logMovement() {
+        if (!DragonGolemConfig.flightLog() || this.level().isClientSide()) {
+            return;
+        }
+        Vec3 velocity = this.getDeltaMovement();
+        // ---- 报警：想往上飞但头顶顶着方块 ----
+        if (velocity.y > 0.02D && this.verticalCollision && this.tickCount - this.lastRiseLogTick >= 20) {
+            this.lastRiseLogTick = this.tickCount;
+            Dragon_golems.LOGGER.warn(
+                    "[move] 正在上升但头顶被挡：vy={} vertTarget={} hoverTarget={} steerY={} onRoute={} "
+                            + "floor={} ceilBlock={} maxFeet={} pos={} goals={}",
+                    fmt3(velocity.y), fmt2(this.flightVerticalTarget()), fmt2(this.hoverTargetY()),
+                    this.steerYForLog(), this.pathFollower.onRoute(),
+                    fmt2(this.localFloorY()), this.ceilBlockForLog(), this.maxFeetForLog(),
+                    posStr(), runningGoals());
+        }
+        if (this.tickCount % DragonGolemConfig.flightLogInterval() != 0) {
+            return;
+        }
+        Vec3 steer = this.pathFollower.steerPoint();
+        double hover = this.hoverTargetY();
+        boolean fromRoute = this.pathFollower.onRoute() && steer != null
+                && Math.abs(steer.y - hover) > DragonGolemConfig.pathVerticalDeadband();
+        Dragon_golems.LOGGER.info(
+                "[move] #{} goal={} pos={} | steer={} onRoute={} | vert: target={} 来源={} hover={} "
+                        + "floor={} ceilBlock={} maxFeet={} | vel=({}, {}, {}) | hColl={} vColl={} "
+                        + "noPhys={} embed={} goals={}",
+                this.tickCount, vecStr(this.pathFollower.goalPoint()), posStr(),
+                vecStr(steer), this.pathFollower.onRoute(),
+                fmt2(this.flightVerticalTarget()), fromRoute ? "路线" : "悬停", fmt2(hover),
+                fmt2(this.localFloorY()), this.ceilBlockForLog(), this.maxFeetForLog(),
+                fmt3(velocity.x), fmt3(velocity.y), fmt3(velocity.z),
+                this.horizontalCollision, this.verticalCollision,
+                this.noPhysics, this.flightAssist.isEmbedded(), runningGoals());
+    }
+
+    /** 诊断用：当前航路点的 Y（没有路线 → "na"）。 */
+    private String steerYForLog() {
+        Vec3 steer = this.pathFollower.steerPoint();
+        return steer == null ? "na" : fmt2(steer.y);
+    }
+
+    /** 诊断用：头顶天花板方块 Y（没有 → "∞"）。 */
+    private String ceilBlockForLog() {
+        double ceil = this.ceilingBlockYAt(this.blockPosition().getX(), this.blockPosition().getZ(),
+                this.getY() + this.getBbHeight() + 0.5D);
+        return ceil == NO_CEILING ? "∞" : fmt2(ceil);
+    }
+
+    /** 诊断用：天花板允许的最高脚部 Y（没有 → "∞"）。 */
+    private String maxFeetForLog() {
+        double limit = this.maxFeetYUnderCeiling(this.blockPosition().getX(), this.blockPosition().getZ(),
+                this.getY() + this.getBbHeight() + 0.5D);
+        return limit == NO_CEILING ? "∞" : fmt2(limit);
+    }
+
+    /** 诊断用：当前正在跑的 goal 名字。 */
+    private String runningGoals() {
+        StringBuilder sb = new StringBuilder();
+        for (WrappedGoal wrapped : this.goalSelector.getAvailableGoals()) {
+            if (!wrapped.isRunning()) {
+                continue;
+            }
+            if (sb.length() > 0) {
+                sb.append('+');
+            }
+            sb.append(wrapped.getGoal().getClass().getSimpleName());
+        }
+        return sb.length() == 0 ? "-" : sb.toString();
+    }
+
+    private String posStr() {
+        return "(" + fmt2(this.getX()) + ", " + fmt2(this.getY()) + ", " + fmt2(this.getZ()) + ")";
+    }
+
+    private static String vecStr(@Nullable Vec3 v) {
+        return v == null ? "na" : "(" + fmt2(v.x) + ", " + fmt2(v.y) + ", " + fmt2(v.z) + ")";
+    }
+
+    private static String fmt2(double v) {
+        return String.format("%.2f", v);
+    }
+
+    private static String fmt3(double v) {
+        return String.format("%.3f", v);
+    }
+
+    /** "上升但头顶被挡"告警的限流。 */
+    private int lastRiseLogTick = -100;
 
     /**
      * 压弯（侧倾）：<b>只看本 tick 实际转过的角度</b>，谁转的都算。
@@ -3436,6 +3539,19 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             return NO_CEILING;
         }
         return ceilingBlock - this.getBbHeight() - DragonGolemConfig.ceilingClearance();
+    }
+
+    /**
+     * 头顶还有没有 {@code margin} 格以上的余量（相对于"脚 + 身体"）。
+     *
+     * <p>给"撞墙就抬一点"这类启发式用：没有这条的话，低房间里会出现
+     * <b>撞墙 → 每 tick 往上抬 0.15 → 顶到天花板 → 继续抬 → 卡住</b> 的死循环
+     * （真机反馈"有时它仍然会想尝试向上飞"的一部分）。
+     */
+    public boolean hasHeadroomFor(double margin) {
+        double limit = this.maxFeetYUnderCeiling(this.blockPosition().getX(), this.blockPosition().getZ(),
+                this.getY() + this.getBbHeight() + 0.5D);
+        return limit == NO_CEILING || limit - this.getY() > margin;
     }
 
     /**
