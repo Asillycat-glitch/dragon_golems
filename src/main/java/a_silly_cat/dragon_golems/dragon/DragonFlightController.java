@@ -93,7 +93,7 @@ public final class DragonFlightController {
         }
         if (this.dragon.flightAssist().isEmbedded()) {
             this.mode = Mode.ESCAPE;
-            this.applySafety(this.dragon.flightAssist().embeddedEscape(this.dragon));
+            this.applyEscapeSafety(this.dragon.flightAssist().embeddedEscape(this.dragon));
             this.dragon.clearScriptVelocity();
             return;
         }
@@ -107,7 +107,7 @@ public final class DragonFlightController {
             this.mode = Mode.RESCUE;
             Vec3 escape = this.dragon.flightAssist().rescueVelocity(this.dragon);
             if (escape != null) {
-                this.applySafety(escape);
+                this.applyEscapeSafety(escape);
             } else {
                 this.dragon.setNoGravity(true);
                 this.dragon.fallDistance = 0.0F;
@@ -145,18 +145,38 @@ public final class DragonFlightController {
      * <ul>
      *   <li>{@code 下一 tick 的 Y > 带顶} → 竖直分量压成 ≤ 0（不许再上升）；
      *       这一条同时替代了以前散落的"天花板否决""重合期间不许上升"两处补丁；</li>
-     *   <li>{@code 下一 tick 的 Y < 带底} → 竖直分量压成 ≥ 0（不许继续沉下去）。</li>
+     *   <li>{@code 下一 tick 的 Y < 带底} → 竖直分量压成 ≥ 0（不许继续沉下去），
+     *       但<b>脱出/脱困例外</b>：见 {@link #applyEscapeSafety(Vec3)}。</li>
      * </ul>
      * 水平分量原样保留（绕墙由寻路/避障负责，不在这里重复判断）。
      */
     private void applySafety(Vec3 desired) {
+        this.applySafety(desired, true);
+    }
+
+    /**
+     * 脱出/脱困用的安全层：<b>保留"不许上升"，但不限制向下</b>。
+     *
+     * <h2>为什么（真机日志）</h2>
+     * 身体正嵌在方块里时，{@code localFloorY()} 会把"它身体所在的那块方块"当成地板，
+     * 于是 {@code band.minFeet} 反而落在它<b>上面</b> —— 安全层据此把向下的脱出速度压成 0，
+     * 结果卡在方块里出不来：{@code mode=重合脱出 stuck=78 dy=0.000}，三秒一格没动。
+     *
+     * <p>而脱出方向本来就逐个探过 {@code hasRoomFor}（落点塞得下整条龙才会被选中），
+     * 所以"向下"在这里是安全的，不该再被一个用错基准算出来的下限拦住。
+     */
+    private void applyEscapeSafety(Vec3 desired) {
+        this.applySafety(desired, false);
+    }
+
+    private void applySafety(Vec3 desired, boolean clampToBandBottom) {
         DragonGolemEntity.FlightBand band = this.dragon.flightBand();
         double y = desired.y;
         double next = this.dragon.getY() + y;
         if (next > band.maxFeet()) {
             y = Math.min(y, 0.0D);
         }
-        if (next < band.minFeet()) {
+        if (clampToBandBottom && next < band.minFeet()) {
             y = Math.max(y, 0.0D);
         }
         Vec3 v = new Vec3(desired.x, y, desired.z);
