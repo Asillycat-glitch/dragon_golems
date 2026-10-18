@@ -169,8 +169,9 @@ public final class DragonFlightAssist {
         double maxFeet = dragon.maxFeetYUnderCeiling(bx, bz, fromY);
         Vec3 steer = dragon.pathFollower().steerPoint();
         Dragon_golems.LOGGER.info(
-                "[fly] stuck={} room={} embedded={} rescue={} noPhysics={} free={} dy={} hColl={} vColl={} "
+                "[fly] mode={} stuck={} room={} embedded={} rescue={} noPhysics={} free={} dy={} hColl={} vColl={} "
                         + "hoverT={} ceilB={} maxFeet={} steerY={} onRoute={} pos={}",
+                dragon.flightController().mode().label,
                 this.stuckTicks, hasRoomFor(dragon, dragon.position()),
                 this.embedded, this.rescueTicks, dragon.noPhysics, this.freeFlight,
                 String.format("%.3f", dragon.getDeltaMovement().y),
