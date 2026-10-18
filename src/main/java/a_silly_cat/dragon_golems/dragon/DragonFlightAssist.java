@@ -146,6 +146,14 @@ public final class DragonFlightAssist {
             return;
         }
         handleStuck(dragon);
+        // ★ 最后一道保险（速度层面）：身体正和方块重合时，速度绝不允许向上。
+        //   实体那边已经把"重合"分支排在 goal 速度之前，但这条独立于分支顺序 ——
+        //   万一以后又有人往别处写速度（技能、避障、外力…），这里也会把它拧回去。
+        //   真机依据：[fly] embedded=true noPhysics=true dy=+1.008，y 从 88 升到 109（在墙里上升）。
+        if (this.embedded && dragon.getDeltaMovement().y > 0.0D) {
+            Vec3 v = dragon.getDeltaMovement();
+            dragon.setDeltaMovement(v.x, 0.0D, v.z);
+        }
     }
 
     /**
@@ -159,12 +167,25 @@ public final class DragonFlightAssist {
         if (!DragonDebug.RIDE) {
             return;
         }
+        int bx = dragon.blockPosition().getX();
+        int bz = dragon.blockPosition().getZ();
+        double fromY = dragon.getY() + 0.5D;
+        double ceil = dragon.ceilingBlockYAt(bx, bz, fromY);
+        double maxFeet = dragon.maxFeetYUnderCeiling(bx, bz, fromY);
+        Vec3 steer = dragon.pathFollower().steerPoint();
         Dragon_golems.LOGGER.info(
-                "[fly] stuck={} room={} embedded={} rescue={} noPhysics={} free={} dy={} hColl={} vColl={} pos={}",
+                "[fly] stuck={} room={} embedded={} rescue={} noPhysics={} free={} dy={} hColl={} vColl={} "
+                        + "hoverT={} ceilB={} maxFeet={} steerY={} onRoute={} pos={}",
                 this.stuckTicks, hasRoomFor(dragon, dragon.position()),
                 this.embedded, this.rescueTicks, dragon.noPhysics, this.freeFlight,
                 String.format("%.3f", dragon.getDeltaMovement().y),
-                dragon.horizontalCollision, dragon.verticalCollision, dragon.position());
+                dragon.horizontalCollision, dragon.verticalCollision,
+                String.format("%.2f", dragon.hoverTargetY()),
+                ceil == DragonGolemEntity.NO_CEILING ? "inf" : String.format("%.2f", ceil),
+                maxFeet == DragonGolemEntity.NO_CEILING ? "inf" : String.format("%.2f", maxFeet),
+                steer == null ? "na" : String.format("%.2f", steer.y),
+                dragon.pathFollower().onRoute(),
+                dragon.position());
     }
 
     /**

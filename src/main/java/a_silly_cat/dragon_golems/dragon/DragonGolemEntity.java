@@ -2134,6 +2134,28 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.diveVelocity = null;
             } else if (rider != null) {
                 this.keepAimThisTick = false;
+            } else if (this.flightAssist.isEmbedded()) {
+                // ★ 身体正和方块重合：noPhysics 只是<b>物理安全</b>（不开会被碰撞解算每 tick 弹飞十几格），
+                //   不是飞行能力。真机日志（[fly] room=false embedded=true noPhysics=true dy=+1.008，
+                //   y 从 88 一路升到 109，途中 hColl/vColl 都是 false —— 它就是"在墙里自由上升"）
+                //   说明"重合期间没人接管速度 → goal 把竖直目标指向头顶 → 带着 no-clip 穿出去"。
+                //
+                //   ★★ 这个分支必须排在 {@code diveVelocity} 之前：
+                //   goal（待机/远程/音波）几乎每 tick 都会 {@code setDiveVelocity(...)}，
+                //   如果先处理 diveVelocity，这条永远走不到（上一版就是这么失效的，日志里 dy 仍是正的）。
+                //
+                //   重合期间<b>整个速度都由 embeddedEscape 接管</b>：它只给"探过 hasRoomFor、
+                //   确认塞得下"的方向（先往下、再扇面，且向上的分量被压成 0），
+                //   于是不会一边穿墙一边朝敌人滑，也不会继续往上顶。脱出后 goal 立刻恢复。
+                this.setNoGravity(true);
+                Vec3 escape = this.flightAssist.embeddedEscape(this);
+                this.setDeltaMovement(escape);
+                if (!this.keepAimThisTick) {
+                    this.faceMovement(escape);
+                }
+                this.keepAimThisTick = false;
+                this.diveVelocity = null;
+                this.fallDistance = 0.0F;
             } else if (this.diveVelocity != null) {
                 // AI 自发的俯冲 / 拉升：技能直接接管速度，悬停必须让位（它只会往上顶）。
                 this.setNoGravity(true);
@@ -2148,24 +2170,6 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                     this.faceMovement(vel);
                 }
                 this.diveVelocity = null;
-            } else if (this.flightAssist.isEmbedded() && rider == null) {
-                // ★ 身体正和方块重合：noPhysics 只是<b>物理安全</b>（不开会被碰撞解算每 tick 弹飞十几格），
-                //   不是飞行能力。真机日志（[fly] room=false embedded=true noPhysics=true dy=+1.047，
-                //   y 从 89.9 升到 109.3；同时 hColl=true —— 它是横向撞进墙/柱子里才重合的）
-                //   就是"重合期间没人接管速度 → goal 把竖直目标指向头顶 → 带着 no-clip 穿出去"。
-                //
-                //   所以重合期间<b>整个速度都由 flightAssist.embeddedEscape 接管</b>：
-                //   它只会给"探过 hasRoomFor、确认塞得下"的方向（先往下、再扇面），
-                //   于是不会一边穿墙一边朝敌人滑，也不会继续往上顶天花板。脱出后 goal 立刻恢复。
-                this.setNoGravity(true);
-                Vec3 escape = this.flightAssist.embeddedEscape(this);
-                this.setDeltaMovement(escape);
-                if (!this.keepAimThisTick) {
-                    this.faceMovement(escape);
-                }
-                this.keepAimThisTick = false;
-                this.diveVelocity = null;
-                this.fallDistance = 0.0F;
             } else if (this.flightAssist.isRescuing()) {
                 // 卡在方块里（自动脱困中）：交给飞行辅助往开阔处飞，别让悬停把它按回墙里
                 this.setNoGravity(true);
