@@ -472,7 +472,37 @@ edge = groundHeight(x, z) + entryAlt()        // entryAlt() = max(12, hoverHeigh
 |---|---|---|
 | `skills.diveRoomCheck` | true | 关掉 = 旧行为（只剩天花板夹取，AI 仍会尝试够不着的高入场点） |
 
-## 十三、回退清单（哪条不想要就关哪个）
+## 十三、幽灵（穿墙）只在**战斗外**进入
+
+### 现象与判断
+
+穿墙时**龙息与技能会被方块挡住**，等于整场战斗无效。这个代价本身是对的（穿墙就该有代价），
+但如果允许**战斗中进入**幽灵，就会出现最糟的组合：
+
+1. 龙被围住 / 追不到人 → 自动穿墙（脱困或累计撞墙的常驻幽灵）；
+2. 穿墙之后打不到任何傀儡 → **整场战斗都白打**；
+3. 而且它会一直挂在幽灵态里（常驻幽灵要连续 3 次、每 30 秒一次的干净检查才退出，约 90 秒）。
+
+所以：**自动幽灵只在战斗外进入。**
+
+### 判定与实现
+
+| 项 | 内容 |
+|---|---|
+| "战斗中"判据 | `DragonGolemEntity.inCombat()` = <b>有目标</b> 或 <b>最近 `ghost.combatMemoryTicks`（默认 100 tick = 5 秒）内打过 / 被打过</b>。单看 `hurtTime`（只有 10 tick）太短，被围在墙边挨一轮、间隙一过又算"非战斗" |
+| 自动脱困 | 战斗**中不开始**；已经开始的一旦进入战斗，**立刻收工**（`endRescue`） |
+| 常驻幽灵（累计撞墙 60 次） | 战斗**中不进入**；已经开着的在战斗中**挂起**（标志保留），战斗结束立刻恢复 |
+| noPhysics 写入口 | `freeFlight \|\| (rescue 且非战斗) \|\| 正嵌在方块里 \|\| (常驻幽灵 且非战斗)` |
+| **不**受约束的两条 | ① 玩家按 **H** 的手动自由飞行（明确选择，代价自负）；② **"正嵌在方块里"的 no-clip** —— 那是**物理安全**（不开会被碰撞解算每 tick 弹飞十几格），不是战术穿墙 |
+
+### 可调项（新配置节 `[ghost]`）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `ghost.duringCombat` | false | true = 旧行为（战斗中也会自动穿墙），用来做 A/B 对照 |
+| `ghost.combatMemoryTicks` | 100 | "战斗中"的记忆窗口（tick）；调大 = 打完架更久才算脱战 |
+
+## 十四、回退清单（哪条不想要就关哪个）
 
 | 不想要的效果 | 怎么办 |
 |---|---|
@@ -493,4 +523,5 @@ edge = groundHeight(x, z) + entryAlt()        // entryAlt() = max(12, hoverHeigh
 | 想让流水也算支撑面（旧行为） | `hover.flowingFluidIsFloor = true` |
 | 想让水流推得动龙（原版行为） | `hover.pushedByFluid = true` |
 | 室内也不想打俯冲（纯远程） | `skills.diveRoomCheck = true`（默认）+ 把 `skills.nativeSkillGoals` 关着；想反过来回到旧行为就设 `skills.diveRoomCheck = false` |
+| 战斗中也要自动穿墙（旧行为） | `ghost.duringCombat = true` |
 

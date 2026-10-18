@@ -300,6 +300,32 @@ public final class DragonGolemConfig {
         return bool(COMMON.pushedByFluid, false);
     }
 
+    // ---- 幽灵（穿墙）状态 ----
+
+    /**
+     * <b>战斗中允许自动进入幽灵（穿墙）状态吗。</b>默认 <b>false</b>（不允许）。
+     *
+     * <h2>为什么</h2>
+     * 幽灵态是"穿过方块"，而<b>龙息与大部分技能会被方块挡住</b> —— 也就是穿墙时战斗无效。
+     * 这个结果本身是对的（穿墙就该付出代价），但前提是"<b>战斗开始前就已经在里面</b>"。
+     * 如果允许战斗中进入，就会出现最糟的组合：龙卡在墙里 / 追不到人，于是自动穿墙，
+     * 穿墙之后又打不到任何傀儡 —— <b>整整一场战斗都无效</b>。
+     * 所以：自动幽灵（自动脱困 / 累计撞墙的常驻幽灵）只在<b>非战斗</b>时进入；
+     * 战斗开始后，已经开着的常驻幽灵会被挂起（"嵌在方块里"的物理安全那条不受影响，见下）。
+     *
+     * <p>玩家手动按 <b>H</b> 的自由飞行<b>不受这条限制</b> —— 那是玩家明确要的，代价自负。
+     * "嵌在方块里"那条 no-clip 也不受限制：那是<b>物理安全</b>（不开会被碰撞解算每 tick 弹飞十几格），
+     * 不是战术穿墙。
+     */
+    public static boolean ghostDuringCombat() {
+        return bool(COMMON.ghostDuringCombat, false);
+    }
+
+    /** "战斗中"的记忆窗口（tick）：最近这么久内有目标 / 打过 / 被打过都算战斗中。100 = 5 秒。 */
+    public static int ghostCombatMemoryTicks() {
+        return Math.max(20, (int) num(COMMON.ghostCombatMemoryTicks, 100.0D));
+    }
+
     // ---- 属性（问题：属性快要顶到原版上限）----
 
     /**
@@ -388,6 +414,9 @@ public final class DragonGolemConfig {
 
         public final ForgeConfigSpec.BooleanValue flowingFluidIsFloor;
         public final ForgeConfigSpec.BooleanValue pushedByFluid;
+
+        public final ForgeConfigSpec.BooleanValue ghostDuringCombat;
+        public final ForgeConfigSpec.DoubleValue ghostCombatMemoryTicks;
 
         public final ForgeConfigSpec.BooleanValue logAttributeOverflow;
         public final ForgeConfigSpec.BooleanValue maxHealthCapFix;
@@ -497,6 +526,19 @@ public final class DragonGolemConfig {
                             "false（默认）：推不动 —— 否则水流推力和龙自己的速度控制互相打架（瀑布里最明显）",
                             "true：原版行为（浮力与游泳不受这个开关影响）")
                     .define("pushedByFluid", false);
+            builder.pop();
+
+            builder.comment("幽灵（穿墙）状态").push("ghost");
+            this.ghostDuringCombat = builder
+                    .comment("战斗中允许自动进入幽灵（穿墙）状态吗",
+                            "false（默认）：不许 —— 穿墙时龙息/技能会被方块挡住，战斗中进去等于整场战斗无效",
+                            "  自动脱困与『累计撞墙的常驻幽灵』都受这条约束；已开着的常驻幽灵在战斗开始时被挂起",
+                            "  不受影响：玩家按 H 的手动自由飞行、以及『正嵌在方块里』的物理安全 no-clip",
+                            "true：旧行为（战斗中也会自动穿墙）")
+                    .define("duringCombat", false);
+            this.ghostCombatMemoryTicks = builder
+                    .comment("『战斗中』的记忆窗口（tick）：最近这么久内有目标/打过/被打过都算战斗中（100 = 5 秒）")
+                    .defineInRange("combatMemoryTicks", 100.0D, 20.0D, 1200.0D);
             builder.pop();
 
             builder.comment("属性").push("attributes");

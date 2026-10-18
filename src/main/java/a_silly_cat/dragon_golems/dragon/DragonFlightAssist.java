@@ -1,6 +1,7 @@
 package a_silly_cat.dragon_golems.dragon;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
+import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
@@ -198,10 +199,16 @@ public final class DragonFlightAssist {
         }
         this.embedded = noRoom;
 
+        // ★ 战斗外才允许自动进入幽灵（{@code ghost.duringCombat}）：
+        //   幽灵态是"穿过方块"，而龙息/技能会被方块挡住 —— 战斗中穿墙等于整场战斗无效。
+        //   这个代价本身是对的，但前提是"战斗开始前就在里面"；所以只认非战斗时进入。
+        //   玩家按 H 的手动自由飞行不走这条（那是明确选择），"嵌在方块里"的物理安全也不走（见写入口）。
+        boolean mayGhost = DragonGolemConfig.ghostDuringCombat() || !dragon.inCombat();
+
         // ★ 常驻幽灵：累计撞墙够了就打开（用户要求的"重复多次撞墙后常驻穿墙"）。
         //   动机：矿洞这种地形里"判定箱 2.6 格宽"物理上就进不去，反复脱困-再撞的循环
         //   既费性能又难看。不如认账："这条龙在这个环境里就是会穿墙"，直到它真的出来了。
-        if (!this.stickyGhost && this.totalHits >= GHOST_AFTER_HITS) {
+        if (!this.stickyGhost && this.totalHits >= GHOST_AFTER_HITS && mayGhost) {
             this.stickyGhost = true;
             this.ghostCheckTicks = GHOST_CHECK_INTERVAL;
             this.ghostClearChecks = 0;
@@ -275,12 +282,15 @@ public final class DragonFlightAssist {
         if (this.rescueTicks >= 0) {
             // 脱困中：只要"当前位置塞得下"就结束（不依赖还在不在撞墙）
             this.rescueTicks++;
-            if (this.unstickClear(dragon) || this.rescueTicks > RESCUE_MAX) {
+            // ★ 脱困途中打起来了：立刻收工（!mayGhost），别让它在战斗里继续穿墙打不到人。
+            //   "嵌在方块里"那条物理安全仍由下面的写入口保证，所以撤掉脱困不会引起弹飞。
+            if (!mayGhost || this.unstickClear(dragon) || this.rescueTicks > RESCUE_MAX) {
                 this.endRescue(dragon);
             }
         } else if (!this.freeFlight
                 && this.stuckTicks >= STUCK_LIMIT
-                && noRoom) {
+                && noRoom
+                && mayGhost) {
             // 一直撞墙/一直塞不下 → 是"嵌在方块里"而不是"前方有障碍"
             this.rescueTicks = 0;
             if (DragonDebug.RIDE) {
@@ -293,9 +303,15 @@ public final class DragonFlightAssist {
         // ★ 第三条是这次真机踩出来的必需品：嵌在方块里时如果 noPhysics 为 false，
         //   碰撞解算会每个 tick 把实体猛推出去（实测 dy 达到 +17~+26 格/tick），
         //   骑手的高度输入被彻底淹没 —— "骑着在矿洞里一直往上飞、Ctrl 压不下来"。
+        //   它是<b>物理安全</b>，不是战术穿墙，所以不受"战斗中不许幽灵"的约束。
         // ★ 第四条是用户要求的策略：矿洞里反复撞墙就认账常驻穿墙，别再循环脱困。
-        //   这四条都是"穿过方块"，所以统一在这里表达，不要另开写入口。
-        dragon.noPhysics = this.freeFlight || this.rescueTicks >= 0 || noRoom || this.stickyGhost;
+        // ★ 第一、二、四条都受 mayGhost 约束（{@code ghost.duringCombat}）：战斗中不开新的幽灵，
+        //   已经开着的常驻幽灵在战斗开始时被<b>挂起</b>（标志保留，战斗结束立刻恢复）。
+        //   这几条都是"穿过方块"，所以统一在这里表达，不要另开写入口。
+        dragon.noPhysics = this.freeFlight
+                || (this.rescueTicks >= 0 && mayGhost)
+                || noRoom
+                || (this.stickyGhost && mayGhost);
     }
 
     /** 现在是不是"常驻幽灵"（累计撞墙够多，正在穿墙飞行）。 */

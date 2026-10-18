@@ -2141,6 +2141,13 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.tickBodyRoll();
             }
         }
+        // 战斗记忆：有目标 / 刚挨打 → 刷新；否则逐 tick 衰减。
+        // 飞行辅助用它决定"战斗中能不能进入幽灵（穿墙）状态"（见 DragonGolemConfig.ghostDuringCombat）。
+        if (this.getTarget() != null || this.hurtTime > 0) {
+            this.markCombat();
+        } else if (this.combatTicks > 0) {
+            this.combatTicks--;
+        }
         // 飞行辅助：撞墙计数、自动脱困的进出、noPhysics 的唯一写入口。
         // 必须在上面那段之后 —— 那里才刚决定本 tick 的速度。
         this.flightAssist.tick(this);
@@ -3509,6 +3516,33 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     public boolean isPushedByFluid() {
         return DragonGolemConfig.pushedByFluid();
     }
+
+    /**
+     * 打上"正在战斗"的标记（有目标 / 挨打 / 出手时刷新）。
+     *
+     * <p>意义见 {@link #inCombat()}：幽灵（穿墙）状态只在<b>战斗外</b>才允许进入。
+     */
+    public void markCombat() {
+        this.combatTicks = DragonGolemConfig.ghostCombatMemoryTicks();
+    }
+
+    /**
+     * 现在算不算"战斗中"。
+     *
+     * <p>判据是"有目标"或"最近 {@code ghost.combatMemoryTicks}(默认 100 = 5 秒) 内打过/被打过"——
+     * 单看 {@code hurtTime}（只有 10 tick）太短，战斗里被围在墙边挨一轮打、间隙一过就又算"非战斗"。
+     *
+     * <p>为什么这件事重要：<b>幽灵状态下龙息/技能会被方块挡住</b>，也就是"战斗无效"。这个结果对
+     * 穿墙来说是正确的 —— 但前提是"<b>战斗开始前就进去</b>"。所以自动幽灵（脱困 / 常驻）在战斗中
+     * 一律不进入（{@code ghost.duringCombat} 可回退），这样就不会出现"龙卡在墙里打不到人、
+     * 又一直保持穿墙"的僵局。
+     */
+    public boolean inCombat() {
+        return this.combatTicks > 0 || this.getTarget() != null;
+    }
+
+    /** {@link #inCombat()} 的记忆窗口（tick，逐 tick 递减）。 */
+    private int combatTicks;
 
     /** 骑手冲锋专用的"上一 tick 位置"，用来算实际位移（见 aiStep 里的诊断）。 */
     private Vec3 riderDivePrevPos = Vec3.ZERO;
