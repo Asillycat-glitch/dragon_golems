@@ -3637,7 +3637,22 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             return hover;
         }
         double deadband = DragonGolemConfig.pathVerticalDeadband();
-        return Math.abs(steer.y - hover) <= deadband ? hover : steer.y;
+        double target = Math.abs(steer.y - hover) <= deadband ? hover : steer.y;
+        // ★ 最后一道闸：航线节点给的 Y 也要过一遍"天花板允许的最高脚位"。
+        //   评估器的采样理论上已经保证节点塞得下身体，但它是"按节点那一格的方块"采样的；
+        //   一旦采样有间隙（历史 bug：漏了身体顶端 0.46 格），龙就会照着航线往天花板里飞。
+        //   这里用实体自己脚下这一列的真实天花板再夹一次 —— 双保险，代价只有一次扫描。
+        double limit = this.maxFeetYUnderCeiling(this.blockPosition().getX(), this.blockPosition().getZ(),
+                this.ceilingScanStart());
+        if (limit != NO_CEILING) {
+            target = Math.min(target, limit);
+        }
+        // ★ 一票否决：这一 tick 头顶正压着方块（vColl）→ 竖直目标不允许高于当前位置。
+        //   不管这个目标是"航线给的"还是"悬停算的"，都别再往上 —— 这是"依然在向上尝试飞行"的最终保险。
+        if (this.verticalCollision) {
+            target = Math.min(target, this.getY());
+        }
+        return target;
     }
 
     /** {@link #hoverTargetY()} 里"没找到天花板"的哨兵值；也是 {@link #ceilingYAt} 的返回值。 */

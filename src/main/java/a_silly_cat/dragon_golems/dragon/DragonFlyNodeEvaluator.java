@@ -37,7 +37,11 @@ public class DragonFlyNodeEvaluator extends FlyNodeEvaluator {
     /** 贴边余量（格）：正好卡着边界的缝不算缝。 */
     private static final double EDGE = 0.2D;
     /** 采样高度（相对节点底部，格）。 */
-    private static final double[] SAMPLE_HEIGHTS = {0.15D, 0.5D, 0.85D};
+    /**
+     * 采样高度（相对身体高度的比例）：{@code 1.0} 必须包含 —— 那是"身体顶端"，
+     * 少了它就会出现"头顶 0.46 格没检查"的盲区（见 {@link #bodyFits} 的说明）。
+     */
+    private static final double[] SAMPLE_HEIGHTS = {0.15D, 0.5D, 0.85D, 1.0D};
 
     @Override
     public BlockPathTypes getBlockPathType(BlockGetter level, int x, int y, int z, Mob mob) {
@@ -48,10 +52,19 @@ public class DragonFlyNodeEvaluator extends FlyNodeEvaluator {
         return this.bodyFits(level, x, y, z, mob) ? base : BlockPathTypes.BLOCKED;
     }
 
-    /** 龙的身体盒子在这一格塞不塞得下。 */
+    /**
+     * 身体盒子在节点处塞不塞得下。
+     *
+     * <p><b>★ 采样必须覆盖到身体顶端</b>（曾经漏掉最后 0.15 格 → 差约 0.46 格的盲区）：
+     * 旧版高度是 {@code min(bbHeight, 8) - 0.15}，最高采样点只有 {@code 0.85 × (2.2 - 0.15) = 1.74}，
+     * 而 1 倍体型的身体高 2.2 —— <b>头顶那 0.46 格没有任何采样</b>。
+     * 于是"脚上方第 2 格就是天花板"的节点会被判成可通行，A* 把航路点放在天花板里半格，
+     * 龙照着航线往上飞 → 撞进去变 embedded → 脱出逻辑把它压下来 → 一不重合航线又指回去 → 来回抖。
+     * 现在采样到 {@code 1.0 × bbHeight}（身体顶端），并且去掉那个 -0.15。
+     */
     private boolean bodyFits(BlockGetter level, int x, int y, int z, Mob mob) {
         double half = Math.min(mob.getBbWidth(), MAX_SAMPLE) * 0.5D - EDGE;
-        double height = Math.min(mob.getBbHeight(), MAX_SAMPLE) - 0.15D;
+        double height = Math.min(mob.getBbHeight(), MAX_SAMPLE);
         if (half <= 0.0D || height <= 0.0D) {
             return true;
         }
