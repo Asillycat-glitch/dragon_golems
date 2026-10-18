@@ -220,19 +220,23 @@ public class DragonDiveGoal extends Goal {
         //   结果是白等 LINEUP 超时 + 挨打。这一轮让给龙息/龙弹/音爆（它们不需要爬升）。
         //   骑手指令（按 R）例外：那是玩家明确要的，航线会被 ceilingMargin() 压平，照打。
         boolean room = this.dragon.isRiderOrderedDive() || this.dragon.diveRoomOk(target);
+        // ★ 自己头顶没有余量时也不抽俯冲（AI）：真机现场龙被压在天花板下
+        //   （maxFeet=81.55、脚在 83.87），俯冲仍被抽中 → 它按航线往天花板里爬十几秒。
+        //   骑手指令照样放行（玩家明确要的）。
+        boolean selfRoom = this.dragon.isRiderOrderedDive() || this.dragon.hasHeadroomFor(1.0D);
         if (!room && trace) {
             Dragon_golems.LOGGER.info("[dive] canUse=false: 竖直空间不足 room={} need={} target={}",
                     String.format("%.1f", this.dragon.headroomAbove(target)),
                     String.format("%.1f", this.dragon.diveMinRoom()),
                     target.getName().getString());
         }
-        boolean allowed = ok && room;
+        boolean allowed = ok && room && selfRoom;
         if (trace) {
-            Dragon_golems.LOGGER.info("[dive] canUse={} dist={} allowed={}..{} riderOrdered={} room={} target={}",
+            Dragon_golems.LOGGER.info("[dive] canUse={} dist={} allowed={}..{} riderOrdered={} room={} selfRoom={} target={}",
                     allowed, String.format("%.1f", dist),
                     String.format("%.1f", this.dragon.diveMinH()),
                     String.format("%.1f", this.dragon.diveMaxH()),
-                    this.dragon.isRiderOrderedDive(), room, target.getName().getString());
+                    this.dragon.isRiderOrderedDive(), room, selfRoom, target.getName().getString());
         }
         return allowed;
     }
@@ -273,6 +277,9 @@ public class DragonDiveGoal extends Goal {
     @Override
     public void start() {
         this.finished = false;
+        // 停滞看门狗复位（否则会拿上一轮的坐标直接判"卡住"）
+        this.stallTicks = 0;
+        this.lastDivePos = this.dragon.position();
         if (DragonDebug.RIDE) {
             Dragon_golems.LOGGER.info("[dive] start(): riderOrdered={} target={} pos={}",
                     this.dragon.isRiderOrderedDive(), this.dragon.getTarget(), this.dragon.position());
@@ -335,6 +342,12 @@ public class DragonDiveGoal extends Goal {
         if (this.dir == null) {
             this.dir = this.horizontalDir(this.dragon.getX(), this.dragon.getZ(), target.getX(), target.getZ());
         }
+        // ★ 停滞看门狗：入口在天花板外面时，它会在下面一直"往入口爬"。
+        //   位移 40 tick 内不到 1 格就放弃这一轮（冷却会被正常结算，不会卡成永远俯冲）。
+        if (this.stalledOut()) {
+            this.finish();
+            return;
+        }
         Vec3 entry = this.entryPoint(target);
         double speed = ENTRY_SPEED * this.speedFactor();
         this.dragon.setDiveVelocity(this.steer(entry, speed));
@@ -352,6 +365,23 @@ public class DragonDiveGoal extends Goal {
      * {@link #LOOKAHEAD_TICKS} tick 的提前量），跟上弧线靠的是几何本身，不需要分阶段换挡。
      */
     private void tickPass(@Nullable LivingEntity target) {
+        // ★ 追不上就放弃（真机现场）：
+        //   [dive] contactBox y=86.5..91.8 dragonY=88.8 s=1.1..19.5 damaged=false
+        //   [fly]  dy=+1.048 hoverT=88.55 ceilB=91.00 maxFeet=88.55 pos y=88.78
+        //   航线要它爬到 90+，但天花板在 91 —— 它上不去，于是用 1.0+ 的速度顶着天花板十几秒：
+        //   接触箱整段穿在结构里、一个目标都没碰到。竖直被顶住 = 这条航线在这里执行不了。
+        if (this.dragon.verticalCollision) {
+            if (DEBUG) {
+                Dragon_golems.LOGGER.info("[dive] 竖直被挡（头顶天花板/横梁）→ 放弃本轮 s={}",
+                        String.format("%.1f", this.passS));
+            }
+            this.finish();
+            return;
+        }
+        if (this.stalledOut()) {
+            this.finish();
+            return;
+        }
         double proj = this.projectOnCurve();
         this.passS = Mth.clamp(Math.max(this.passS, proj), -this.passBack(), this.passForward());
         double speed = this.speedAt(this.passS);
@@ -367,6 +397,38 @@ public class DragonDiveGoal extends Goal {
             this.finish();
         }
     }
+
+    /**
+     * 停滞看门狗：{@link #DIVE_STALL_TICKS} tick 内位移不到 {@link #DIVE_STALL_MIN} 格就算"卡住了"。
+     *
+     * <p>为什么需要它（真机）：俯冲航线可能要求爬到天花板外面，龙只能贴着天花板往上顶 ——
+     * 这时 {@code passS} 仍然会慢慢涨（它拿投影推进），单纯用 "s 到了" 或 "超时" 都救不了，
+     * 于是一轮俯冲能顶着墙耗十几秒。用<b>真实位移</b>判断才靠谱。
+     */
+    private boolean stalledOut() {
+        if (this.dragon.position().distanceTo(this.lastDivePos) >= DIVE_STALL_MIN) {
+            this.lastDivePos = this.dragon.position();
+            this.stallTicks = 0;
+            return false;
+        }
+        this.stallTicks++;
+        if (this.stallTicks < DIVE_STALL_TICKS) {
+            return false;
+        }
+        if (DEBUG) {
+            Dragon_golems.LOGGER.info("[dive] 位移停滞 {} tick 不足 {} 格 → 放弃本轮",
+                    DIVE_STALL_TICKS, DIVE_STALL_MIN);
+        }
+        this.stallTicks = 0;
+        return true;
+    }
+
+    /** 停滞判定：连续多少 tick 位移不足。 */
+    private static final int DIVE_STALL_TICKS = 40;
+    /** 停滞判定：位移门槛（格）。 */
+    private static final double DIVE_STALL_MIN = 1.0D;
+    private int stallTicks;
+    private Vec3 lastDivePos = Vec3.ZERO;
 
     /** 龙在航线上投影出来的带符号距离（负 = 还没到目标）。 */
     private double projectOnCurve() {
