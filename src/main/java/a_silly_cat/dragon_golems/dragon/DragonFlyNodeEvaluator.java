@@ -63,8 +63,11 @@ public class DragonFlyNodeEvaluator extends FlyNodeEvaluator {
      * 现在采样到 {@code 1.0 × bbHeight}（身体顶端），并且去掉那个 -0.15。
      */
     private boolean bodyFits(BlockGetter level, int x, int y, int z, Mob mob) {
-        double half = Math.min(mob.getBbWidth(), MAX_SAMPLE) * 0.5D - EDGE;
-        double height = Math.min(mob.getBbHeight(), MAX_SAMPLE);
+        // ★ 除了身体尺寸，再向外放宽 pathBodyMargin：让路线自己离墙/梁远一点
+        //   （真机里"贴着结构蹭过去然后嵌进去"多数是因为按精确尺寸判成'刚好塞得下'）。
+        double margin = DragonGolemConfig.pathBodyMargin();
+        double half = Math.min(mob.getBbWidth(), MAX_SAMPLE) * 0.5D + margin - EDGE;
+        double height = Math.min(mob.getBbHeight(), MAX_SAMPLE) + margin;
         if (half <= 0.0D || height <= 0.0D) {
             return true;
         }

@@ -7,10 +7,13 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.level.PathNavigationRegion;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.pathfinder.Node;
 import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.level.pathfinder.PathFinder;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import org.jetbrains.annotations.Nullable;
 
 /**
@@ -78,6 +81,13 @@ public final class DragonPathFollower {
     private int failTicks;
     /** 当前目标处算出来的悬停高度（脚部 Y），只在重算路线时更新一次。 */
     private double steerGoalY;
+    /** 上一 tick 拉直时一次跳过了几个节点（诊断用；0 = 没拉直）。 */
+    private int smoothedNodes;
+
+    /** 上一 tick 路线拉直跳过的节点数（诊断用）。 */
+    public int smoothedNodes() {
+        return this.smoothedNodes;
+    }
 
     public DragonPathFollower(DragonGolemEntity dragon) {
         this.dragon = dragon;
@@ -252,7 +262,7 @@ public final class DragonPathFollower {
     }
 
     /**
-     * 推进到"还没走到的第一个节点"，把它作为转向点。
+     * 推进到"还没走到的第一个节点"，把它作为转向点；并做<b>路线拉直</b>。
      *
      * <p><b>★ 转向点带上航路点自己的 Y。</b>这是"高度控制与寻路统合"的另一半：
      * 以前这里写死 {@code goal.y}（= 目标的悬停高度），航线的竖向信息被整个丢掉，
@@ -260,6 +270,12 @@ public final class DragonPathFollower {
      * 龙照样按自己的悬停高度平飞，撞了墙才靠脱困乱挤。
      * 现在 Y 一起给出去，由 {@link DragonGolemEntity#flightVerticalTarget} 决定要不要跟
      * （死区 {@code pathfinding.verticalDeadband} 之外的才跟，避免巡航时一直点头）。
+     *
+     * <p><b>★ 路线拉直（string-pulling）：</b>A* 的节点是逐格八叉/二十六邻域搜出来的，
+     * 天然是锯齿；照着"下一个节点"飞会一直小幅修正方向（抖），而且容易贴着转角蹭过去。
+     * 现在从当前节点往后看 {@code pathfinding.smoothingLookahead} 个节点，
+     * 取"直线可见（方块射线不被挡）的最远那个"当转向点 —— 这就是经典的路径拉直，
+     * 路线更直、转向更少、离墙也更远。被挡就立刻停（后面的更不可能可见）。
      */
     private void advanceAlongPath(Vec3 goal) {
         if (this.path == null) {
@@ -277,13 +293,19 @@ public final class DragonPathFollower {
             double dy = node.y + 0.5D - this.dragon.getY();
             double dz = node.z + 0.5D - this.dragon.getZ();
             if (dx * dx + dy * dy + dz * dz > reach * reach) {
+                break;
+            }
+            this.path.advance();
+        }
+        if (!this.path.isDone()) {
+            Node aim = this.smoothedAim();
+            if (aim != null) {
                 // 节点的 Y 就是"脚能到的那个方块"（评估器也是按脚底采样的），不给 +0.5。
                 // ★ steerOnRoute = true：竖直方向跟着这个节点走（3D 跟随），不再由悬停逻辑接管。
-                this.steerPoint = new Vec3(node.x + 0.5D, node.y, node.z + 0.5D);
+                this.steerPoint = new Vec3(aim.x + 0.5D, aim.y, aim.z + 0.5D);
                 this.steerOnRoute = true;
                 return;
             }
-            this.path.advance();
         }
         // 路线走完：能到达就直奔目标；是"截断路线"（canReach == false）就停在最后一个节点 ——
         // 那个节点是 A* 能找到的、离目标最近的可达点，到了就悬停等着（goal 会按 noRoute() 换目标），
@@ -298,6 +320,63 @@ public final class DragonPathFollower {
                 ? new Vec3(end.x + 0.5D, end.y, end.z + 0.5D)
                 : goal;
         this.steerOnRoute = false;
+    }
+
+    /**
+     * 路线拉直：从当前节点往后找"直线可见的最远节点"，并把中间的节点直接跳过。
+     *
+     * <p>可见性用<b>方块射线</b>（{@code level.clip}，不含液体）判断 —— 和
+     * {@link DragonGolemEntity#hasClearShotTo} 是同一套判据。样本上限
+     * {@code pathfinding.smoothingLookahead}（0 = 关闭拉直）。
+     *
+     * @return 拉直后的转向节点；关闭拉直或没有更远的可见节点时返回当前节点
+     */
+    @Nullable
+    private Node smoothedAim() {
+        int lookahead = DragonGolemConfig.pathSmoothingLookahead();
+        Node current = this.path.getNextNode();
+        if (current == null || !DragonGolemConfig.pathEnabled()) {
+            return current;
+        }
+        if (lookahead <= 0) {
+            return current;
+        }
+        int start = this.path.getNextNodeIndex();
+        int limit = Math.min(start + lookahead, this.path.getNodeCount() - 1);
+        Node best = current;
+        int bestIndex = start;
+        for (int i = start + 1; i <= limit; i++) {
+            Node candidate = this.path.getNode(i);
+            if (candidate == null) {
+                break;
+            }
+            if (!this.clearLineTo(candidate)) {
+                break;
+            }
+            best = candidate;
+            bestIndex = i;
+        }
+        if (bestIndex > start) {
+            // 把中间的节点标成已走：下一 tick 不用再从旧节点开始扫
+            this.path.setNextNodeIndex(bestIndex);
+            this.smoothedNodes = bestIndex - start;
+        } else {
+            this.smoothedNodes = 0;
+        }
+        return best;
+    }
+
+    /** 从龙的当前位置到某个节点，直线是否不被方块挡住。 */
+    private boolean clearLineTo(Node node) {
+        Vec3 from = new Vec3(this.dragon.getX(), this.dragon.getY() + this.dragon.getBbHeight() * 0.5D, this.dragon.getZ());
+        Vec3 to = new Vec3(node.x + 0.5D, node.y + this.dragon.getBbHeight() * 0.5D, node.z + 0.5D);
+        try {
+            BlockHitResult hit = this.dragon.level().clip(new ClipContext(from, to,
+                    ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, this.dragon));
+            return hit.getType() == HitResult.Type.MISS;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** 切节点的判定半径：和 {@code maxDistanceToWaypoint} 一个思路，按体型放宽。 */

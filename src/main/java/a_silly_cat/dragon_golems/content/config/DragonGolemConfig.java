@@ -234,6 +234,33 @@ public final class DragonGolemConfig {
     }
 
     /**
+     * <b>路线拉直（string-pulling）的前瞻节点数。</b>默认 6，0 = 关闭。
+     *
+     * <p>A* 的节点是逐格搜出来的锯齿，照着"下一个节点"飞会一直小幅修正方向（抖）、
+     * 而且容易贴着转角蹭过去。开启后每 tick 从当前节点往后看 N 个节点，
+     * 取"直线（方块射线）不被挡的最远那个"当转向点 —— 路线更直、转向更少、离墙更远。
+     *
+     * <p>调大 = 更直更顺（但更依赖直线可见性判断）；调小 = 更贴原始路线。
+     */
+    public static int pathSmoothingLookahead() {
+        return (int) Mth.clamp(num(COMMON.pathSmoothingLookahead, 6.0D), 0, 24);
+    }
+
+    /**
+     * 寻路评估器给身体留的额外余量（格）。默认 0.35。
+     *
+     * <p>{@code DragonFlyNodeEvaluator} 原本按身体盒子<b>精确</b>采样（还内缩了 0.2），
+     * 于是"刚好塞得下"的节点会被判成可通行，龙照着飞就会擦着墙/梁过 ——
+     * 真机里那些"贴着结构蹭过去然后嵌进去"多数是这么来的。
+     * 现在把采样盒子每边向外放宽这个值（上下也放宽），让路线自己离墙远一点。
+     *
+     * <p>调大 = 更安全但更容易"过不去"（狭窄处会绕远）；调小 = 更贴边。
+     */
+    public static double pathBodyMargin() {
+        return Mth.clamp(num(COMMON.pathBodyMargin, 0.35D), 0.0D, 2.0D);
+    }
+
+    /**
      * 航线高度与悬停高度的"防微抖死区"（格）。默认 1。
      *
      * <h2>竖直方向现在归寻路</h2>
@@ -485,6 +512,8 @@ public final class DragonGolemConfig {
         public final ForgeConfigSpec.BooleanValue pathBodyClearance;
         public final ForgeConfigSpec.DoubleValue pathGiveUpTicks;
         public final ForgeConfigSpec.DoubleValue pathVerticalDeadband;
+        public final ForgeConfigSpec.DoubleValue pathSmoothingLookahead;
+        public final ForgeConfigSpec.DoubleValue pathBodyMargin;
 
         public final ForgeConfigSpec.DoubleValue turnRateBase;
         public final ForgeConfigSpec.DoubleValue riderTurnRate;
@@ -584,6 +613,16 @@ public final class DragonGolemConfig {
                             "竖直方向现在归寻路：在航线上时竖直目标 = 航路点 Y（跟着路线爬升/下降），走完路线才回悬停高度",
                             "这个死区只吸掉『两者几乎相同』时的来回微抖；调大更像定高巡航，调小更贴航线起伏")
                     .defineInRange("verticalDeadband", 1.0D, 0.1D, 10.0D);
+            this.pathSmoothingLookahead = builder
+                    .comment("路线拉直（string-pulling）前瞻节点数：0 = 关闭",
+                            "每 tick 从当前节点往后看 N 个，取直线（方块射线）不被挡的最远节点当转向点",
+                            "路线更直、转向更少、离墙更远；调大更顺但更依赖可见性判断")
+                    .defineInRange("smoothingLookahead", 6.0D, 0.0D, 24.0D);
+            this.pathBodyMargin = builder
+                    .comment("寻路评估器给身体留的额外余量（格）",
+                            "采样盒子每边向外放宽这个值，让路线自己离墙/梁远一点（0 = 精确贴边）",
+                            "调大更安全但狭窄处会绕远，调小更贴边")
+                    .defineInRange("bodyMargin", 0.35D, 0.0D, 2.0D);
             builder.pop();
 
             builder.comment("旋转（转向速度与压弯）").push("flight");

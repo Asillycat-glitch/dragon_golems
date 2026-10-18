@@ -329,6 +329,15 @@ public boolean dealSkillDamage(LivingEntity target, @Nullable DamageSource sourc
 | `pathfinding.repathTicks` | 20 | 每隔多少 tick 重算路线（目标移动超过 2 格会立刻重算） |
 | `pathfinding.bodyClearance` | true | 寻路时是否考虑龙的体型（见上） |
 | `pathfinding.giveUpTicks` | 40 | 连续算不出路线这么久就认定目标不可达 |
+| **`pathfinding.smoothingLookahead`** | **6** | **路线拉直**：每 tick 从当前节点往后看 N 个，取"直线（方块射线）不被挡的最远节点"当转向点；0 = 关闭 |
+| **`pathfinding.bodyMargin`** | **0.35** | 评估器给身体额外留的余量（格）：采样盒子每边向外放宽，让路线自己离墙/梁远一点 |
+
+### 路线拉直（string-pulling）
+
+A\* 的节点是逐格搜出来的锯齿，照着"下一个节点"飞会**一直小幅修正方向**（抖），而且容易贴着转角蹭过去。
+现在每 tick 从当前节点往后看 `smoothingLookahead` 个节点，取**直线可见**的最远那个当转向点，
+中间的节点直接标成已走（`[fly] skip=` 就是这一 tick 跳过了几个）。
+这是经典路径拉直：**路线更直、转向更少、离墙更远**，代价是每 tick 最多 N 次方块射线（很便宜）。
 
 ## 九、旋转（转向速度与压弯）
 
