@@ -337,6 +337,54 @@ public final class DragonFlightAssist {
         dragon.noPhysics = this.freeFlight || !hasRoomFor(dragon, dragon.position());
     }
 
+    /**
+     * <b>身体正与方块重合时的脱出速度</b>（"一直尝试突破天花板"的修法）。
+     *
+     * <h2>为什么必须有这条</h2>
+     * 运行时真机日志（{@code [fly]} 每 2 秒一行）：
+     * <pre>
+     * stuck=16  room=false embedded=true noPhysics=true dy=+0.093 hColl=true
+     * stuck=100 room=false embedded=true noPhysics=true dy=+1.047   ← y 从 89.9 一路升到 109.3
+     * </pre>
+     * {@code embedded=true} 表示身体和方块重合，于是"物理安全"那条把 {@code noPhysics} 打开
+     * （不打开的话碰撞解算会每 tick 把实体弹飞十几格）。但 {@code noPhysics} 同时也让方块变透明 ——
+     * 而当时<b>没有任何东西接管速度</b>：脱困（{@code isRescuing}）在战斗中已经被禁用，
+     * 于是 goal 的速度照旧生效，竖直目标又在头顶（悬停高度）→ 它就从天花板里穿出去了。
+     *
+     * <p>所以：<b>no-clip 只是物理安全，不是飞行能力</b>。重合期间竖直方向一律由这里给：
+     * <ol>
+     *   <li><b>先试往下</b>（脚下面是地面，最安全；而"往上"正是顶天花板的原因）；</li>
+     *   <li>往下不行就在扇面里找真正塞得下的方向（{@link #findOpenDirection} 内部逐个探
+     *       {@code hasRoomFor}，所以不会挑"头上那块天花板"）；</li>
+     *   <li>都不行就硬往下 —— 比如被压在天花板里时，往上只会更糟。</li>
+     * </ol>
+     *
+     * @return 只保证 <b>Y 分量</b>有意义；水平分量由调用方决定要不要用
+     */
+    public Vec3 embeddedEscape(DragonGolemEntity dragon) {
+        // ① 往下：先试浅一点，再试深一点
+        for (double drop : new double[]{1.5D, 3.0D}) {
+            if (hasRoomFor(dragon, dragon.position().add(0.0D, -drop, 0.0D))) {
+                return new Vec3(0.0D, -ESCAPE_DOWN_SPEED, 0.0D);
+            }
+        }
+        // ② 扇面：找真正塞得下的方向（内部按 hasRoomFor 逐个探）
+        Vec3 open = findOpenDirection(dragon);
+        if (open != null) {
+            // findOpenDirection 的扇面顺序是"先上"，这里把向上的分量压掉：
+            // 重合状态下的向上移动就是"穿天花板"，不再给。
+            double vy = Math.min(0.0D, open.y * ESCAPE_SPEED);
+            return new Vec3(open.x * ESCAPE_SPEED, vy, open.z * ESCAPE_SPEED);
+        }
+        // ③ 都不行：硬往下
+        return new Vec3(0.0D, -ESCAPE_DOWN_SPEED, 0.0D);
+    }
+
+    /** 重合脱出时的水平速度（格/tick）。 */
+    private static final double ESCAPE_SPEED = 0.25D;
+    /** 重合脱出时的下降速度（格/tick）。 */
+    private static final double ESCAPE_DOWN_SPEED = 0.2D;
+
     /** 脱困用的速度：朝"最近的开阔处"飞。 */
     @Nullable
     public Vec3 rescueVelocity(DragonGolemEntity dragon) {
