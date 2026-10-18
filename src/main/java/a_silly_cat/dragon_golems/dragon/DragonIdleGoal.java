@@ -288,11 +288,12 @@ public class DragonIdleGoal extends Goal {
             vz = vz / horizontal * horizontalMax;
         }
 
-        // ---- 高度：地表高度 + 悬停高度 + 呼吸，但被头顶天花板夹住 ----
-        // 用 hoverTargetY() 而不是自己拼：它会 min(世界地表+悬停高度, 天花板下一格)。
+        // ---- 高度：地表高度 + 悬停高度 + 呼吸，但被头顶天花板按身体高度夹住 ----
+        // 用 hoverTargetY() 而不是自己拼：它会 min(局部地面+悬停高度, 天花板 − 身体高度)。
         // 自己拼的话，洞里的龙会朝"世界地表 + 10"一直爬（实测 surface=70 / y=-6 → 目标 80），
         // 表现为无限向上飞直到被回位传送拽回来。
-        double wantY = this.dragon.hoverTargetY() + this.bob();
+        // ★ 高度与寻路统合：航路点明显更高/更低（翻梁、爬出低房间）时改跟航线。
+        double wantY = this.dragon.flightVerticalTarget(steer) + this.bob();
         double vy = Mth.clamp((wantY - this.dragon.getY()) * VERTICAL_GAIN,
                 -VERTICAL_MAX * range, VERTICAL_MAX * range);
         // 蹭到方块就抬一点，免得贴着树、墙原地磨

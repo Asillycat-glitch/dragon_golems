@@ -549,7 +549,45 @@ edge = groundHeight(x, z) + entryAlt()        // entryAlt() = max(12, hoverHeigh
 |---|---|---|
 | `skills.targetClearShotBonus` | 40 | "射界通畅"值多少分；**0 = 退回纯距离优先（本家行为）**，用来 A/B |
 
-## 十五、回退清单（哪条不想要就关哪个）
+## 十五、高度控制与寻路统合（"机身穿进天花板"）
+
+真机截图：龙整条机身埋在天花板里。根因很直接 —— **天花板夹取用的是"脚部"的 Y，完全没扣身体高度**：
+
+```java
+// 旧：hoverTargetY = min(局部地面 + 悬停高度, hoverCeilingY())
+//     hoverCeilingY() 只返回"天花板方块 − 1"，那是"头能碰到的高度"，不是"脚能站的高度"
+```
+
+判定箱是 `bbHeight`（1 倍 **2.2** 格、泰坦 **8.8** 格），于是：
+
+| 体型 | 旧上限（脚） | 身体顶部实际到达 | 穿进天花板 |
+|---|---|---|---|
+| 1 倍 | 天花板 − 1 | 天花板 + 1.2 | **1.2 格** |
+| 泰坦 4 倍 | 天花板 − 1 | 天花板 + 7.8 | **7.8 格** |
+
+正确的关系是 `脚 + 身体高度 ≤ 天花板方块下沿`。
+
+### 统合后的三条规则
+
+1. **悬停上限扣身体高度**（`maxFeetYUnderCeiling`）：
+   `脚上限 = 天花板方块 Y − bbHeight − flight.ceilingClearance(0.25)`。
+   房间比龙还矮时（本来就塞不进去），贴着 `局部地面 + 0.5` 悬停，不沉进地板。
+2. **寻路的终点用"目的地自己的悬停高度"**（`hoverTargetYAt(x, z)`）：
+   以前 `DragonPathFollower` 拿"龙的当前 Y"当终点高度，A* 只能搜出一条贴着当前高度的走廊；
+   现在按<b>目的地</b>的地面与天花板算高度，路线会自然地从高处绕、或爬出低房间。
+3. **航路的 Y 不再丢掉**（`flightVerticalTarget` + `advanceAlongPath` 给航路点自己的 Y）：
+   竖直目标 = 悬停高度，**除非航路点高出/低于它超过 `pathfinding.verticalDeadband`（默认 3 格）** ——
+   那时才跟着航线爬升/下降。死区是为了不破坏正常巡航的上下呼吸；
+   `holdHover()`（前摇 / 收尾）仍是纯悬停，不会被航线带跑。
+
+### 可调项
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `flight.ceilingClearance` | 0.25 | 天花板与身体之间的余量（模型翅膀比判定箱略高，别设太小） |
+| `pathfinding.verticalDeadband` | 3.0 | 航线高度与悬停高度的死区；调小 = 更积极跟航线，调大 = 更坚持自己的高度 |
+
+## 十六、回退清单（哪条不想要就关哪个）
 
 | 不想要的效果 | 怎么办 |
 |---|---|
@@ -572,4 +610,6 @@ edge = groundHeight(x, z) + entryAlt()        // entryAlt() = max(12, hoverHeigh
 | 室内也不想打俯冲（纯远程） | `skills.diveRoomCheck = true`（默认）+ 把 `skills.nativeSkillGoals` 关着；想反过来回到旧行为就设 `skills.diveRoomCheck = false` |
 | 战斗中也要自动穿墙（旧行为） | `ghost.duringCombat = true` |
 | 索敌退回纯距离优先（本家行为） | `skills.targetClearShotBonus = 0` |
+| 天花板余量太大（贴得离顶太远） | `flight.ceilingClearance` 调小（0 = 头顶正好贴天花板） |
+| 不想让航线改变飞行高度 | `pathfinding.verticalDeadband` 调大（比如 20 = 基本只认悬停高度） |
 

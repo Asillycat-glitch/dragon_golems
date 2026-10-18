@@ -182,6 +182,11 @@ config/l2_configs/dragon_golems-common.toml
    时穿墙也为 true），且索敌是"就近优先"。现在射界改用**真实方块射线**（`hasClearShotTo`，
    替换 4 处判定），索敌换成 `DragonTargetGoal`：`−距离 + 射界通畅(40) + 攻击主人(30) + 当前目标(25)`，
    "该不该打"仍完全复用本家规则（`skills.targetClearShotBonus` 可回退成纯距离）。
+14. **高度控制与寻路统合（机身穿天花板）**——悬停上限原来只返回"天花板 − 1"，**没扣身体高度**：
+   1 倍体型头顶穿进 1.2 格、泰坦穿 7.8 格。现在 `脚上限 = 天花板 − bbHeight − ceilingClearance`；
+   寻路终点改用**目的地自己的悬停高度**（`hoverTargetYAt`，A* 不再只搜"当前高度层"）；
+   航路的 Y 也不再丢掉 —— 航路点明显高于/低于悬停高度（`pathfinding.verticalDeadband`）时
+   跟着航线爬升/下降（`flight.ceilingClearance` 可调余量）。
 
 ## 移植说明
 

@@ -233,6 +233,19 @@ public final class DragonGolemConfig {
         return Math.max(10, (int) num(COMMON.pathGiveUpTicks, 40.0D));
     }
 
+    /**
+     * 航线高度与悬停高度的"死区"（格）。默认 3。
+     *
+     * <p>高度控制与寻路统合之后，龙会<b>在航线明显更高/更低时跟着航线爬升/下降</b>
+     * （例如翻过一道梁、爬出低房间）。但正常巡航时航路点本来就贴着悬停高度上下浮动，
+     * 每次都去追会让它一直点头。所以只有差值超过这个死区才跟航线。
+     *
+     * <p>调大 = 更"坚持自己的高度"（更容易被矮门卡住）；调小 = 更贴航线（爬升下降更积极）。
+     */
+    public static double pathVerticalDeadband() {
+        return Math.max(0.5D, num(COMMON.pathVerticalDeadband, 3.0D));
+    }
+
     // ---- 旋转（转向速度与压弯）----
 
     /** 基础转向速度（度/tick）：慢速时的下限，速度上来后按 {@code turnRadius} 一起放大。 */
@@ -268,6 +281,17 @@ public final class DragonGolemConfig {
     /** 每 1° 转速折成多少度侧倾（转弯越急压得越狠）。 */
     public static float rollPerDegree() {
         return (float) num(COMMON.rollPerDegree, 1.5D);
+    }
+
+    /**
+     * 头顶天花板与身体之间留多少余量（格）。默认 0.25。
+     *
+     * <p>悬停上限 = {@code 天花板方块 Y − 身体高度 − 这个余量}。原来只减了"一格"，
+     * 完全没扣身体高度，于是 1 倍体型头顶穿进天花板 1.2 格、泰坦穿 7.8 格（真机截图确认）。
+     * 模型还有翅膀之类高出判定箱的部分，所以留一点余量更稳。
+     */
+    public static double ceilingClearance() {
+        return Math.max(0.0D, num(COMMON.ceilingClearance, 0.25D));
     }
 
     /**
@@ -419,6 +443,7 @@ public final class DragonGolemConfig {
         public final ForgeConfigSpec.DoubleValue pathRepathTicks;
         public final ForgeConfigSpec.BooleanValue pathBodyClearance;
         public final ForgeConfigSpec.DoubleValue pathGiveUpTicks;
+        public final ForgeConfigSpec.DoubleValue pathVerticalDeadband;
 
         public final ForgeConfigSpec.DoubleValue turnRateBase;
         public final ForgeConfigSpec.DoubleValue riderTurnRate;
@@ -427,6 +452,7 @@ public final class DragonGolemConfig {
         public final ForgeConfigSpec.DoubleValue maxRoll;
         public final ForgeConfigSpec.DoubleValue rollPerDegree;
         public final ForgeConfigSpec.DoubleValue trajectoryLerp;
+        public final ForgeConfigSpec.DoubleValue ceilingClearance;
 
         public final ForgeConfigSpec.BooleanValue flowingFluidIsFloor;
         public final ForgeConfigSpec.BooleanValue pushedByFluid;
@@ -507,6 +533,10 @@ public final class DragonGolemConfig {
             this.pathGiveUpTicks = builder
                     .comment("连续算不出路线这么多 tick 就认定目标不可达（游走 goal 会换一个点）")
                     .defineInRange("giveUpTicks", 40.0D, 10.0D, 400.0D);
+            this.pathVerticalDeadband = builder
+                    .comment("航线高度与悬停高度的死区（格）：超过它才跟着航线爬升/下降",
+                            "调大 = 更坚持自己的高度（容易被矮门卡住）；调小 = 更贴航线（翻梁/爬出低房间更积极）")
+                    .defineInRange("verticalDeadband", 3.0D, 0.5D, 20.0D);
             builder.pop();
 
             builder.comment("旋转（转向速度与压弯）").push("flight");
@@ -533,6 +563,11 @@ public final class DragonGolemConfig {
                     .comment("巡航轨迹的平滑系数：每 tick 朝期望速度插值多少",
                             "1.0 = 不平滑（到点瞬间反向 → 顿一下再往回蹭）；0.25 ≈ 十几 tick 完成掉头")
                     .defineInRange("trajectoryLerp", 0.25D, 0.05D, 1.0D);
+            this.ceilingClearance = builder
+                    .comment("头顶天花板与身体之间留多少余量（格）",
+                            "悬停上限 = 天花板方块 Y − 身体高度 − 这个值；调大 = 更贴地、更安全，调小 = 更高",
+                            "0.25 是默认；模型翅膀比判定箱高出一点，别设太小")
+                    .defineInRange("ceilingClearance", 0.25D, 0.0D, 2.0D);
             builder.pop();
 
             builder.comment("悬停参照系（支撑面 / 液体）").push("hover");

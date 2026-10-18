@@ -3389,13 +3389,79 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 玩家按下降却算出"要往上抬 49 格"。基准换成局部地面之后那个夹取自动就对了。
      */
     public double hoverTargetY() {
-        double target = this.localFloorY() + this.hoverHeight();
-        double ceiling = this.hoverCeilingY();
-        return ceiling == NO_CEILING ? target : Math.min(target, ceiling);
+        double floor = this.localFloorY();
+        return this.hoverTargetYAtBlocks(this.blockPosition().getX(), this.blockPosition().getZ(), floor);
+    }
+
+    /**
+     * <b>任意水平坐标</b>处的悬停目标（脚部 Y）。给寻路用：航线终点也要落在"那儿合理的高度"上。
+     *
+     * <p>和 {@link #hoverTargetY()} 同一套算法（局部地面 + 悬停高度，再被天花板按<b>身体高度</b>夹住），
+     * 只是位置可以不是龙自己脚下。
+     */
+    public double hoverTargetYAt(double x, double z) {
+        int bx = Mth.floor(x);
+        int bz = Mth.floor(z);
+        double floor = this.scanFloor(bx, bz, Mth.floor(this.getY())).y();
+        return this.hoverTargetYAtBlocks(bx, bz, floor);
+    }
+
+    /** {@link #hoverTargetY()} / {@link #hoverTargetYAt} 的公共部分（已给定局部地面）。 */
+    private double hoverTargetYAtBlocks(int x, int z, double floor) {
+        double target = floor + this.hoverHeight();
+        double limit = this.maxFeetYUnderCeiling(x, z, this.getY() + this.getBbHeight() + 0.5D);
+        if (limit != NO_CEILING) {
+            target = Math.min(target, limit);
+        }
+        // 房间比龙还矮：贴着"能塞下的最低高度"，绝不沉到地板以下
+        return Math.max(target, floor + MIN_HOVER_CLEARANCE);
+    }
+
+    /**
+     * 头顶天花板允许的<b>最高脚部 Y</b>：已经扣掉<b>整个身体高度</b>与 {@code flight.ceilingClearance}。
+     *
+     * <h2>为什么必须扣身体高度（这是"机身穿进天花板"的根因）</h2>
+     * 原来这里用的是 {@code hoverCeilingY()} —— 它只返回"天花板方块下方那一格"的 Y，
+     * 那是<b>头能碰到的高度</b>，不是<b>脚能站的高度</b>。判定箱是 {@code bbHeight}（1 倍 2.2 格、
+     * 泰坦 8.8 格），于是：
+     * <ul>
+     *   <li>1 倍体型：脚被夹到"天花板 − 1"，头顶超出 1.2 格；</li>
+     *   <li>泰坦：头顶超出 7.8 格 —— 整个机身埋在天花板里（真机截图确认）。</li>
+     * </ul>
+     * 正确的关系是 {@code 脚 + 身体高度 ≤ 天花板方块下沿}。
+     */
+    public double maxFeetYUnderCeiling(int x, int z, double fromY) {
+        double ceilingBlock = this.ceilingBlockYAt(x, z, fromY);
+        if (ceilingBlock == NO_CEILING) {
+            return NO_CEILING;
+        }
+        return ceilingBlock - this.getBbHeight() - DragonGolemConfig.ceilingClearance();
+    }
+
+    /**
+     * 统一的竖直目标：<b>默认悬停高度</b>；当航路点明显更高/更低时改跟航线。
+     *
+     * <p>这一条就是"高度控制与寻路统合"的核心：以前两边各说各话 ——
+     * 悬停只管"脚下地面 + 悬停高度（被天花板夹）"，寻路只管水平，<b>航线里那个 Y 被整个丢掉</b>。
+     * 于是航线要它翻过一道梁、爬出低房间时，它仍然按悬停高度平飞，撞了墙才靠脱困乱挤。
+     * 现在航线的 Y 也参与决策，但有 {@code pathfinding.verticalDeadband} 的死区：
+     * 只在航线明显高于/低于悬停高度时才跟，正常巡航的上下呼吸不受影响。
+     *
+     * @param steerPoint 当前航路点（可为 null = 没有路线，纯悬停）
+     */
+    public double flightVerticalTarget(@Nullable Vec3 steerPoint) {
+        double hover = this.hoverTargetY();
+        if (steerPoint == null) {
+            return hover;
+        }
+        double deadband = DragonGolemConfig.pathVerticalDeadband();
+        return Math.abs(steerPoint.y - hover) > deadband ? steerPoint.y : hover;
     }
 
     /** {@link #hoverTargetY()} 里"没找到天花板"的哨兵值；也是 {@link #ceilingYAt} 的返回值。 */
     public static final double NO_CEILING = Double.MAX_VALUE;
+    /** 房间比龙还矮时，脚至少要离局部地面这么高（不许沉进地板）。 */
+    private static final double MIN_HOVER_CLEARANCE = 0.5D;
     /** 往上找天花板时最多扫多少格（超过就当作开阔地，避免在高空做长扫描）。 */
     private static final int CEILING_SCAN = 32;
     /** 俯冲最低竖直空间的基础值（格），再按体型加 {@link #DIVE_MODEL_DROP}。 */
@@ -3596,20 +3662,23 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * <p>用 {@code getCollisionShape().isEmpty()} 判断"挡不挡路"，所以草、雪层、藤蔓
      * 这些没有碰撞箱的方块不算天花板 —— 和 {@code DragonFlightAssist.hasRoomFor} 是同一套判据。
      */
-    private double hoverCeilingY() {
-        return this.ceilingYAt(this.blockPosition().getX(), this.blockPosition().getZ(),
-                this.getY() + this.getBbHeight() + 0.5D);
-    }
-
     /**
-     * <b>任意水平坐标</b>处、{@code fromY} 之上的第一层挡路方块的下沿 Y
-     * （正上方 {@link #CEILING_SCAN} 格内全是空气就返回 {@link #NO_CEILING}）。
+     * 头顶第一层挡路方块的下沿 Y（再往下留一格余量）；正上方 {@link #CEILING_SCAN} 格内
+     * 全是空气就返回 {@link #NO_CEILING}。
      *
-     * <p>为什么需要"任意坐标"：俯冲的航线端点离龙有十几到几十格（泰坦 64 格），
-     * 用龙脚下的天花板去夹那条航线是错的 —— 必须按<b>航线端点所在位置</b>扫。
-     * 这也是"龙在 40 格天花板的房间里往天花板外爬着俯冲"的直接修法（见 {@code DragonDiveGoal.curvePoint}）。
+     * <p>用 {@code getCollisionShape().isEmpty()} 判断"挡不挡路"，所以草、雪层、藤蔓
+     * 这些没有碰撞箱的方块不算天花板 —— 和 {@code DragonFlightAssist.hasRoomFor} 是同一套判据。
+     *
+     * <p><b>注意这是"头能碰到的高度"，不是"脚能站的最高高度"</b>：
+     * 要后者请用 {@link #maxFeetYUnderCeiling}（它扣掉了身体高度）。
      */
     public double ceilingYAt(int x, int z, double fromY) {
+        double block = this.ceilingBlockYAt(x, z, fromY);
+        return block == NO_CEILING ? NO_CEILING : block - 1.0D;
+    }
+
+    /** 头顶第一层挡路方块<b>本身的 Y</b>（不是它下方那格）；扫不到返回 {@link #NO_CEILING}。 */
+    public double ceilingBlockYAt(int x, int z, double fromY) {
         Level level = this.level();
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
         for (int i = 0; i < CEILING_SCAN; i++) {
@@ -3619,8 +3688,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             }
             cursor.set(x, y, z);
             if (!level.getBlockState(cursor).getCollisionShape(level, cursor).isEmpty()) {
-                // 目标 = 障碍下沿再减一格（留出身体高度），但这个值会再由 hoverTargetY 取 min
-                return y - 1.0D;
+                return y;
             }
         }
         return NO_CEILING;

@@ -332,10 +332,17 @@ public class DragonSonicGoal extends Goal {
                 DragonGolemConfig.trajectoryLerp());
     }
 
-    /** 维持离地高度的竖直速度（上限跟着速度倍率放大，和远程/待机一致）。 */
+    /**
+     * 维持离地高度的竖直速度（上限跟着速度倍率放大，和远程/待机一致）。
+     *
+     * <p>★ 高度与寻路统合：航路点明显更高/更低时跟着航线爬/降（见
+     * {@link DragonGolemEntity#flightVerticalTarget}），平时仍是悬停高度。
+     */
     private double hoverDelta() {
+        Vec3 steer = this.dragon.pathFollower().steerPoint();
+        double wantY = this.dragon.flightVerticalTarget(steer);
         double cap = 0.18D * this.dragon.speedScale();
-        return Mth.clamp((this.dragon.hoverTargetY() - this.dragon.getY()) * 0.10D, -cap, cap);
+        return Mth.clamp((wantY - this.dragon.getY()) * 0.10D, -cap, cap);
     }
 
     private void enter(Phase next) {

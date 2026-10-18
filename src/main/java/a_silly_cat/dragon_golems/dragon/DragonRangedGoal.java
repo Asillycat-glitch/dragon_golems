@@ -412,9 +412,17 @@ public class DragonRangedGoal extends Goal {
                 DragonGolemConfig.trajectoryLerp());
     }
 
-    /** 维持离地高度的竖直速度（和待机/俯冲拉升同一套写法）。上限跟着速度倍率放大，否则高速时爬不动。 */
+    /**
+     * 维持离地高度的竖直速度（和待机/俯冲拉升同一套写法）。上限跟着速度倍率放大，否则高速时爬不动。
+     *
+     * <p>★ 高度与寻路统合：目标高度不再死认悬停高度，而是问
+     * {@link DragonGolemEntity#flightVerticalTarget} ——
+     * 当航路点明显更高/更低（翻梁、爬出低房间）时跟着航线爬/降，平时仍是悬停高度。
+     * {@code holdHover()}（前摇/收尾）保持纯悬停，不被航线带跑。
+     */
     private double hoverDelta() {
-        double wantY = this.dragon.hoverTargetY();
+        Vec3 steer = this.dragon.pathFollower().steerPoint();
+        double wantY = this.dragon.flightVerticalTarget(steer);
         double cap = 0.18D * this.dragon.speedScale();
         return Mth.clamp((wantY - this.dragon.getY()) * 0.10D, -cap, cap);
     }

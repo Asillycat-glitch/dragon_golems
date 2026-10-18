@@ -67,6 +67,8 @@ public final class DragonPathFollower {
     private int age;
     /** 连续多少次重算都失败。 */
     private int failTicks;
+    /** 当前目标处算出来的悬停高度（脚部 Y），只在重算路线时更新一次。 */
+    private double steerGoalY;
 
     public DragonPathFollower(DragonGolemEntity dragon) {
         this.dragon = dragon;
@@ -75,20 +77,30 @@ public final class DragonPathFollower {
     /**
      * 这一 tick 该朝哪个点飞。
      *
-     * @param goal  最终想去的地方（世界坐标；Y 会被沿用，路线的竖向不参与）
+     * <p><b>高度控制与寻路的接口：</b>{@code goal} 只需要给水平坐标，竖直坐标由
+     * {@link DragonGolemEntity#hoverTargetYAt} 按<b>目的地自己的地面与天花板</b>算出来 ——
+     * 于是 A* 是在"那儿合理的高度层"上搜索，而不是像以前那样"按龙当前的高度"平推，
+     * 结果只能搜出一条贴着当前高度的走廊。
+     *
+     * @param goal  最终想去的地方（只用 x/z；y 会被目的地的悬停高度覆盖）
      * @param reach 到目标的"到达射程"（节点判定精度，和原版 {@code createPath(pos, reach)} 一致，一般 1~2）
-     * @return 建议的转向点；<b>永远不会返回 null</b> —— 没有路线时就是 {@code goal} 本身（退回旧行为）
+     * @return 建议的转向点（含<b>航路点自己的 Y</b>，见 {@link DragonGolemEntity#flightVerticalTarget}）；
+     *         <b>永远不会返回 null</b> —— 没有路线时就是目标点本身（退回旧行为）
      */
     public Vec3 steer(Vec3 goal, int reach) {
         if (!DragonGolemConfig.pathEnabled() || this.dragon.level().isClientSide()) {
             return goal;
         }
+        // 目的地的悬停高度（地面 + 悬停高度，被天花板按身体高度夹住）——
+        // 只在"该重算路线"的时候扫一次（一次扫描是 48 格地面 + 32 格天花板，别每 tick 做）
         if (this.needsRecompute(goal)) {
-            this.recompute(goal, reach);
+            this.steerGoalY = this.dragon.hoverTargetYAt(goal.x, goal.z);
+            this.recompute(goal, new Vec3(goal.x, this.steerGoalY, goal.z), reach);
         }
         this.age++;
-        this.advanceAlongPath(goal);
-        return this.steerPoint != null ? this.steerPoint : goal;
+        Vec3 withY = new Vec3(goal.x, this.steerGoalY, goal.z);
+        this.advanceAlongPath(withY);
+        return this.steerPoint != null ? this.steerPoint : withY;
     }
 
     /** 这个目标"够不着"：要么连路线都算不出来，要么算出来的路线是"截断"的（{@code canReach == false}）。 */
@@ -133,10 +145,10 @@ public final class DragonPathFollower {
         return this.age >= DragonGolemConfig.pathRepathTicks();
     }
 
-    private void recompute(Vec3 goal, int reach) {
+    private void recompute(Vec3 goal, Vec3 withY, int reach) {
         this.goal = goal;
         this.age = 0;
-        Path found = this.computePath(goal, reach);
+        Path found = this.computePath(withY, reach);
         if (found == null) {
             this.path = null;
             this.steerPoint = null;
@@ -191,7 +203,16 @@ public final class DragonPathFollower {
         }
     }
 
-    /** 推进到"还没走到的第一个节点"，把它作为转向点。 */
+    /**
+     * 推进到"还没走到的第一个节点"，把它作为转向点。
+     *
+     * <p><b>★ 转向点带上航路点自己的 Y。</b>这是"高度控制与寻路统合"的另一半：
+     * 以前这里写死 {@code goal.y}（= 目标的悬停高度），航线的竖向信息被整个丢掉，
+     * 于是"翻过一道梁 / 从低房间爬出去"这类路线<b>只被当成水平走向</b>，
+     * 龙照样按自己的悬停高度平飞，撞了墙才靠脱困乱挤。
+     * 现在 Y 一起给出去，由 {@link DragonGolemEntity#flightVerticalTarget} 决定要不要跟
+     * （死区 {@code pathfinding.verticalDeadband} 之外的才跟，避免巡航时一直点头）。
+     */
     private void advanceAlongPath(Vec3 goal) {
         if (this.path == null) {
             this.steerPoint = null;
@@ -207,8 +228,8 @@ public final class DragonPathFollower {
             double dy = node.y + 0.5D - this.dragon.getY();
             double dz = node.z + 0.5D - this.dragon.getZ();
             if (dx * dx + dy * dy + dz * dz > reach * reach) {
-                // 只借水平走向：Y 用目标的 Y，竖向继续由悬停逻辑管（见类注释）
-                this.steerPoint = new Vec3(node.x + 0.5D, goal.y, node.z + 0.5D);
+                // 节点的 Y 就是"脚能到的那个方块"（评估器也是按脚底采样的），不给 +0.5
+                this.steerPoint = new Vec3(node.x + 0.5D, node.y, node.z + 0.5D);
                 return;
             }
             this.path.advance();
@@ -222,7 +243,7 @@ public final class DragonPathFollower {
         }
         Node end = this.path.getEndNode();
         this.steerPoint = end != null
-                ? new Vec3(end.x + 0.5D, goal.y, end.z + 0.5D)
+                ? new Vec3(end.x + 0.5D, end.y, end.z + 0.5D)
                 : goal;
     }
 
