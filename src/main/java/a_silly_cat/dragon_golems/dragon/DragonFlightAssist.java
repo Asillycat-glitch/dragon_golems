@@ -385,16 +385,18 @@ public final class DragonFlightAssist {
                 return new Vec3(0.0D, -ESCAPE_DOWN_SPEED, 0.0D);
             }
         }
-        // ② 扇面：找真正塞得下的方向（内部按 hasRoomFor 逐个探）
+        // ② 扇面：找真正塞得下的方向（内部按 hasRoomFor 逐个探整条龙能不能站进去）
+        //
+        //   ★ 这里<b>不再把竖直分量压成 0</b>。真机日志：这个分支经常挑到一个"朝上"的方向
+        //   （在夹层/地板里时，唯一塞得下整条龙的位置就在上方），压成 0 之后它只剩横向蹭 ——
+        //   {@code mode=重合脱出 stuck=1104 dy=0.000}，55 秒都没出去。
+        //   "不许顶穿天花板"现在由控制器的 flightBand 统一保证，这里照方向走就行。
         Vec3 open = findOpenDirection(dragon);
         if (open != null) {
-            // findOpenDirection 的扇面顺序是"先上"，这里把向上的分量压掉：
-            // 重合状态下的向上移动就是"穿天花板"，不再给。
-            double vy = Math.min(0.0D, open.y * ESCAPE_SPEED);
-            return new Vec3(open.x * ESCAPE_SPEED, vy, open.z * ESCAPE_SPEED);
+            return open.scale(ESCAPE_SPEED);
         }
-        // ③ 都不行：硬往下
-        return new Vec3(0.0D, -ESCAPE_DOWN_SPEED, 0.0D);
+        // ③ 都不行：坚决往上（和自动脱困一致 —— 被埋在建筑里时，上方比下方更可能是空腔）
+        return new Vec3(0.0D, ESCAPE_SPEED, 0.0D);
     }
 
     /** 重合脱出时的水平速度（格/tick）。 */
