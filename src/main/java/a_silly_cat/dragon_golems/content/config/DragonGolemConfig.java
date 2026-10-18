@@ -180,6 +180,20 @@ public final class DragonGolemConfig {
         return bool(COMMON.diveRoomCheck, true);
     }
 
+    /**
+     * <b>索敌时"射界通畅"值多少分。</b>默认 <b>40</b>（0 = 关掉加权，退回纯距离优先）。
+     *
+     * <p>龙的龙息会被方块整个挡掉，而本家那套索敌是"就近优先"——"最近的那个"经常隔着墙，
+     * 它就对着墙喷满一整轮。分数里加这一项之后，一个"打得着但远 30 格"的敌人会排在
+     * "隔着墙但就在 5 格"的敌人前面。
+     *
+     * <p>距离项是格数（{@code −距离}），所以 40 分 ≈ "愿意多飞 40 格去打一个打得着的敌人"。
+     * 调大 = 更执着于"打得着"，调小 = 更执着于"打得近"。
+     */
+    public static double targetClearShotBonus() {
+        return Math.max(0.0D, num(COMMON.targetClearShotBonus, 40.0D));
+    }
+
     // ---- 飞行寻路（B 档：A* 出航路点，我们只负责按航路点飞）----
 
     /**
@@ -399,6 +413,8 @@ public final class DragonGolemConfig {
 
         public final ForgeConfigSpec.BooleanValue diveRoomCheck;
 
+        public final ForgeConfigSpec.DoubleValue targetClearShotBonus;
+
         public final ForgeConfigSpec.BooleanValue pathEnabled;
         public final ForgeConfigSpec.DoubleValue pathRepathTicks;
         public final ForgeConfigSpec.BooleanValue pathBodyClearance;
@@ -472,6 +488,10 @@ public final class DragonGolemConfig {
                             "开着：航线按端点坐标的天花板夹住，空间不足时这一轮改用龙息/龙弹/音爆",
                             "骑手指令（按 R）不受影响；关掉 = 旧行为")
                     .define("diveRoomCheck", true);
+            this.targetClearShotBonus = builder
+                    .comment("索敌时『射界通畅』值多少分（距离项是 −格数，所以 40 ≈ 愿意多飞 40 格去打看得见的敌人）",
+                            "0 = 退回纯距离优先（本家行为）；调大更执着于『打得着』，调小更执着于『打得近』")
+                    .defineInRange("targetClearShotBonus", 40.0D, 0.0D, 200.0D);
             builder.pop();
 
             builder.comment("飞行寻路（B 档：A* 出航路点，龙只负责按航路点飞）").push("pathfinding");

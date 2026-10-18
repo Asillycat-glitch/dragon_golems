@@ -13,6 +13,7 @@ import dev.xkmc.modulargolems.content.entity.goals.GolemMeleeGoal;
 import dev.xkmc.modulargolems.content.entity.goals.GolemRandomStrollGoal;
 import dev.xkmc.modulargolems.content.entity.goals.TeleportToOwnerGoal;
 import dev.xkmc.modulargolems.content.entity.humanoid.weapon.GolemWeaponRegistry;
+import dev.xkmc.modulargolems.content.entity.targeting.Golem3DTargetGoal;
 import dev.xkmc.modulargolems.content.entity.mode.GolemMode;
 import dev.xkmc.modulargolems.content.entity.mode.GolemModes;
 import dev.xkmc.modulargolems.content.item.upgrade.IUpgradeItem;
@@ -58,11 +59,14 @@ import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.common.ForgeMod;
 import net.minecraftforge.entity.PartEntity;
@@ -2002,6 +2006,16 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         // 骑手按键技能：优先级同样是 2（前排），但它的 canUse 只看"有没有骑手指令"，
         // 所以和上面几个不会互相抢 —— 有指令时它必然拿到 MOVE，没指令时它压根不上。
         this.goalSelector.addGoal(2, new DragonRiderSkillGoal(this));
+        // 索敌：把本家那套"就近优先"的 Golem3DTargetGoal 换掉（优先级同样是 3，间隔 5 tick）。
+        // 本家那套对地面傀儡够用，但龙是远程炮艇、龙息会被方块整个挡掉 ——
+        // "最近的那个"经常隔着墙，它就对着墙喷一整轮。新 goal 的分数里带"射界通畅 +40"，
+        // 详见 DragonTargetGoal。
+        for (WrappedGoal wrapped : new ArrayList<>(this.targetSelector.getAvailableGoals())) {
+            if (wrapped.getGoal() instanceof Golem3DTargetGoal) {
+                this.targetSelector.removeGoal(wrapped.getGoal());
+            }
+        }
+        this.targetSelector.addGoal(3, new DragonTargetGoal(this, 5));
     }
 
     /**
@@ -2279,7 +2293,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         double dist = this.distanceTo(target);
         double hDist = Mth.sqrt((float) ((target.getX() - this.getX()) * (target.getX() - this.getX())
                 + (target.getZ() - this.getZ()) * (target.getZ() - this.getZ())));
-        boolean los = this.hasLineOfSight(target);
+        boolean los = this.hasClearShotTo(target);
         boolean diveOk = this.diveCooldown <= 0 && hDist >= this.diveMinH() && hDist <= this.diveMaxH()
                 // ★ 竖直空间不够就别抽俯冲：40 格天花板 + 30 格平台那种场地里，
                 //   俯冲的入场高度（平台 + 12~22）在天花板外，龙会一直往天花板里爬，
@@ -3518,7 +3532,35 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
-     * 打上"正在战斗"的标记（有目标 / 挨打 / 出手时刷新）。
+     * <b>从龙嘴到目标胸口，中间有没有被方块挡住</b>（真实方块射线）。
+     *
+     * <h2>为什么不能用 {@code hasLineOfSight}</h2>
+     * 本家的 {@code AbstractGolemEntity.hasLineOfSight} 在傀儡带 {@code GolemFlags.SEE_THROUGH}
+     * （某些材料的"透视"升级）时会<b>直接返回 true</b> —— 穿墙也算"看得见"。而我们关心的不是"感知"，
+     * 是<b>龙息打不打得到</b>：锥体判定与喷流都被方块挡（{@code breathReach} 就是这么算的）。
+     * 所以这里用 {@code level.clip(嘴 → 胸口, Block, NONE)}：撞到方块且距离明显小于目标距离 → 被挡。
+     *
+     * <p>留 0.5 格容差：目标自己贴着墙/站在半砖上时，射线可能擦到它脚下的方块。
+     *
+     * <p>用途：① 索敌加权（优先打"打得着"的敌人，见 {@link DragonTargetGoal}）；
+     * ② 喷息/龙弹/靠拢前的开火判断（不再对着墙喷满 60 tick）。
+     */
+    public boolean hasClearShotTo(LivingEntity target) {
+        Vec3 from = this.mouthPosition();
+        Vec3 to = target.getBoundingBox().getCenter();
+        double dist = from.distanceTo(to);
+        if (dist < 1.0E-3D) {
+            return true;
+        }
+        BlockHitResult hit = this.level().clip(new ClipContext(from, to,
+                ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, this));
+        if (hit.getType() == HitResult.Type.MISS) {
+            return true;
+        }
+        return hit.getLocation().distanceTo(from) >= dist - 0.5D;
+    }
+
+    /** 打上"正在战斗"的标记（有目标 / 挨打 / 出手时刷新）。
      *
      * <p>意义见 {@link #inCombat()}：幽灵（穿墙）状态只在<b>战斗外</b>才允许进入。
      */

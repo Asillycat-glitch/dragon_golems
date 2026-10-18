@@ -178,6 +178,10 @@ config/l2_configs/dragon_golems-common.toml
    在战斗开始时挂起、结束立刻恢复；判定是"有目标或 5 秒内打过/被打过"。
    玩家按 H 的手动自由飞行、以及"正嵌在方块里"的物理安全 no-clip **不受限制**
    （`ghost.duringCombat` / `ghost.combatMemoryTicks`）。
+13. **射界与索敌**——龙息会被方块挡，但原来的 `los` 用的是本家 `hasLineOfSight`（带 `SEE_THROUGH`
+   时穿墙也为 true），且索敌是"就近优先"。现在射界改用**真实方块射线**（`hasClearShotTo`，
+   替换 4 处判定），索敌换成 `DragonTargetGoal`：`−距离 + 射界通畅(40) + 攻击主人(30) + 当前目标(25)`，
+   "该不该打"仍完全复用本家规则（`skills.targetClearShotBonus` 可回退成纯距离）。
 
 ## 移植说明
 

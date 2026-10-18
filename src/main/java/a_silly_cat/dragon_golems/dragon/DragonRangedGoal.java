@@ -163,7 +163,7 @@ public class DragonRangedGoal extends Goal {
         // 没被抽中时只负责"靠拢"：目标在喷息距离外、或者没视线时飞过去。
         // 这一段是纯走位，不吃出手间隔，所以不会出现"打不着就干等"。
         return !(this.dragon.distanceTo(target) <= this.dragon.breathRange()
-                && this.dragon.hasLineOfSight(target));
+                && this.dragon.hasClearShotTo(target));
     }
 
     /**
@@ -194,7 +194,7 @@ public class DragonRangedGoal extends Goal {
         }
         DragonGolemEntity.DragonSkill skill = this.dragon.pendingSkill();
         double dist = this.dragon.distanceTo(target);
-        boolean los = this.dragon.hasLineOfSight(target);
+        boolean los = this.dragon.hasClearShotTo(target);
         if (skill == DragonGolemEntity.DragonSkill.BREATH
                 && dist <= this.dragon.breathRange() && los) {
             // 每次开喷随机挑一个绕行方向（顺时针/逆时针），免得永远往同一边转
@@ -265,7 +265,7 @@ public class DragonRangedGoal extends Goal {
      */
     private void tickCloseIn(LivingEntity target) {
         double dist = this.dragon.distanceTo(target);
-        boolean los = this.dragon.hasLineOfSight(target);
+        boolean los = this.dragon.hasClearShotTo(target);
         DragonGolemEntity.DragonSkill skill = this.dragon.pendingSkill();
         if (skill == DragonGolemEntity.DragonSkill.BREATH
                 && dist <= this.dragon.breathRange() && los) {

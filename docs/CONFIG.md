@@ -502,7 +502,54 @@ edge = groundHeight(x, z) + entryAlt()        // entryAlt() = max(12, hoverHeigh
 | `ghost.duringCombat` | false | true = 旧行为（战斗中也会自动穿墙），用来做 A/B 对照 |
 | `ghost.combatMemoryTicks` | 100 | "战斗中"的记忆窗口（tick）；调大 = 打完架更久才算脱战 |
 
-## 十四、回退清单（哪条不想要就关哪个）
+## 十四、射界与索敌（"优先打看得见的敌人"）
+
+### 为什么会"隔着墙喷"
+
+两处原因叠在一起：
+
+1. **本家的 `hasLineOfSight` 不算数**：`AbstractGolemEntity.hasLineOfSight` 在傀儡带
+   `SEE_THROUGH`（某些材料的"透视"升级）时<b>直接返回 true</b> —— 穿墙也算"看得见"。
+   而龙息锥体与喷流<b>都会被方块挡住</b>（`breathReach` 就是这么算的），
+   所以以前那句 `los` 只能保证"没有透视升级的龙"能判对。
+2. **索敌是"就近优先"**：本家的 `Golem3DTargetGoal` 用 `TargetingConditions` 按距离打分
+   （`mustSee=false`、`mustReach=false`），"最近的那个敌人"经常隔着墙 —— 于是它对着墙喷满一整轮，
+   墙外真正能打的敌人没人管。
+
+### 修法 A：射界改用**真实方块射线**
+
+`DragonGolemEntity.hasClearShotTo(target)`：`level.clip(嘴 → 目标胸口, Block, NONE)`，
+撞到方块且距离明显小于目标距离 → 判定被挡（留 0.5 格容差，避免目标贴墙时擦到脚下方块）。
+
+替换掉原来的 4 处 `hasLineOfSight`：`DragonRangedGoal` 的 `canUse` / `canContinueToUse` / `tickCloseIn`，
+以及 `pickSkill` 的 `los`。效果：**不再对着墙喷**，龙弹/音爆同理。
+
+### 修法 B：换掉索敌（射界加权）
+
+新增 `DragonTargetGoal`（替换本家的 `Golem3DTargetGoal`，同优先级 3、同间隔 5 tick）：
+
+```
+分数 = −距离 + 射界通畅(40) + 正在攻击主人(30) + 当前目标(25)
+```
+
+| 项 | 作用 |
+|---|---|
+| −距离 | 越近越好（和本家一致） |
+| **射界通畅 +40** | 直接对应"优先索敌不被方块阻挡的敌人"。距离项是格数，所以 40 分 ≈ "愿意多飞 40 格去打一个打得着的敌人" |
+| 攻击主人 +30 | 保护职责优先 |
+| 当前目标 +25 | **滞回**：没有它，两个分数接近的目标会让龙每 5 tick 换一次，龙息永远打不满一轮 |
+
+"该不该打"的规则**完全复用本家**（`predicateTarget` + `canAttack`）——阵营、模式、愤怒、主人关系、
+和平模式那些判定一条都不会丢；我们只决定"在能打的里面挑哪个"。搜索框是<b>三维</b>
+（原版 `inflate(r, 4, r)` 的 ±4 竖直对飞在 10~20 格高的龙太小）。
+
+### 可调项
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `skills.targetClearShotBonus` | 40 | "射界通畅"值多少分；**0 = 退回纯距离优先（本家行为）**，用来 A/B |
+
+## 十五、回退清单（哪条不想要就关哪个）
 
 | 不想要的效果 | 怎么办 |
 |---|---|
@@ -524,4 +571,5 @@ edge = groundHeight(x, z) + entryAlt()        // entryAlt() = max(12, hoverHeigh
 | 想让水流推得动龙（原版行为） | `hover.pushedByFluid = true` |
 | 室内也不想打俯冲（纯远程） | `skills.diveRoomCheck = true`（默认）+ 把 `skills.nativeSkillGoals` 关着；想反过来回到旧行为就设 `skills.diveRoomCheck = false` |
 | 战斗中也要自动穿墙（旧行为） | `ghost.duringCombat = true` |
+| 索敌退回纯距离优先（本家行为） | `skills.targetClearShotBonus = 0` |
 
