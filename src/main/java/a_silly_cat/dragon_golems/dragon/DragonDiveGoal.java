@@ -215,6 +215,11 @@ public class DragonDiveGoal extends Goal {
         }
         double dist = this.horizontalDistance(this.dragon.getX(), this.dragon.getZ(), target.getX(), target.getZ());
         boolean ok = dist >= this.dragon.diveMinH() && dist <= this.dragon.diveMaxH();
+        // ★ 洞窟模式（低移动欲望）不抽大弧度俯冲：那里没有机动空间，俯冲会退化成贴墙磨。
+        //   开阔地照旧；这条不是"高度不够"的限制，而是"行为模式"的差异。
+        if (this.dragon.profile() == DragonGolemEntity.DragonProfile.GUARDING) {
+            return false;
+        }
         // ★ S2：不再因为"竖直空间不够"拒绝俯冲。
         //   弧线现在会按每个点自己的飞行高度带夹取（见 curvePoint），空间不足时它<b>降级成浅掠</b>，
         //   横向轨迹与接触判定保留 —— 照样能撞到人。以前那两道门（diveRoomOk / hasHeadroomFor）

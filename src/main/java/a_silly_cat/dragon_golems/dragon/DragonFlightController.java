@@ -45,6 +45,7 @@ public final class DragonFlightController {
         RIDER_DIVE("骑手冲锋"),
         RIDER("骑手驾驶"),
         ESCAPE("重合脱出"),
+        RETREAT("挨打远离"),
         SCRIPT("技能航线"),
         RESCUE("自动脱困"),
         HOVER("悬停");
@@ -96,6 +97,17 @@ public final class DragonFlightController {
             this.applyEscapeSafety(this.dragon.flightAssist().embeddedEscape(this.dragon));
             this.dragon.clearScriptVelocity();
             return;
+        }
+        if (this.dragon.retreatTicks() > 0) {
+            // 挨打后短暂远离攻击者（洞窟里尤其重要：没有机动空间时先脱开）
+            Vec3 away = this.dragon.retreatVelocity();
+            if (away != null) {
+                this.mode = Mode.RETREAT;
+                Double hy = this.dragon.hoverYSpeed();
+                this.applySafety(new Vec3(away.x, hy == null ? 0.0D : hy, away.z));
+                this.dragon.clearScriptVelocity();
+                return;
+            }
         }
         if (script != null) {
             this.mode = Mode.SCRIPT;

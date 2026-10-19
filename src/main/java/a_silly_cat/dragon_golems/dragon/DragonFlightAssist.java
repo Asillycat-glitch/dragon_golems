@@ -178,12 +178,13 @@ public final class DragonFlightAssist {
         Vec3 steer = dragon.pathFollower().steerPoint();
         Dragon_golems.LOGGER.info(
                 "[fly] mode={} stuck={} room={} embedded={} rescue={} noPhysics={} free={} dy={} hColl={} vColl={} "
-                        + "hoverT={} ceilB={} maxFeet={} roomy={} clr={} hd={} steerY={} onRoute={} skip={} blk={} thr={} pos={}",
+                        + "prof={} hoverT={} ceilB={} maxFeet={} roomy={} clr={} hd={} steerY={} onRoute={} skip={} blk={} thr={} pos={}",
                 dragon.flightController().mode().label,
                 this.stuckTicks, hasRoomFor(dragon, dragon.position()),
                 this.embedded, this.rescueTicks, dragon.noPhysics, this.freeFlight,
                 String.format("%.3f", dragon.getDeltaMovement().y),
                 dragon.horizontalCollision, dragon.verticalCollision,
+                dragon.profile().label,
                 String.format("%.2f", dragon.hoverTargetY()),
                 ceil == DragonGolemEntity.NO_CEILING ? "inf" : String.format("%.2f", ceil),
                 maxFeet == DragonGolemEntity.NO_CEILING ? "inf" : String.format("%.2f", maxFeet),

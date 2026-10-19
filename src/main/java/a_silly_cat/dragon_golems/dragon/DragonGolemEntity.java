@@ -2190,6 +2190,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.tickBodyRoll();
             }
         }
+        // 挨打远离的计时（执行层用它决定是否进入 RETREAT 模式）
+        this.tickRetreat();
         // 战斗记忆：有目标 / 刚挨打 → 刷新；否则逐 tick 衰减。
         // 飞行辅助用它决定"战斗中能不能进入幽灵（穿墙）状态"（见 DragonGolemConfig.ghostDuringCombat）。
         if (this.getTarget() != null || this.hurtTime > 0) {
@@ -3751,23 +3753,157 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         double hover = this.hoverTargetY();
         Vec3 steer = this.pathFollower.steerPoint();
         if (steer == null || !this.pathFollower.onRoute()) {
-            return hover;
+            // 没有航线：悬停高度与"追击高度"取高者（没有目标时 chaseAltitude 是 -∞，不影响）
+            return clearCeiling(Math.max(hover, chaseAltitude()));
         }
         double deadband = DragonGolemConfig.pathVerticalDeadband();
         double target = Math.abs(steer.y - hover) <= deadband ? hover : steer.y;
-        // ★ 最后一道闸：航线节点给的 Y 也要过一遍"天花板允许的最高脚位"。
-        //   评估器的采样理论上已经保证节点塞得下身体，但它是"按节点那一格的方块"采样的；
-        //   一旦采样有间隙（历史 bug：漏了身体顶端 0.46 格），龙就会照着航线往天花板里飞。
-        //   这里用实体自己脚下这一列的真实天花板再夹一次 —— 双保险，代价只有一次扫描。
+        // 航路点的高度也要让位给"追击高度"：目标在头顶时，航线节点可能还是低处的点。
+        target = Math.max(target, chaseAltitude());
+        return clearCeiling(target);
+    }
+
+    /**
+     * <b>追击高度</b>：目标在头顶时，竖直目标跟着它上去。
+     *
+     * <h2>为什么必须单独拿出来（用户实测）</h2>
+     * 以前竖直目标 = {@code 局部地面 + 悬停高度}（{@code hoverTargetY()}），
+     * 于是<b>头顶有敌人时它只会原地朝上喷，不会飞上去追</b> —— 高度被"脚下地面"锁死了。
+     * 龙是飞行单位，高度应该由<b>目标</b>决定，地面只负责"别沉下去"。
+     *
+     * <p>规则：
+     * <ul>
+     *   <li>没有目标 → 返回 {@code -∞}（不参与取最大值，竖直还是悬停那套）；</li>
+     *   <li>有目标 → 返回 {@code 目标脚 Y + 贴身余量}（打飞行目标/高处目标时向上追）；</li>
+     *   <li>目标在脚下时不强行下压（那属于俯冲/下降的事），所以只在它<b>更高</b>时生效。</li>
+     * </ul>
+     * 天花板仍然有效（{@link #clearCeiling}）—— 那是"别穿墙"，不是"限高"。
+     */
+    private double chaseAltitude() {
+        LivingEntity target = this.getTarget();
+        if (target == null || !target.isAlive()) {
+            return -Double.MAX_VALUE;
+        }
+        double want = target.getY() + CHASE_CLEARANCE * this.combatGeoScale();
+        // 只在"比当前高"时作为提升项参与，避免它为了贴目标脚而往下扎
+        return want > this.getY() ? want : -Double.MAX_VALUE;
+    }
+
+    /** 把竖直目标夹到"头顶天花板允许的最高脚位"，顺便挡住穿天花板（不是限高）。 */
+    private double clearCeiling(double target) {
         double limit = this.maxFeetYUnderCeiling(this.blockPosition().getX(), this.blockPosition().getZ(),
                 this.ceilingScanStart());
-        if (limit != NO_CEILING) {
-            target = Math.min(target, limit);
-        }
-        // 注意：这里不再单独处理 verticalCollision —— 那条否决已经并进
-        // DragonFlightController 的安全层（按 flightBand 夹竖直分量），只留一处。
-        return target;
+        return limit == NO_CEILING ? target : Math.min(target, limit);
     }
+
+    /** 追击时脚比起目标脚高多少（格，按体型放大）。 */
+    private static final double CHASE_CLEARANCE = 2.0D;
+
+    /**
+     * 挨打 → 记录攻击者位置，进入"远离"状态（{@link #markRetreat}）。
+     *
+     * <p>放在 {@code hurt} 里而不是 goal 里：受击是<b>事件</b>，不该靠 goal 每 tick 轮询血量变化去猜。
+     */
+    @Override
+    public boolean hurt(DamageSource source, float amount) {
+        boolean hurt = super.hurt(source, amount);
+        if (hurt) {
+            Entity attacker = source.getEntity();
+            if (attacker != null) {
+                this.markRetreat(attacker.position());
+            }
+        }
+        return hurt;
+    }
+
+    // ---- 行动模式：开阔 / 洞窟 ----
+
+    /**
+     * <b>行动模式</b>：开阔地主动游走/绕圈/俯冲；洞窟里"低移动欲望"，以悬停和原地攻击为主。
+     *
+     * <p>判据是 {@link #spaceBudget()} 的 {@code roomy}，带 {@link #PROFILE_SWITCH_TICKS} 的滞回
+     * （避免在洞口/门框处反复切换）。两个模式共用同一套攻击，只改"要不要移动、绕多大圈"。
+     */
+    public enum DragonProfile {
+        ROAMING("开阔"),
+        GUARDING("洞窟");
+
+        public final String label;
+
+        DragonProfile(String label) {
+            this.label = label;
+        }
+    }
+
+    /** 当前行动模式（带滞回，见 {@link DragonProfile}）。 */
+    public DragonProfile profile() {
+        boolean roomy = this.spaceBudget().roomy();
+        boolean roaming = this.profile == DragonProfile.ROAMING;
+        if (roomy == roaming) {
+            this.profileTicks = 0;
+            return this.profile;
+        }
+        if (++this.profileTicks > PROFILE_SWITCH_TICKS) {
+            this.profile = roaming ? DragonProfile.GUARDING : DragonProfile.ROAMING;
+            this.profileTicks = 0;
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[mode] 行动模式切换 → {}", this.profile.label);
+            }
+        }
+        return this.profile;
+    }
+
+    /** 模式切换需要的连续 tick 数（40 = 2 秒）。 */
+    private static final int PROFILE_SWITCH_TICKS = 40;
+    private DragonProfile profile = DragonProfile.ROAMING;
+    private int profileTicks;
+
+    // ---- 挨打时远离 ----
+
+    /**
+     * 挨打之后短时间内<b>远离攻击者</b>（洞窟模式尤其需要：它没有空间做机动，只能先脱开）。
+     *
+     * <p>由 {@link #hurt} 触发，执行层用 {@link DragonFlightController.Mode#RETREAT} 接管速度；
+     * 计时在 {@code aiStep} 里递减。
+     */
+    public void markRetreat(Vec3 from) {
+        this.retreatTicks = RETREAT_TICKS;
+        this.retreatFrom = from;
+    }
+
+    public int retreatTicks() {
+        return this.retreatTicks;
+    }
+
+    /** 每 tick 递减远离计时（{@code aiStep} 调用）。 */
+    public void tickRetreat() {
+        if (this.retreatTicks > 0) {
+            this.retreatTicks--;
+        }
+    }
+
+    /** 远离攻击者的水平速度（竖直由执行层补 hoverDelta）。 */
+    @Nullable
+    public Vec3 retreatVelocity() {
+        if (this.retreatFrom == null) {
+            return null;
+        }
+        double dx = this.getX() - this.retreatFrom.x;
+        double dz = this.getZ() - this.retreatFrom.z;
+        double len = Math.sqrt(dx * dx + dz * dz);
+        if (len < 1.0E-3D) {
+            return Vec3.ZERO;
+        }
+        double speed = RETREAT_SPEED * this.flightSpeedFactor() / len;
+        return new Vec3(dx * speed, 0.0D, dz * speed);
+    }
+
+    /** 远离状态持续多少 tick（30 = 1.5 秒）。 */
+    private static final int RETREAT_TICKS = 30;
+    /** 远离时的水平速度（基准，乘速度倍率）。 */
+    private static final double RETREAT_SPEED = 0.5D;
+    private int retreatTicks;
+    private Vec3 retreatFrom;
 
     /** {@link #hoverTargetY()} 里"没找到天花板"的哨兵值；也是 {@link #ceilingYAt} 的返回值。 */
     public static final double NO_CEILING = Double.MAX_VALUE;

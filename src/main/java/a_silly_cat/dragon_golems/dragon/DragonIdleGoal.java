@@ -168,6 +168,19 @@ public class DragonIdleGoal extends Goal {
         if (this.dragon.getDivePhase() != DragonGolemEntity.DIVE_PHASE_NONE) {
             return;
         }
+        // ★ 洞窟模式：低移动欲望 —— 原地悬停（只维持高度/追击高度），不再挑游走点。
+        //   "判断自己该去哪里，其余时候不移动"：目标/站位由攻击 goal 决定，
+        //   到了洞里它就不该再满地图绕（那里也没空间）。
+        if (this.dragon.profile() == DragonGolemEntity.DragonProfile.GUARDING) {
+            double dy = this.dragon.flightVerticalTarget() - this.dragon.getY();
+            double vy = Math.abs(dy) <= 0.2D ? 0.0D : Mth.clamp(dy * 0.1D, -0.2D, 0.2D);
+            this.dragon.setDiveVelocity(new Vec3(0.0D, vy, 0.0D));
+            if (!this.settled) {
+                this.settled = true;
+                this.dragon.setIdleSettled(true);
+            }
+            return;
+        }
         // 本 tick 的活动范围倍率（速度越快，半径/到达判定/回位距离/竖向速度一起放大）
         double range = this.rangeScale();
 
