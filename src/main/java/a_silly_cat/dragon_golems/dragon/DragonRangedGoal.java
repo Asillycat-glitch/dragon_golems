@@ -319,10 +319,13 @@ public class DragonRangedGoal extends Goal {
         //   提前收招，交给 CLOSE_IN 去换位置（洞窟模式下"低移动欲望"不等于"对着墙喷"）。
         if (this.dragon.hasClearShotTo(target)) {
             this.noLosTicks = 0;
-        } else if (++this.noLosTicks > LOS_LOST_MAX) {
+        } else if (++this.noLosTicks == LOS_LOST_MAX + 1) {
+            // 只在"刚好越线"那一刻打一行（以前是每 tick 打一行，日志被刷满）
             if (DragonDebug.RIDE) {
                 Dragon_golems.LOGGER.info("[breath] 视线被挡 {} tick → 提前收招换位置", this.noLosTicks);
             }
+        }
+        if (this.noLosTicks > LOS_LOST_MAX) {
             this.enter(Phase.BREATH_RECOVER);
             return;
         }
@@ -731,6 +734,9 @@ public class DragonRangedGoal extends Goal {
         // 前摇一开始就开一轮龙息：递减计数必须在"第一跳落地之前"清空（见 DragonGolemEntity.beginBreathVolley）
         if (next == Phase.BREATH_CHARGE) {
             this.dragon.beginBreathVolley();
+            // 视线计数必须每轮复位：否则上一轮的"被挡 20 tick"会带进下一轮，
+            // 让下一轮刚开始就立刻收招（真机：`[breath] 视线被挡 13..20 tick` 每 tick 刷一行）。
+            this.noLosTicks = 0;
         }
         // 只有开火阶段才上报姿态；靠拢阶段保持水平（否则会一直低着头飞）
         this.dragon.setDivePhase(next == Phase.CLOSE_IN
