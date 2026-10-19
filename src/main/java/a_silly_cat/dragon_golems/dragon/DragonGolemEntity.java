@@ -3494,9 +3494,41 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 玩家按下降却算出"要往上抬 49 格"。基准换成局部地面之后那个夹取自动就对了。
      */
     public double hoverTargetY() {
-        double floor = this.localFloorY();
+        // ★ 用<b>平滑后</b>的局部地面：阶梯台地 / 坑洼地形上，逐 tick 重算的"脚下地面"
+        //   会让悬停目标上下跳 1~2 格 → hoverDelta 正负翻转 → 机身上下抖（看起来就是"抽搐"）。
+        //   平滑只作用在"同一块地面附近"；换层、掉崖这类大跳变仍然立刻跟上。
+        double floor = this.smoothFloorY();
         return this.hoverTargetYAtBlocks(this.blockPosition().getX(), this.blockPosition().getZ(), floor);
     }
+
+    /**
+     * 平滑后的"脚下局部地面"高度（低通，带大跳变直通）。
+     *
+     * <p>台地上每走一格地面就变 1 格，直接拿来当悬停基准会让竖直目标抖；
+     * 这里用一阶低通（{@link #FLOOR_SMOOTH}）把它压平，但差值超过
+     * {@link #FLOOR_SMOOTH_SNAP} 时直接跟随（换层、掉崖、上桥这类"真的换了地面"）。
+     */
+    private double smoothFloorY() {
+        double floor = this.localFloorY();
+        if (Double.isNaN(this.smoothedFloor) || Math.abs(floor - this.smoothedFloor) > FLOOR_SMOOTH_SNAP) {
+            this.smoothedFloor = floor;
+        } else {
+            this.smoothedFloor += (floor - this.smoothedFloor) * FLOOR_SMOOTH;
+        }
+        return this.smoothedFloor;
+    }
+
+    /** 平滑后的局部地面高度（给诊断用；没算过时返回 NaN）。 */
+    public double smoothedFloorY() {
+        return this.smoothedFloor;
+    }
+
+    /** 局部地面的低通系数（每 tick 靠拢 8%）。 */
+    private static final double FLOOR_SMOOTH = 0.08D;
+    /** 局部地面差值超过这么多格就直通（换层 / 掉崖）。 */
+    private static final double FLOOR_SMOOTH_SNAP = 4.0D;
+    /** 平滑后的局部地面高度。 */
+    private double smoothedFloor = Double.NaN;
 
     /**
      * <b>任意水平坐标</b>处的悬停目标（脚部 Y）。给寻路用：航线终点也要落在"那儿合理的高度"上。

@@ -320,6 +320,24 @@ public class DragonRangedGoal extends Goal {
         if (this.phaseTicks % 20 == 0) {
             this.dragon.playSound(SoundEvents.ENDER_DRAGON_FLAP, 0.8F, 1.7F);
         }
+        // 诊断（限频：每 10 tick 一行，一次喷息最多 6 行）：
+        // 排查"喷息抽搐"时看哪个量在抖 —— yRot/yBody 抖=朝向，dy 抖=竖直，dvx/dvz 抖=绕圈，roll=压弯。
+        if (DragonDebug.RIDE && this.phaseTicks % 10 == 0) {
+            Vec3 v = this.dragon.getDeltaMovement();
+            Dragon_golems.LOGGER.info(
+                    "[breath] t={} yRot={} body={} roll={} dy={} dvx={} dvz={} len={} sign={} thr={} blk={}",
+                    this.phaseTicks,
+                    String.format("%.1f", this.dragon.getYRot()),
+                    String.format("%.1f", this.dragon.yBodyRot),
+                    String.format("%.1f", this.dragon.getBodyRoll()),
+                    String.format("%.3f", v.y),
+                    String.format("%.3f", v.x), String.format("%.3f", v.z),
+                    String.format("%.1f", Math.hypot(this.dragon.getX() - target.getX(),
+                            this.dragon.getZ() - target.getZ())),
+                    this.orbitSign,
+                    String.format("%.2f", this.dragon.flightController().throttle()),
+                    this.dragon.flightIntentBlockedTicks());
+        }
         if (this.phaseTicks >= BREATH_TICKS) {
             this.enter(Phase.BREATH_RECOVER);
         }
