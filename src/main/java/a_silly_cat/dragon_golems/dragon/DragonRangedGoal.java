@@ -311,6 +311,17 @@ public class DragonRangedGoal extends Goal {
     private void tickBreath(LivingEntity target) {
         this.aim(target);
         this.breathMotion(target);
+        // ★ 视线丢了（墙/柱挡住了）：这一轮喷不到人，别原地烧完 60 tick ——
+        //   提前收招，交给 CLOSE_IN 去换位置（洞窟模式下"低移动欲望"不等于"对着墙喷"）。
+        if (this.dragon.hasClearShotTo(target)) {
+            this.noLosTicks = 0;
+        } else if (++this.noLosTicks > LOS_LOST_MAX) {
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[breath] 视线被挡 {} tick → 提前收招换位置", this.noLosTicks);
+            }
+            this.enter(Phase.BREATH_RECOVER);
+            return;
+        }
         Vec3 origin = this.dragon.mouthPosition();
         Vec3 dir = this.breathDirection(origin, target);
         // 先算一次"喷流能打到多远"，粒子和伤害都用它，见 breathReach 的说明
@@ -418,8 +429,22 @@ public class DragonRangedGoal extends Goal {
             // 绕圈半径也不超过实际净空的 0.7 —— 开阔地里它就是原来的 orbitRadius。
             double radius = Math.min(this.dragon.orbitRadius(), space.clearance() * 0.7D);
             double radial = Mth.clamp((radius - len) * 0.08D, -0.3D, 0.3D);
-            vx = tx * speed + dx / len * radial;
-            vz = tz * speed + dz / len * radial;
+            // ★ 让"运动方向"靠近"朝向"：身体朝向是跟着运动方向走的（BodyRotationControl），
+            //   纯切向飞行时身体会横着对目标 —— 真机表现就是"侧着喷火"。
+            //   这里把切向压到 45%，径向（远离/靠近目标）占主导，机身与目标方向只差 ~24°，
+            //   看起来仍然是绕着目标转，但不再是侧身横扫。
+            double rx = dx / len;
+            double rz = dz / len;
+            double bias = radial >= 0.0D ? 1.0D : -1.0D;   // 太近了往外退，太远了往里靠
+            double mixX = tx * 0.45D + rx * bias;
+            double mixZ = tz * 0.45D + rz * bias;
+            double mixLen = Math.sqrt(mixX * mixX + mixZ * mixZ);
+            if (mixLen > 1.0E-3D) {
+                mixX /= mixLen;
+                mixZ /= mixLen;
+            }
+            vx = mixX * speed + rx * radial;
+            vz = mixZ * speed + rz * radial;
         }
         this.dragon.setKeepAim(true);
         this.dragon.setBodyRollDirect(ORBIT_BANK * this.orbitSign);
@@ -430,6 +455,11 @@ public class DragonRangedGoal extends Goal {
     private double coneLength() {
         return CONE_LENGTH * this.dragon.combatGeoScale();
     }
+
+    /** 喷息时视线被挡的连续 tick 数（超过 {@link #LOS_LOST_MAX} 就提前收招换位置）。 */
+    private int noLosTicks;
+    /** 视线被挡多少 tick 之后结束这一轮喷息（10 = 0.5 秒）。 */
+    private static final int LOS_LOST_MAX = 10;
 
     /**
      * 朝一个水平点飞（保持悬停高度），转向交给实体的 faceMovement。
@@ -478,7 +508,11 @@ public class DragonRangedGoal extends Goal {
      */
     private void aim(LivingEntity target) {
         double horizontal = ORBIT_SPEED * this.dragon.flightSpeedFactor();
-        float rate = Math.max(AIM_TURN, this.dragon.turnRateFor(horizontal));
+        // ★ 跟踪率要留足余量：绕圈时目标方位以 ω = v / r 的角速度变化，
+        //   如果 aimAt 的上限只比它略大，就会"先落后、再一口气追上"—— 真机上表现为
+        //   yaw 速率忽快忽慢（[breath] 里 10.5°/tick 之后又 1.6°/tick），看起来就是抽搐 + 侧着喷。
+        //   这里给 2.5× 余量（下限 15°/tick）：跟踪永远不落后，也就没有"追赶爆发"。
+        float rate = Math.max(AIM_TURN * 2.5F, this.dragon.turnRateFor(horizontal) * 1.5F);
         this.dragon.aimAt(target.getX(), target.getZ(), rate);
     }
 

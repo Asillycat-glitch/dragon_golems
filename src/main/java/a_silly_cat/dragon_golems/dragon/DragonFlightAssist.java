@@ -188,6 +188,12 @@ public final class DragonFlightAssist {
                 String.format("%.2f", dragon.hoverTargetY()),
                 ceil == DragonGolemEntity.NO_CEILING ? "inf" : String.format("%.2f", ceil),
                 maxFeet == DragonGolemEntity.NO_CEILING ? "inf" : String.format("%.2f", maxFeet),
+                // 注意：{} 是 SLF4J 占位符，个数必须和参数严格对齐 ——
+                // 之前这里少传了这三项，导致整行右移（roomy 显示成数字、末尾出现字面量 {}），
+                // 诊断不可信就没法定位问题。
+                dragon.spaceBudget().roomy(),
+                String.format("%.1f", dragon.spaceBudget().clearance()),
+                String.format("%.1f", dragon.spaceBudget().headroom()),
                 steer == null ? "na" : String.format("%.2f", steer.y),
                 dragon.pathFollower().onRoute(),
                 dragon.pathFollower().smoothedNodes(),

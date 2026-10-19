@@ -98,14 +98,14 @@ public final class DragonFlightController {
             this.dragon.clearScriptVelocity();
             return;
         }
-        if (this.dragon.retreatTicks() > 0) {
-            // 挨打后短暂远离攻击者（洞窟里尤其重要：没有机动空间时先脱开）
+        if (this.dragon.retreatTicks() > 0 && script == null) {
+            // 挨打后短暂远离攻击者 —— 但**只在没有招式要执行时**才独占速度。
+            // 有招式时见 applyIntent 末尾的"后撤偏置"：边打边退，不会变成单纯逃跑。
             Vec3 away = this.dragon.retreatVelocity();
             if (away != null) {
                 this.mode = Mode.RETREAT;
                 Double hy = this.dragon.hoverYSpeed();
                 this.applySafety(new Vec3(away.x, hy == null ? 0.0D : hy, away.z));
-                this.dragon.clearScriptVelocity();
                 return;
             }
         }
@@ -164,8 +164,29 @@ public final class DragonFlightController {
         double targetThrottle = this.blockedTicks > INTENT_BLOCK_LIMIT ? 0.0D : 1.0D;
         this.throttle += (targetThrottle - this.throttle) * INTENT_THROTTLE_LERP;
         double k = this.throttle;
-        this.applySafety(new Vec3(desired.x * k, desired.y, desired.z * k));
+        Vec3 v = new Vec3(desired.x * k, desired.y, desired.z * k);
+        // ★ 后撤偏置（而不是独占模式）：挨打时在招式的速度上叠一个"远离攻击者"的分量，
+        //   这样它是"边打边退"，不会因为挨一下就整轮不还手（真机：被打几次就变成纯逃跑）。
+        if (this.dragon.retreatTicks() > 0) {
+            Vec3 away = this.dragon.retreatVelocity();
+            if (away != null) {
+                double ax = v.x + away.x * RETREAT_BIAS;
+                double az = v.z + away.z * RETREAT_BIAS;
+                double len = Math.sqrt(ax * ax + az * az);
+                if (len > RETREAT_MAX) {
+                    ax *= RETREAT_MAX / len;
+                    az *= RETREAT_MAX / len;
+                }
+                v = new Vec3(ax, v.y, az);
+            }
+        }
+        this.applySafety(v);
     }
+
+    /** 后撤偏置的权重（招式速度 + 远离分量 × 这个系数）。 */
+    private static final double RETREAT_BIAS = 1.2D;
+    /** 后撤偏置后的水平速度上限（避免它被一击弹飞老远）。 */
+    private static final double RETREAT_MAX = 0.9D;
 
     /** 当前招式意图的水平"油门"（0 = 完全停推挤，1 = 全速执行；诊断用）��� */
     public double throttle() {
