@@ -1740,6 +1740,16 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.diveVelocity = null;
     }
 
+    /**
+     * 当前招式意图被水平碰撞连续挡住多少 tick（0 = 没被挡）。
+     *
+     * <p>S3：执行层拥有"卡住"的判定权，goal 用这个数字决定要不要收招/换路，
+     * 而不是自己硬推、等"位移停滞看门狗"事后补救。
+     */
+    public int flightIntentBlockedTicks() {
+        return this.flightController.blockedTicks();
+    }
+
     /** 这一 tick 是否要"保持瞄准"（开火时朝向由 goal 管）。 */
     boolean keepAim() {
         return this.keepAimThisTick;

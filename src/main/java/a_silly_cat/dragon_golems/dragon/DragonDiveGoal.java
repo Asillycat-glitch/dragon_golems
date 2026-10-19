@@ -363,6 +363,18 @@ public class DragonDiveGoal extends Goal {
         // 说明：这里**不再**因为 verticalCollision 中止。
         // 弧线已经按"每个点自己的飞行高度带"夹过（curvePoint），空间不足时它会自动变成浅掠；
         // 剩下能挡住它的只有横向障碍，那交给执行层/寻路的避障处理。
+        //
+        // ★ S3：执行层会告诉我们"这个意图被挡了多久"（DragonFlightController.applyIntent）。
+        //   被挡超过 30 tick（1.5 秒）= 这条弧线在当前位置执行不了，主动收招 ——
+        //   这比"位移停滞看门狗"（80 tick）早得多，也不会白白磨掉一轮冷却。
+        if (this.dragon.flightIntentBlockedTicks() > 30) {
+            if (DEBUG) {
+                Dragon_golems.LOGGER.info("[dive] 意图被水平阻挡 30 tick → 放弃本轮 s={}",
+                        String.format("%.1f", this.passS));
+            }
+            this.finish();
+            return;
+        }
         if (this.stalledOut()) {
             this.finish();
             return;

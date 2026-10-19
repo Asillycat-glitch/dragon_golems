@@ -99,7 +99,7 @@ public final class DragonFlightController {
         }
         if (script != null) {
             this.mode = Mode.SCRIPT;
-            this.applySafety(script);
+            this.applyIntent(script);
             this.dragon.clearScriptVelocity();
             return;
         }
@@ -124,7 +124,47 @@ public final class DragonFlightController {
         this.applySafety(new Vec3(current.x, hoverY, current.z));
     }
 
-    /** 骑手冲锋：航线接管 + 原有的诊断/朝向处理。 */
+    /**
+     * <b>招式意图</b>：goal 给的是"想这么飞"，是否真的这么飞由这里决定。
+     *
+     * <h2>S3：执行层拥有"卡住"的判定权</h2>
+     * 以前 goal 写死速度往前推，撞墙了也继续推 —— 真机里喷息绕圈进死角、俯冲顶着墙磨，
+     * 都是"goal 不知道前面走不通"造成的。现在：
+     * <ul>
+     *   <li>意图带水平分量、而龙正在水平碰撞 → {@link #blockedTicks} 累加；</li>
+     *   <li>连续撞够 {@link #INTENT_BLOCK_LIMIT} tick → 判定"这个意图在这个地形执行不了"，
+     *       <b>水平分量清零（原地悬停）</b>，竖直仍归安全层的 flightBand 管；</li>
+     *   <li>把计数暴露给 goal（{@link #blockedTicks()}），goal 就能提前收招/换路，
+     *       而不是靠"位移停滞看门狗"这种事后补救。</li>
+     * </ul>
+     */
+    private void applyIntent(Vec3 desired) {
+        boolean pushing = desired.x * desired.x + desired.z * desired.z > 1.0E-6D;
+        if (pushing && this.dragon.horizontalCollision) {
+            this.blockedTicks++;
+        } else {
+            this.blockedTicks = Math.max(0, this.blockedTicks - 2);
+        }
+        if (this.blockedTicks > INTENT_BLOCK_LIMIT) {
+            // 撞墙太久：这个意图在这个地形执行不了 → 停住（竖直照常被安全层夹）
+            this.applySafety(new Vec3(0.0D, desired.y, 0.0D));
+            return;
+        }
+        this.applySafety(desired);
+    }
+
+    /** 当前招式意图连续被水平碰撞挡住多少 tick（0 = 没被挡；goal 用它决定要不要收招）。 */
+    public int blockedTicks() {
+        return this.blockedTicks;
+    }
+
+    /** 连续撞墙多少 tick 之后判定"意图执行不了"并停住水平推挤（10 = 0.5 秒）。 */
+    private static final int INTENT_BLOCK_LIMIT = 10;
+    /** 招式意图被水平碰撞挡住的连续 tick 数。 */
+    private int blockedTicks;
+
+
+    /** 骑手冲锋：航线接管 + 原有的诊断/朝向处理（玩家指令，不套 {@link #applyIntent} 的"卡住就停"）。 */
     private void tickRiderDive(Vec3 vel) {
         this.dragon.setNoGravity(true);
         this.dragon.setDeltaMovement(vel);
