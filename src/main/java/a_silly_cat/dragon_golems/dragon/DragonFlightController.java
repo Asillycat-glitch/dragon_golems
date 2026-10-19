@@ -42,13 +42,13 @@ public final class DragonFlightController {
 
     /** 本 tick 由谁接管速度。 */
     public enum Mode {
-        RIDER_DIVE("骑手冲锋"),
-        RIDER("骑手驾驶"),
-        ESCAPE("重合脱出"),
-        RETREAT("挨打远离"),
-        SCRIPT("技能航线"),
-        RESCUE("自动脱困"),
-        HOVER("悬停");
+        RIDER_DIVE("RIDER_DIVE"),
+        RIDER("RIDER"),
+        ESCAPE("ESCAPE"),
+        RETREAT("RETREAT"),
+        SCRIPT("SCRIPT"),
+        RESCUE("RESCUE"),
+        HOVER("HOVER");
 
         public final String label;
 

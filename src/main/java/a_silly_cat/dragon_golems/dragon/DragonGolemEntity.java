@@ -3841,8 +3841,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * （避免在洞口/门框处反复切换）。两个模式共用同一套攻击，只改"要不要移动、绕多大圈"。
      */
     public enum DragonProfile {
-        ROAMING("开阔"),
-        GUARDING("洞窟");
+        ROAMING("ROAMING"),
+        GUARDING("GUARDING");
 
         public final String label;
 
@@ -3863,7 +3863,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             this.profile = roaming ? DragonProfile.GUARDING : DragonProfile.ROAMING;
             this.profileTicks = 0;
             if (DragonDebug.RIDE) {
-                Dragon_golems.LOGGER.info("[mode] 行动模式切换 → {}", this.profile.label);
+                Dragon_golems.LOGGER.info("[mode] profile -> {}", this.profile.label);
             }
         }
         return this.profile;
