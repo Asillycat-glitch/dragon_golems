@@ -2438,9 +2438,9 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 + (target.getZ() - this.getZ()) * (target.getZ() - this.getZ())));
         boolean los = this.hasClearShotTo(target);
         boolean diveOk = this.diveCooldown <= 0 && hDist >= this.diveMinH() && hDist <= this.diveMaxH()
-                // ★ 竖直空间不够就别抽俯冲：40 格天花板 + 30 格平台那种场地里，
-                //   俯冲的入场高度（平台 + 12~22）在天花板外，龙会一直往天花板里爬，
-                //   而竖直碰撞不会触发任何"卡住"判定 —— 结果是白白挨打。让龙息/龙弹/音爆接手。
+                // ★ 洞窟模式不投票给俯冲：那里没有大弧度机动的空间（目标也只会在窄处），
+                //   把票让给龙息/龙弹/音爆 —— 它们可以原地释放。开阔地照旧。
+                && this.profile() == DragonProfile.ROAMING
                 && this.diveRoomOk(target);
         // 龙弹和音爆共享一条 CD：CD 没好两个都不能上。
         // 音爆还要身体是幽匿（音波系），其它材料的龙不参与这个骰子。

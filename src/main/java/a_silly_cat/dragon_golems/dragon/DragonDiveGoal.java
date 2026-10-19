@@ -279,6 +279,8 @@ public class DragonDiveGoal extends Goal {
         this.lastDivePos = this.dragon.position();
         // 降级标记只影响日志（"这一轮是浅掠"），每轮重置
         this.degraded = false;
+        // 弧线两端的高度上限 = 开招高度 + 1（俯冲不强制爬升，见 curvePoint）
+        this.entryCap = this.dragon.getY() + 1.0D;
         if (DragonDebug.RIDE) {
             Dragon_golems.LOGGER.info("[dive] start(): riderOrdered={} target={} pos={}",
                     this.dragon.isRiderOrderedDive(), this.dragon.getTarget(), this.dragon.position());
@@ -437,6 +439,11 @@ public class DragonDiveGoal extends Goal {
     private Vec3 lastDivePos = Vec3.ZERO;
     /** 这一轮弧线是否被高度带压低过（= 降级成浅掠）；重置点见 {@link #start()}。 */
     private boolean degraded;
+    /**
+     * 这一轮弧线两端允许的最高"脚位"（开招时的高度 + 1）—— 见 {@link #curvePoint} 的说明。
+     * 在 {@link #start()} 里采样一次：这样俯冲<b>不需要先爬升</b>，从哪就位就从哪俯下去。
+     */
+    private double entryCap = Double.MAX_VALUE;
 
     /** 龙在航线上投影出来的带符号距离（负 = 还没到目标）。 */
     private double projectOnCurve() {
@@ -492,6 +499,12 @@ public class DragonDiveGoal extends Goal {
         double u = Mth.clamp(Math.abs(s) / span, 0.0D, 1.0D);
         double ue = Math.pow(u, ALT_EXP);
         double edge = this.groundHeight(x, z) + this.entryAlt();
+        // ★ 不强制爬升：弧线两端的高度不超过"开招时的高度 + 1"。
+        //   以前入场高度写死"地形 + entryAlt"（1 倍 12 格、泰坦 22 格），
+        //   于是低空/贴地时它得先爬一段才肯俯冲，那一爬经常就是被集火的几秒；
+        //   目标在旁边的高台上时更糟 —— 爬升方向还可能是错的。
+        //   现在从"当前高度"直接压下去：位置高就俯得陡，位置低就俯得平，都是俯冲。
+        edge = Math.min(edge, this.entryCap);
         double y = this.skimY + (edge - this.skimY) * ue;
 
         DragonGolemEntity.FlightBand band = this.dragon.flightBandAt(Mth.floor(x), Mth.floor(z));
