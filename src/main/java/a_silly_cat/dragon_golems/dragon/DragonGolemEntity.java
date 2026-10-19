@@ -1161,6 +1161,18 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.entityData.define(DATA_RIDER_PITCH, 0.0F);
         // 骑手冲锋是否在进行中 —— <b>必须同步</b>，见 isRiderOrderedDive() 的说明。
         this.entityData.define(DATA_RIDER_DIVE, false);
+        // 本 tick 是否处于"瞄准态"（喷息/龙弹）。同步给客户端：渲染层据此把机身/头
+        // 锁在瞄准方向，而不是跟着运动方向转（"侧着喷火"的根因）。
+        this.entityData.define(DATA_AIMING, false);
+    }
+
+    /** 同步字段：本 tick 是否在瞄准（喷息/龙弹期间为真）。 */
+    private static final EntityDataAccessor<Boolean> DATA_AIMING =
+            SynchedEntityData.defineId(DragonGolemEntity.class, EntityDataSerializers.BOOLEAN);
+
+    /** 是否处于瞄准态（客户端渲染用它把机身锁到瞄准方向）。 */
+    public boolean isAiming() {
+        return this.entityData.get(DATA_AIMING);
     }
 
     /** 同步字段：骑手冲锋进行中。客户端据此让出位置权威（见 isControlledByLocalInstance）。 */
@@ -2175,6 +2187,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             //   骑手冲锋 > 骑手驾驶 > 重合脱出 > 技能航线 > 自动脱困 > 悬停，
             //   并统一在 flightBand() 的高度带内夹取竖直分量。
             //   以前这一大段 if/else 直接写在这里，每加一个需求就多一条"谁覆盖谁"的规则。
+            //
+            //   A（aiming 同步）：goal 在 super.aiStep() 里用 setKeepAim(true) 表达"这一 tick 要瞄准"，
+            //   先把这件事同步给客户端（渲染层据此把机身锁到瞄准方向），再交给执行层消费。
+            this.entityData.set(DATA_AIMING, this.keepAimThisTick);
             this.flightController.tick(rider);
             // ★ 压弯（侧倾）统一在这里算：只看"本 tick 实际转过的角度"，所以骑手用鼠标转、
             //   AI 巡航转（FlyingMoveControl 拧的机头）、俯冲/冲锋的航线转，三种全都吃得到。
@@ -3055,6 +3071,24 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     public double mouthForward() {
         return Math.abs(this.rotateAndLift(HEAD_UP_PX + 2.0D, HEAD_FORWARD_PX + MOUTH_FORWARD_PX,
                 this.getBodyPitch())[1]);
+    }
+
+    /**
+     * <b>嘴（头部子碰撞箱的喷口）到目标碰撞箱中心的距离</b> —— 两个远程攻击的"真实射击距离"。
+     *
+     * <h2>为什么必须用它，而不是身体中心距离</h2>
+     * 龙息和龙息弹都是<b>从头部喷口出发</b>的射线/锥体，而喷口在身体中心前方
+     * {@link #mouthForward()} 格（1 倍约 9 格，泰坦 4 倍能到 30+ 格）。
+     * 用身体中心距离判"能不能打"会出这种事：
+     * <pre>
+     * 身体中心距离 14.7 格（看着"很近"），但嘴在身体前方 30 格
+     * → 嘴已经在目标<b>背后</b> → 锥体的 along 全为负 → 一个目标都打不到
+     * </pre>
+     * 真机日志就是这样：{@code [breath] miss=3 ovr=true len=14.7 dvx=0 dvz=0}（站桩喷、零伤害）。
+     * 所以射程闸门必须用喷口距离，并且要求一个最小间隙（嘴不能插进目标里）。
+     */
+    public double mouthDistanceTo(Entity target) {
+        return this.mouthPosition().distanceTo(target.getBoundingBox().getCenter());
     }
 
     /**

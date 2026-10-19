@@ -199,16 +199,17 @@ public class DragonRangedGoal extends Goal {
         this.hoverOnly = this.dragon.breathMissStreak() >= 2;
         double gate = this.hoverOnly ? this.dragon.breathRange() * RETRY_RANGE_FACTOR : this.dragon.breathRange();
         if (skill == DragonGolemEntity.DragonSkill.BREATH
-                && dist <= gate && los) {
+                && this.muzzleInGate(target, gate) && los) {
             // 每次开喷随机挑一个绕行方向（顺时针/逆时针），免得永远往同一边转
             this.orbitSign = this.dragon.getRandom().nextBoolean() ? 1 : -1;
             this.dragon.onSkillStarted(skill);
             this.enter(Phase.BREATH_CHARGE);
-        } else if (skill == DragonGolemEntity.DragonSkill.ROCKET && dist <= ROCKET_RANGE && los) {
+        } else if (skill == DragonGolemEntity.DragonSkill.ROCKET
+                && this.muzzleInGate(target, ROCKET_RANGE) && los) {
             this.dragon.onSkillStarted(skill);
             this.enter(Phase.ROCKET_AIM);
         } else {
-            // 没抽中、或条件不满足 → 这一趟只负责飞过去
+            // 没抽中、或条件不满足 → 这一趟只负责飞过去（太近就先后退）
             this.enter(Phase.CLOSE_IN);
         }
         this.dragon.setAggressive(true);
@@ -270,25 +271,57 @@ public class DragonRangedGoal extends Goal {
         double dist = this.dragon.distanceTo(target);
         boolean los = this.dragon.hasClearShotTo(target);
         DragonGolemEntity.DragonSkill skill = this.dragon.pendingSkill();
+        double gate = this.hoverOnly ? this.dragon.breathRange() * RETRY_RANGE_FACTOR : this.dragon.breathRange();
         if (skill == DragonGolemEntity.DragonSkill.BREATH
-                && dist <= (this.hoverOnly ? this.dragon.breathRange() * RETRY_RANGE_FACTOR
-                        : this.dragon.breathRange()) && los) {
+                && this.muzzleInGate(target, gate) && los) {
             this.orbitSign = this.dragon.getRandom().nextBoolean() ? 1 : -1;
             this.dragon.onSkillStarted(skill);
             this.enter(Phase.BREATH_CHARGE);
             return;
         }
-        if (skill == DragonGolemEntity.DragonSkill.ROCKET && dist <= ROCKET_RANGE && los) {
+        if (skill == DragonGolemEntity.DragonSkill.ROCKET
+                && this.muzzleInGate(target, ROCKET_RANGE) && los) {
             this.dragon.onSkillStarted(skill);
             this.enter(Phase.ROCKET_AIM);
             return;
         }
-        Vec3 aim = new Vec3(target.getX(), this.dragon.getY(), target.getZ());
-        this.moveToward(aim, CLOSE_SPEED * this.dragon.flightSpeedFactor());
+        // ★ 嘴插进目标里（喷口已经越过目标）→ 先后退到"嘴和目标有间隙"的位置，
+        //   否则锥体的 along 全为负、怎么喷都是零伤害（真机：miss=3 ovn 站桩喷）。
+        double mouthGapMin = MIN_MUZZLE_GAP * this.dragon.combatGeoScale();
+        double mouthDist = this.dragon.mouthDistanceTo(target);
+        if (mouthDist < mouthGapMin) {
+            Vec3 away = this.dragon.position().subtract(target.position());
+            double len = Math.sqrt(away.x * away.x + away.z * away.z);
+            if (len < 1.0E-3D) {
+                away = new Vec3(1.0D, 0.0D, 0.0D);
+                len = 1.0D;
+            }
+            double want = mouthGapMin + this.dragon.mouthForward() + 2.0D;
+            Vec3 back = new Vec3(target.getX() + away.x / len * want, this.dragon.getY(),
+                    target.getZ() + away.z / len * want);
+            this.moveToward(back, CLOSE_SPEED * this.dragon.flightSpeedFactor());
+        } else {
+            Vec3 aim = new Vec3(target.getX(), this.dragon.getY(), target.getZ());
+            this.moveToward(aim, CLOSE_SPEED * this.dragon.flightSpeedFactor());
+        }
         if (this.phaseTicks >= CLOSE_MAX) {
             this.finish();
         }
     }
+
+    /**
+     * 射程闸门用<b>喷口（头部子碰撞箱）到目标</b>的距离，而不是身体中心距离。
+     *
+     * <p>见 {@link DragonGolemEntity#mouthDistanceTo}：体型越大喷口越靠前（泰坦 30+ 格），
+     * 用身体中心距离会在"看着很近"的时候让嘴越过目标，锥体打空。
+     */
+    private boolean muzzleInGate(LivingEntity target, double maxRange) {
+        double mzd = this.dragon.mouthDistanceTo(target);
+        return mzd >= MIN_MUZZLE_GAP * this.dragon.combatGeoScale() && mzd <= maxRange;
+    }
+
+    /** 喷口与目标之间至少留多少格（按体型放大），低于它就先后退再开火。 */
+    private static final double MIN_MUZZLE_GAP = 2.5D;
 
     /**
      * 前摇：<b>真的站住不动</b>、慢慢转头、嘴里聚粒子。
@@ -343,7 +376,7 @@ public class DragonRangedGoal extends Goal {
         if (DragonDebug.RIDE && this.phaseTicks % 10 == 0) {
             Vec3 v = this.dragon.getDeltaMovement();
             Dragon_golems.LOGGER.info(
-                    "[breath] t={} yRot={} body={} roll={} dy={} dvx={} dvz={} len={} sign={} thr={} blk={} miss={} ovr={}",
+                    "[breath] t={} yRot={} body={} roll={} dy={} dvx={} dvz={} len={} sign={} thr={} blk={} miss={} ovr={} mzd={}",
                     this.phaseTicks,
                     String.format("%.1f", this.dragon.getYRot()),
                     String.format("%.1f", this.dragon.yBodyRot),
@@ -355,7 +388,8 @@ public class DragonRangedGoal extends Goal {
                     this.orbitSign,
                     String.format("%.2f", this.dragon.flightController().throttle()),
                     this.dragon.flightIntentBlockedTicks(),
-                    this.dragon.breathMissStreak(), this.hoverOnly);
+                    this.dragon.breathMissStreak(), this.hoverOnly,
+                    String.format("%.1f", this.dragon.mouthDistanceTo(target)));
         }
         if (this.phaseTicks >= BREATH_TICKS) {
             this.enter(Phase.BREATH_RECOVER);
