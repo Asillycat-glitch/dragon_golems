@@ -195,8 +195,11 @@ public class DragonRangedGoal extends Goal {
         DragonGolemEntity.DragonSkill skill = this.dragon.pendingSkill();
         double dist = this.dragon.distanceTo(target);
         boolean los = this.dragon.hasClearShotTo(target);
+        // 连续空轮（上一轮喷了但一个人都没打到）→ 换几何：站桩 + 距离压到 75%
+        this.hoverOnly = this.dragon.breathMissStreak() >= 2;
+        double gate = this.hoverOnly ? this.dragon.breathRange() * RETRY_RANGE_FACTOR : this.dragon.breathRange();
         if (skill == DragonGolemEntity.DragonSkill.BREATH
-                && dist <= this.dragon.breathRange() && los) {
+                && dist <= gate && los) {
             // 每次开喷随机挑一个绕行方向（顺时针/逆时针），免得永远往同一边转
             this.orbitSign = this.dragon.getRandom().nextBoolean() ? 1 : -1;
             this.dragon.onSkillStarted(skill);
@@ -268,7 +271,8 @@ public class DragonRangedGoal extends Goal {
         boolean los = this.dragon.hasClearShotTo(target);
         DragonGolemEntity.DragonSkill skill = this.dragon.pendingSkill();
         if (skill == DragonGolemEntity.DragonSkill.BREATH
-                && dist <= this.dragon.breathRange() && los) {
+                && dist <= (this.hoverOnly ? this.dragon.breathRange() * RETRY_RANGE_FACTOR
+                        : this.dragon.breathRange()) && los) {
             this.orbitSign = this.dragon.getRandom().nextBoolean() ? 1 : -1;
             this.dragon.onSkillStarted(skill);
             this.enter(Phase.BREATH_CHARGE);
@@ -336,7 +340,7 @@ public class DragonRangedGoal extends Goal {
         if (DragonDebug.RIDE && this.phaseTicks % 10 == 0) {
             Vec3 v = this.dragon.getDeltaMovement();
             Dragon_golems.LOGGER.info(
-                    "[breath] t={} yRot={} body={} roll={} dy={} dvx={} dvz={} len={} sign={} thr={} blk={}",
+                    "[breath] t={} yRot={} body={} roll={} dy={} dvx={} dvz={} len={} sign={} thr={} blk={} miss={} ovr={}",
                     this.phaseTicks,
                     String.format("%.1f", this.dragon.getYRot()),
                     String.format("%.1f", this.dragon.yBodyRot),
@@ -347,7 +351,8 @@ public class DragonRangedGoal extends Goal {
                             this.dragon.getZ() - target.getZ())),
                     this.orbitSign,
                     String.format("%.2f", this.dragon.flightController().throttle()),
-                    this.dragon.flightIntentBlockedTicks());
+                    this.dragon.flightIntentBlockedTicks(),
+                    this.dragon.breathMissStreak(), this.hoverOnly);
         }
         if (this.phaseTicks >= BREATH_TICKS) {
             this.enter(Phase.BREATH_RECOVER);
@@ -407,6 +412,13 @@ public class DragonRangedGoal extends Goal {
             this.holdHover();
             return;
         }
+        // 连续空轮 → 站桩喷（换几何，见 hoverOnly 的说明）
+        if (this.hoverOnly) {
+            this.aim(target);
+            this.dragon.setBodyRollDirect(0.0F);
+            this.holdHover();
+            return;
+        }
         double dx = this.dragon.getX() - target.getX();
         double dz = this.dragon.getZ() - target.getZ();
         double len = Math.sqrt(dx * dx + dz * dz);
@@ -428,16 +440,23 @@ public class DragonRangedGoal extends Goal {
             double tz = dx / len * this.orbitSign;
             // 绕圈半径也不超过实际净空的 0.7 —— 开阔地里它就是原来的 orbitRadius。
             double radius = Math.min(this.dragon.orbitRadius(), space.clearance() * 0.7D);
-            double radial = Mth.clamp((radius - len) * 0.08D, -0.3D, 0.3D);
-            // ★ 让"运动方向"靠近"朝向"：身体朝向是跟着运动方向走的（BodyRotationControl），
+            // ★ 径向方向必须带滞回：以前用 sign(radius - len)，半径一跨过阈值符号就每 tick 翻转
+            //   → 运动方向在"往里/往外"之间跳 = 真机上那个"前后抖动"。
+            //   现在：误差超过 1.5 格才允许换向，并且用低通把方向平滑过去。
+            double err = radius - len;
+            if (err > RADIAL_HYSTERESIS) {
+                this.radialSign = 1.0D;
+            } else if (err < -RADIAL_HYSTERESIS) {
+                this.radialSign = -1.0D;
+            }
+            double radial = Mth.clamp(err * 0.08D, -0.3D, 0.3D);
+            // ★ 让"运动方向"靠近"朝向"：身体朝向跟着运动方向走（BodyRotationControl），
             //   纯切向飞行时身体会横着对目标 —— 真机表现就是"侧着喷火"。
-            //   这里把切向压到 45%，径向（远离/靠近目标）占主导，机身与目标方向只差 ~24°，
-            //   看起来仍然是绕着目标转，但不再是侧身横扫。
+            //   这里把切向压到 45%、径向（远离/靠近目标）占主导，机身与目标方向只差 ~24°。
             double rx = dx / len;
             double rz = dz / len;
-            double bias = radial >= 0.0D ? 1.0D : -1.0D;   // 太近了往外退，太远了往里靠
-            double mixX = tx * 0.45D + rx * bias;
-            double mixZ = tz * 0.45D + rz * bias;
+            double mixX = tx * 0.45D + rx * this.radialSign;
+            double mixZ = tz * 0.45D + rz * this.radialSign;
             double mixLen = Math.sqrt(mixX * mixX + mixZ * mixZ);
             if (mixLen > 1.0E-3D) {
                 mixX /= mixLen;
@@ -455,6 +474,20 @@ public class DragonRangedGoal extends Goal {
     private double coneLength() {
         return CONE_LENGTH * this.dragon.combatGeoScale();
     }
+
+    /** 径向方向（+1 = 往里靠，-1 = 往外退），带滞回，避免每 tick 翻转造成前后抖动。 */
+    private double radialSign = 1.0D;
+    /** 换向滞回：半径误差超过这么多格才允许换向。 */
+    private static final double RADIAL_HYSTERESIS = 1.5D;
+    /**
+     * 连续空轮后改用的"站桩"模式：不再绕圈，就近距离原地喷。
+     *
+     * <p>真机：绕圈攻击连续打不到 → 收招 → 重新靠拢 → 又绕同一圈 → 还是打不到（死循环）。
+     * 现在连续 2 轮空就换几何：绕圈改站桩、距离压到 75%。
+     */
+    private boolean hoverOnly;
+    /** 空轮后改站桩时，喷息距离压缩到正常值的多少倍。 */
+    private static final double RETRY_RANGE_FACTOR = 0.75D;
 
     /** 喷息时视线被挡的连续 tick 数（超过 {@link #LOS_LOST_MAX} 就提前收招换位置）。 */
     private int noLosTicks;

@@ -3177,8 +3177,24 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /** 收一轮龙息（和 {@link #beginBreathVolley()} 配对）。 */
     public void endBreathVolley() {
         this.breathVolley = false;
+        // 这一轮完全没打中任何人 → 记一次"空轮"。
+        // 连续空轮说明当前的距离/站位几何打不到（真机："旋转尝试攻击时重复打不到，
+        // 来回调位置又调回原位，死循环"），下一轮要换几何而不是原地重来。
+        if (this.breathHits.isEmpty()) {
+            this.breathMissStreak++;
+        } else {
+            this.breathMissStreak = 0;
+        }
         this.breathHits.clear();
     }
+
+    /** 连续多少轮龙息完全没打中（0 = 上一轮有命中）。 */
+    public int breathMissStreak() {
+        return this.breathMissStreak;
+    }
+
+    /** 连续空轮计数（见 {@link #endBreathVolley()}）。 */
+    private int breathMissStreak;
 
     /** 这一轮里同一个目标已经挨了几跳（0 = 还没挨过，下一跳按满伤害）。 */
     public int breathHitsOn(LivingEntity target) {
