@@ -145,12 +145,19 @@ public final class DragonFlightController {
         } else {
             this.blockedTicks = Math.max(0, this.blockedTicks - 2);
         }
-        if (this.blockedTicks > INTENT_BLOCK_LIMIT) {
-            // 撞墙太久：这个意图在这个地形执行不了 → 停住（竖直照常被安全层夹）
-            this.applySafety(new Vec3(0.0D, desired.y, 0.0D));
-            return;
-        }
-        this.applySafety(desired);
+        // ★ 平滑降速，而不是"一撞就归零"：
+        //   第一版是硬切（blockedTicks > 10 → 水平分量直接 0），而 horizontalCollision 是会闪的
+        //   （擦一下地形就是一拍 true），于是速度在"有/无"之间跳 → 真机表现为喷息抽搐。
+        //   现在用一阶低通把水平分量收到 0 / 放回 1，瞬时擦碰只是轻轻收油门。
+        double targetThrottle = this.blockedTicks > INTENT_BLOCK_LIMIT ? 0.0D : 1.0D;
+        this.throttle += (targetThrottle - this.throttle) * INTENT_THROTTLE_LERP;
+        double k = this.throttle;
+        this.applySafety(new Vec3(desired.x * k, desired.y, desired.z * k));
+    }
+
+    /** 当前招式意图的水平"油门"（0 = 完全停推挤，1 = 全速执行；诊断用）��� */
+    public double throttle() {
+        return this.throttle;
     }
 
     /** 当前招式意图连续被水平碰撞挡住多少 tick（0 = 没被挡；goal 用它决定要不要收招）。 */
@@ -160,8 +167,12 @@ public final class DragonFlightController {
 
     /** 连续撞墙多少 tick 之后判定"意图执行不了"并停住水平推挤（10 = 0.5 秒）。 */
     private static final int INTENT_BLOCK_LIMIT = 10;
+    /** 水平"油门"的低通系数：越小越平滑（0.15 ≈ 7 tick 走完 2/3 路程）。 */
+    private static final double INTENT_THROTTLE_LERP = 0.15D;
     /** 招式意图被水平碰撞挡住的连续 tick 数。 */
     private int blockedTicks;
+    /** 招式意图的水平油门（0~1，平滑值）。 */
+    private double throttle = 1.0D;
 
 
     /** 骑手冲锋：航线接管 + 原有的诊断/朝向处理（玩家指令，不套 {@link #applyIntent} 的"卡住就停"）。 */

@@ -362,25 +362,19 @@ public class DragonRangedGoal extends Goal {
      * 否则龙头会直接穿到目标身上甚至背后去。
      */
     /**
-     * 喷息时的移动：地形允许就绕圈边飞边喷，撞到东西就<b>原地悬停继续喷</b>。
+     * 喷息时的移动：绕着目标画弧（边飞边喷）。
      *
-     * <h2>★ 为什么撞到就停绕圈（真机"喷息时进死角"）</h2>
-     * 绕圈用的是<b>固定切向</b>（{@code orbitSign} 定下来就不变）：一旦绕到墙角，
-     * 它仍然沿那个切向往墙里推，而喷息阶段速度是 goal 直接写的、避障和寻路都不参与 ——
-     * 于是越推越深、卡在死角里"因为固定的旋转方向而出不来"。
+     * <h2>★ 不在这里判断撞墙</h2>
+     * 第一版在这里加了"撞墙就停止绕圈、原地悬停"，结果真机**抽搐**：
+     * {@code horizontalCollision} 是会闪的（擦一下地形就是一拍 true），
+     * 于是速度在"切向 0.35"和"0"之间跳、压弯在 12° 和 0° 之间跳 —— 一开一关就是抽搐。
      *
-     * <p>但喷息<b>根本不需要移动</b>（锥体只要求"嘴到目标的连线不被挡"）：
-     * 所以现在一检测到水平碰撞或嵌进方块，就直接原地悬停（保持瞄准、继续喷），
-     * 把"边飞边喷"只留在地形允许的时候。脱出/脱困由飞行辅助那一套负责。
+     * <p>现在这件事交给执行层（{@link DragonFlightController#applyIntent}）：
+     * 它按<b>持续</b>碰撞 tick 数决定，并且是<b>平滑降速</b>（throttle 低通），
+     * 所以瞬时擦碰只会让速度轻轻收一下，不会跳变。
      */
     private void breathMotion(LivingEntity target) {
         if (!BREATH_WHILE_FLYING) {
-            this.holdHover();
-            return;
-        }
-        if (this.dragon.horizontalCollision || this.dragon.flightAssist().isEmbedded()) {
-            // 撞墙/嵌进方块：停止绕圈，原地悬停（朝向仍由 aim() 管，喷息照常）
-            this.dragon.setBodyRollDirect(0.0F);
             this.holdHover();
             return;
         }
