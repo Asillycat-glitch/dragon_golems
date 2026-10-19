@@ -4,6 +4,7 @@ import a_silly_cat.dragon_golems.Dragon_golems;
 import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
@@ -217,6 +218,23 @@ public final class DragonFlightAssist {
         }
         this.embedded = noRoom;
 
+        // ---- 有界恢复：长期嵌在方块里且找不到出路就换个位置 ----
+        //
+        // 真机现场：龙在 y=90.79（带顶 88.55）嵌进天花板结构里，
+        //   脱出逻辑①往下 1.5/3.0 格仍在结构内；②扇面 9 格内整条龙塞不下；
+        //   ③兜底"往上"又被高度带夹成 0（因为它已经在带顶之上）→ dy=0.000 卡 500+ tick。
+        // 这时物理状态已经坏了，继续"找方向"没有意义 —— 直接把整条龙挪到一个塞得下的位置。
+        // 优先主人身边（战斗时不会突然跑到半张图外），其次沿自己这一列上下找。
+        if (noRoom) {
+            this.embeddedTicks++;
+            if (this.embeddedTicks > EMBED_RECOVER_TICKS && this.recoverFromEmbed(dragon)) {
+                this.embeddedTicks = 0;
+                this.stuckTicks = 0;
+            }
+        } else {
+            this.embeddedTicks = 0;
+        }
+
         // ★ 战斗外才允许自动进入幽灵（{@code ghost.duringCombat}）：
         //   幽灵态是"穿过方块"，而龙息/技能会被方块挡住 —— 战斗中穿墙等于整场战斗无效。
         //   这个代价本身是对的，但前提是"战斗开始前就在里面"；所以只认非战斗时进入。
@@ -341,6 +359,58 @@ public final class DragonFlightAssist {
     public boolean isEmbedded() {
         return this.embedded;
     }
+
+    /**
+     * <b>有界恢复</b>：把整条龙挪到一个真正塞得下的位置。
+     *
+     * <p>只在"长期嵌在方块里、且脱出逻辑找不到方向"时调用（见 {@link #EMBED_RECOVER_TICKS}）。
+     * 这不是行为限制，而是物理状态坏掉之后的兜底 —— 否则它会永远卡在结构里。
+     * 真机现场：{@code y=90.79}（带顶 88.55）嵌在天花板里；脱出①往下 1.5/3.0 仍在结构内，
+     * ②扇面 9 格内整条龙塞不下，③兜底"往上"又被高度带夹成 0 → {@code dy=0.000} 卡 500+ tick。
+     *
+     * <p>选点顺序：主人身边（战斗时不会突然跑到半张图外）→ 自己这一列向上（建筑里更可能是空腔）→ 向下。
+     *
+     * @return 是否真的挪了位置
+     */
+    private boolean recoverFromEmbed(DragonGolemEntity dragon) {
+        LivingEntity owner = dragon.getOwner();
+        if (owner != null) {
+            for (double dy : new double[]{0.0D, 1.5D, -1.5D, 3.0D, -3.0D, 5.0D}) {
+                Vec3 spot = owner.position().add(0.0D, dy, 0.0D);
+                if (hasRoomFor(dragon, spot)) {
+                    return this.teleportTo(dragon, spot);
+                }
+            }
+        }
+        Vec3 base = dragon.position();
+        for (double dy = 1.0D; dy <= EMBED_RECOVER_SCAN; dy += 1.0D) {
+            for (double sign : new double[]{1.0D, -1.0D}) {
+                Vec3 spot = base.add(0.0D, dy * sign, 0.0D);
+                if (hasRoomFor(dragon, spot)) {
+                    return this.teleportTo(dragon, spot);
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 真的挪位置（和本家传送同一个写法：{@code Entity.moveTo}，不动旋转）。 */
+    private boolean teleportTo(DragonGolemEntity dragon, Vec3 spot) {
+        Vec3 from = dragon.position();
+        dragon.moveTo(spot.x, spot.y, spot.z, dragon.getYRot(), dragon.getXRot());
+        dragon.setDeltaMovement(Vec3.ZERO);
+        if (DragonDebug.RIDE) {
+            Dragon_golems.LOGGER.info("[fly] 有界恢复：嵌在方块里太久 → {} → {}", from, spot);
+        }
+        return true;
+    }
+
+    /** 连续嵌在方块里多少 tick 之后触发有界恢复（100 = 5 秒）。 */
+    private static final int EMBED_RECOVER_TICKS = 100;
+    /** 有界恢复沿自己这一列上下找多远（格）。 */
+    private static final double EMBED_RECOVER_SCAN = 24.0D;
+    /** 连续嵌在方块里的 tick 数（{@link #recoverFromEmbed} 的门槛）。 */
+    private int embeddedTicks;
 
     /** 脱困结束：撤掉 no-clip，清计数（否则会立刻又触发一次）。 */
     private void endRescue(DragonGolemEntity dragon) {
