@@ -3575,10 +3575,20 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
 
     /** 当前这一列（脚下）的飞行高度带，每 tick 算一次即可（{@link DragonFlightController} 用）。 */
     public FlightBand flightBand() {
-        double floor = this.localFloorY();
+        return this.flightBandAt(this.blockPosition().getX(), this.blockPosition().getZ());
+    }
+
+    /**
+     * <b>任意水平坐标</b>处的飞行高度带。
+     *
+     * <p>给"把一段脚本轨迹压回可行空间"用（俯冲弧线就是典型）：轨迹上的每个点都夹进
+     * <b>那个点自己的</b>高度带，于是"天花板太低"不再意味着"这招作废"，
+     * 而是自动变成贴着带顶的<b>浅掠</b> —— <b>降级执行</b>，而不是中止或顶着。
+     */
+    public FlightBand flightBandAt(int x, int z) {
+        double floor = this.scanFloor(x, z, Mth.floor(this.getY())).y();
         double min = floor + MIN_HOVER_CLEARANCE;
-        double max = this.maxFeetYUnderCeiling(this.blockPosition().getX(), this.blockPosition().getZ(),
-                this.ceilingScanStart());
+        double max = this.maxFeetYUnderCeiling(x, z, this.ceilingScanStart());
         if (max == NO_CEILING) {
             return new FlightBand(min, Double.MAX_VALUE, true);
         }

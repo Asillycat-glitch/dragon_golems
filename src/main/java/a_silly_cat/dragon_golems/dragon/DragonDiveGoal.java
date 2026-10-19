@@ -215,28 +215,20 @@ public class DragonDiveGoal extends Goal {
         }
         double dist = this.horizontalDistance(this.dragon.getX(), this.dragon.getZ(), target.getX(), target.getZ());
         boolean ok = dist >= this.dragon.diveMinH() && dist <= this.dragon.diveMaxH();
-        // ★ 竖直空间不够就不打俯冲（"40 格天花板 + 30 格平台"那种室内场地）：
-        //   入场高度在天花板外面，龙会一路往天花板里爬，而竖直碰撞不会触发任何"卡住"判定，
-        //   结果是白等 LINEUP 超时 + 挨打。这一轮让给龙息/龙弹/音爆（它们不需要爬升）。
-        //   骑手指令（按 R）例外：那是玩家明确要的，航线会被 ceilingMargin() 压平，照打。
-        boolean room = this.dragon.isRiderOrderedDive() || this.dragon.diveRoomOk(target);
-        // ★ 自己头顶没有余量时也不抽俯冲（AI）：真机现场龙被压在天花板下
-        //   （maxFeet=81.55、脚在 83.87），俯冲仍被抽中 → 它按航线往天花板里爬十几秒。
-        //   骑手指令照样放行（玩家明确要的）。
-        boolean selfRoom = this.dragon.isRiderOrderedDive() || this.dragon.hasHeadroomFor(1.0D);
-        if (!room && trace) {
-            Dragon_golems.LOGGER.info("[dive] canUse=false: 竖直空间不足 room={} need={} target={}",
-                    String.format("%.1f", this.dragon.headroomAbove(target)),
-                    String.format("%.1f", this.dragon.diveMinRoom()),
-                    target.getName().getString());
-        }
-        boolean allowed = ok && room && selfRoom;
+        // ★ S2：不再因为"竖直空间不够"拒绝俯冲。
+        //   弧线现在会按每个点自己的飞行高度带夹取（见 curvePoint），空间不足时它<b>降级成浅掠</b>，
+        //   横向轨迹与接触判定保留 —— 照样能撞到人。以前那两道门（diveRoomOk / hasHeadroomFor）
+        //   是在弧线做不到降级时加的，现在属于"阻碍原行为"，删掉。
+        //   骑手指令（按 R）本来就总是放行。
+        boolean allowed = ok;
         if (trace) {
-            Dragon_golems.LOGGER.info("[dive] canUse={} dist={} allowed={}..{} riderOrdered={} room={} selfRoom={} target={}",
+            Dragon_golems.LOGGER.info("[dive] canUse={} dist={} allowed={}..{} riderOrdered={} 目标上方空间={} target={}",
                     allowed, String.format("%.1f", dist),
                     String.format("%.1f", this.dragon.diveMinH()),
                     String.format("%.1f", this.dragon.diveMaxH()),
-                    this.dragon.isRiderOrderedDive(), room, selfRoom, target.getName().getString());
+                    this.dragon.isRiderOrderedDive(),
+                    String.format("%.1f", this.dragon.headroomAbove(target)),
+                    target.getName().getString());
         }
         return allowed;
     }
@@ -280,6 +272,8 @@ public class DragonDiveGoal extends Goal {
         // 停滞看门狗复位（否则会拿上一轮的坐标直接判"卡住"）
         this.stallTicks = 0;
         this.lastDivePos = this.dragon.position();
+        // 降级标记只影响日志（"这一轮是浅掠"），每轮重置
+        this.degraded = false;
         if (DragonDebug.RIDE) {
             Dragon_golems.LOGGER.info("[dive] start(): riderOrdered={} target={} pos={}",
                     this.dragon.isRiderOrderedDive(), this.dragon.getTarget(), this.dragon.position());
@@ -313,7 +307,8 @@ public class DragonDiveGoal extends Goal {
         // 通知调度器：这一轮俯冲打完了（开始下一轮的间隔计时）
         this.dragon.onSkillFinished(DragonGolemEntity.DragonSkill.DIVE);
         if (DEBUG) {
-            Dragon_golems.LOGGER.info("[dive] 结束 damaged={} s={}", this.damaged, String.format("%.1f", this.passS));
+            Dragon_golems.LOGGER.info("[dive] 结束 damaged={} s={} 降级浅掠={}",
+                    this.damaged, String.format("%.1f", this.passS), this.degraded);
         }
         this.impacted.clear();
         this.nextHit.clear();
@@ -365,19 +360,9 @@ public class DragonDiveGoal extends Goal {
      * {@link #LOOKAHEAD_TICKS} tick 的提前量），跟上弧线靠的是几何本身，不需要分阶段换挡。
      */
     private void tickPass(@Nullable LivingEntity target) {
-        // ★ 追不上就放弃（真机现场）：
-        //   [dive] contactBox y=86.5..91.8 dragonY=88.8 s=1.1..19.5 damaged=false
-        //   [fly]  dy=+1.048 hoverT=88.55 ceilB=91.00 maxFeet=88.55 pos y=88.78
-        //   航线要它爬到 90+，但天花板在 91 —— 它上不去，于是用 1.0+ 的速度顶着天花板十几秒：
-        //   接触箱整段穿在结构里、一个目标都没碰到。竖直被顶住 = 这条航线在这里执行不了。
-        if (this.dragon.verticalCollision) {
-            if (DEBUG) {
-                Dragon_golems.LOGGER.info("[dive] 竖直被挡（头顶天花板/横梁）→ 放弃本轮 s={}",
-                        String.format("%.1f", this.passS));
-            }
-            this.finish();
-            return;
-        }
+        // 说明：这里**不再**因为 verticalCollision 中止。
+        // 弧线已经按"每个点自己的飞行高度带"夹过（curvePoint），空间不足时它会自动变成浅掠；
+        // 剩下能挡住它的只有横向障碍，那交给执行层/寻路的避障处理。
         if (this.stalledOut()) {
             this.finish();
             return;
@@ -423,12 +408,14 @@ public class DragonDiveGoal extends Goal {
         return true;
     }
 
-    /** 停滞判定：连续多少 tick 位移不足。 */
-    private static final int DIVE_STALL_TICKS = 40;
+    /** 停滞判定：连续多少 tick 位移不足（防"脚本永远跑不完"，不是防行为）。 */
+    private static final int DIVE_STALL_TICKS = 80;
     /** 停滞判定：位移门槛（格）。 */
-    private static final double DIVE_STALL_MIN = 1.0D;
+    private static final double DIVE_STALL_MIN = 1.5D;
     private int stallTicks;
     private Vec3 lastDivePos = Vec3.ZERO;
+    /** 这一轮弧线是否被高度带压低过（= 降级成浅掠）；重置点见 {@link #start()}。 */
+    private boolean degraded;
 
     /** 龙在航线上投影出来的带符号距离（负 = 还没到目标）。 */
     private double projectOnCurve() {
@@ -467,16 +454,14 @@ public class DragonDiveGoal extends Goal {
      * <p>中间那个高度取 {@code max(目标脚下地形 + skimHeight(), 目标的脚 Y)}，
      * 所以打飞行目标时弧线会从它所在的高度穿过，而不是扎到地上。
      *
-     * <p><b>★ 天花板夹取（"穿过天花板俯冲但没能成功"的根因修复）：</b>
-     * 原来这里只有 {@code 地面高度 + entryAlt()}，完全没有天花板约束 ——
-     * 在"平台 30 格、天花板 40 格"的房间里，1 倍体型的入场高度是 {@code 30 + 12 = 42}、
-     * 泰坦是 {@code 30 + 22 = 52}，<b>都在天花板外面</b>。于是龙每一轮俯冲都在命令自己往天花板里爬；
-     * 而竖直碰撞不产生 {@code horizontalCollision}、也没有嵌进方块，所以三条"卡住/穿墙"判定
-     * 一条都不响 —— 它只能等 {@link #LINEUP_MAX}(160 tick) 超时，同时被围住集火。
+     * <p><b>★ S2：整条弧线都夹进"该点自己的飞行高度带"</b>（{@link DragonGolemEntity#flightBandAt}）。
      *
-     * <p>现在：按<b>端点所在坐标</b>扫天花板（{@code ceilingYAt}，不是龙脚下的），
-     * 再用 {@link #ceilingMargin()} 留出模型往原点下方垂的那段高度。天花板比目标还低时
-     * 弧线会被压平（甚至压到目标高度），那属于"这招在这里打不了"，由 {@link #canUse} 提前挡掉。
+     * <p>以前这里只有"天花板减一点"，空间不够时弧线仍然指向天花板外面 ——
+     * 龙要么顶着结构十几秒（真机：{@code contactBox y=86.5..91.8}，10 秒一个目标没碰到），
+     * 要么被中止补丁直接取消这一轮。两种都不对：<b>俯冲应该"降级"而不是"作废"</b>。
+     * 现在每个点都按它所在那一列的地面/天花板夹一遍：
+     * 天花板低 → 弧线整体被压扁 → 变成<b>贴着带顶的浅掠</b>，横向轨迹与接触判定全保留，
+     * 照样能撞到人、照样结算伤害。日志里 {@code [dive] 降级} 会提示这一轮是浅掠。
      */
     private Vec3 curvePoint(double s) {
         assert this.dir != null && this.targetAt != null;
@@ -486,15 +471,16 @@ public class DragonDiveGoal extends Goal {
         double u = Mth.clamp(Math.abs(s) / span, 0.0D, 1.0D);
         double ue = Math.pow(u, ALT_EXP);
         double edge = this.groundHeight(x, z) + this.entryAlt();
-        double ceiling = this.dragon.ceilingYAt(Mth.floor(x), Mth.floor(z),
-                this.dragon.getY() + this.dragon.getBbHeight() + 0.5D);
-        if (ceiling != DragonGolemEntity.NO_CEILING) {
-            edge = Math.min(edge, ceiling - this.ceilingMargin());
-        }
-        // 夹过头时至少别低于掠过高度（否则弧线会插进地里）
-        edge = Math.max(edge, this.skimY);
         double y = this.skimY + (edge - this.skimY) * ue;
-        return new Vec3(x, y, z);
+
+        DragonGolemEntity.FlightBand band = this.dragon.flightBandAt(Mth.floor(x), Mth.floor(z));
+        double high = Math.max(band.minFeet(), band.maxFeet());
+        double clamped = Mth.clamp(y, band.minFeet(), high);
+        if (clamped < y - 0.05D) {
+            // 被压低 = 这一轮的弧线在这个位置执行不了原高度 → 降级成浅掠
+            this.degraded = true;
+        }
+        return new Vec3(x, clamped, z);
     }
 
     /** 记下"这一轮瞄准的是谁/哪个点"，弧线就围着它展开。 */
