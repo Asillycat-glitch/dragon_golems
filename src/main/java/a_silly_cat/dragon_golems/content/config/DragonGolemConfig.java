@@ -255,9 +255,12 @@ public final class DragonGolemConfig {
      * 现在把采样盒子每边向外放宽这个值（上下也放宽），让路线自己离墙远一点。
      *
      * <p>调大 = 更安全但更容易"过不去"（狭窄处会绕远）；调小 = 更贴边。
+     *
+     * <p>默认从 0.35 提到 <b>0.6</b>：真机"贴墙抽搐"的一个来源就是路线贴着墙面走，
+     * 龙判定箱本来就 2.6 格宽，再多留 0.6 能让路线明显离开墙面。
      */
     public static double pathBodyMargin() {
-        return Mth.clamp(num(COMMON.pathBodyMargin, 0.35D), 0.0D, 2.0D);
+        return Mth.clamp(num(COMMON.pathBodyMargin, 0.6D), 0.0D, 2.0D);
     }
 
     /**
@@ -622,7 +625,7 @@ public final class DragonGolemConfig {
                     .comment("寻路评估器给身体留的额外余量（格）",
                             "采样盒子每边向外放宽这个值，让路线自己离墙/梁远一点（0 = 精确贴边）",
                             "调大更安全但狭窄处会绕远，调小更贴边")
-                    .defineInRange("bodyMargin", 0.35D, 0.0D, 2.0D);
+                    .defineInRange("bodyMargin", 0.6D, 0.0D, 2.0D);
             builder.pop();
 
             builder.comment("旋转（转向速度与压弯）").push("flight");

@@ -52,9 +52,16 @@ public final class DragonFlightAssist {
     /** 连续撞墙多少 tick 之后判定"卡住了"。20 tick = 1 秒。 */
     private static final int STUCK_LIMIT = 20;
     /** 判定卡住后，再等多少 tick 才去强制重算路径（先给它一个自己走通的机会）。 */
-    private static final int REROUTE_AFTER = STUCK_LIMIT + 10;
-    /** 还是走不通时，每隔多少 tick 再重算一次（每次都按"现在在哪"重新规划）。 */
-    private static final int REROUTE_EVERY = 15;
+    /** 判"卡住"后，再等多少 tick 才去强制重算路径（先给它一个自己走通的机会）。 */
+    private static final int REROUTE_AFTER = STUCK_LIMIT + 20;
+    /**
+     * 还是走不通时，每隔多少 tick 再重算一次。
+     *
+     * <p>原来 15（= 0.75 秒一次）。真机表现"贴着墙抽搐"有一部分就是它：每次重算都会给出
+     * 一个略微不同的节点，朝向跟着微调 → 蹭墙 → 20 tick 后又重算 …… 现在放宽到 40
+     * （2 秒一次）：真卡死有"停滞/脱困"那一套兜底，不需要这么勤地改主意。
+     */
+    private static final int REROUTE_EVERY = 40;
     /** 单次自动脱困最多持续多少 tick（3 秒）；到点还没出来就放弃，免得永久幽灵。 */
     private static final int RESCUE_MAX = 60;
     /** 脱困时的飞行速度（格/tick），比正常巡航快，好尽快离开死路。 */

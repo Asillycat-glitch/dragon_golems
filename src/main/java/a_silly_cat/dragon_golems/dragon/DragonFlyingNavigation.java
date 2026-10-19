@@ -116,17 +116,19 @@ public class DragonFlyingNavigation extends FlyingPathNavigation {
     }
 
     /**
-     * 飞行单位可以更激进地"切角"。
+     * <b>不允许切角</b>（交回原版飞行判定）。
      *
-     * <p>原版 {@code FlyingPathNavigation} 已经放宽了部分路径类型；这里把
-     * {@code OPEN} / {@code WALKABLE} 也允许切角 —— 龙体型大、转向慢，
-     * 老老实实贴着拐角绕反而更容易蹭墙。
+     * <h2>为什么改回来</h2>
+     * 这里以前主动放行 {@code OPEN / WALKABLE} 的切角，理由写的是"龙体型大、转向慢，
+     * 老老实实贴着拐角绕反而更容易蹭墙"。真机结论正好相反：<b>允许切角 = A* 会在墙角抄近路，
+     * 飞过去的那条直线离墙角更近</b>，于是龙一路贴着墙角蹭 —— 这正是"墙边抽搐"的主要来源之一。
+     *
+     * <p>现在只保留原版判定：拐角不切，路线宁可多绕一格。配合
+     * {@code pathfinding.bodyMargin}（节点的身体余量）与"路线拉直"，整体会离墙更远。
      */
     @Override
     public boolean canCutCorner(BlockPathTypes type) {
-        return super.canCutCorner(type)
-                || type == BlockPathTypes.OPEN
-                || type == BlockPathTypes.WALKABLE;
+        return super.canCutCorner(type);
     }
 
     /** 把"当前路径"暴露出来只为了日志/诊断，返回 null 表示没有路径。 */
