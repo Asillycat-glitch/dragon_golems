@@ -178,7 +178,7 @@ public final class DragonFlightAssist {
         Vec3 steer = dragon.pathFollower().steerPoint();
         Dragon_golems.LOGGER.info(
                 "[fly] mode={} stuck={} room={} embedded={} rescue={} noPhysics={} free={} dy={} hColl={} vColl={} "
-                        + "hoverT={} ceilB={} maxFeet={} steerY={} onRoute={} skip={} blk={} thr={} pos={}",
+                        + "hoverT={} ceilB={} maxFeet={} roomy={} clr={} hd={} steerY={} onRoute={} skip={} blk={} thr={} pos={}",
                 dragon.flightController().mode().label,
                 this.stuckTicks, hasRoomFor(dragon, dragon.position()),
                 this.embedded, this.rescueTicks, dragon.noPhysics, this.freeFlight,

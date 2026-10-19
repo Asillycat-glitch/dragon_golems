@@ -2621,6 +2621,88 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return Math.max(ORBIT_RADIUS_MIN, this.mouthForward() + ORBIT_MOUTH_CLEARANCE);
     }
 
+    // ---- 空间预算（平地 / 山洞的行为分叉）----
+
+    /**
+     * <b>空间预算</b>：龙此刻周围"够不够它展开动作"。
+     *
+     * <h2>为什么要它（开发以来所有难点的共同原因）</h2>
+     * 龙傀儡本体太大：1 倍就有 26 格长、2.6 格宽，绕圈半径 {@link #orbitRadius()} 又是 20+ 格。
+     * 在山洞/工厂里，"边飞边绕圈扫射"这种动作<b>物理上就没有空间</b> —— 继续做只会贴着墙抽搐。
+     * 与其在每个动作里加否决条件，不如先量一下空间，再<b>按空间选动作</b>：
+     * <ul>
+     *   <li>{@code roomy == true}（平地/开阔）：允许绕圈扫射、大半径机动（观感优先）；</li>
+     *   <li>{@code roomy == false}（洞窟/室内）：<b>原地悬停扫射</b>，不做绕圈（不旋转、不贴墙）。</li>
+     * </ul>
+     *
+     * <p>每 {@link #SPACE_CACHE_TICKS} tick 量一次，代价可控（8 方向 × 最多 12 次包围盒探测）。
+     */
+    public record SpaceBudget(double headroom, double clearance, boolean roomy) {
+    }
+
+    /** 量一次空间预算（缓存 {@link #SPACE_CACHE_TICKS} tick）。 */
+    public SpaceBudget spaceBudget() {
+        if (this.spaceCache != null && --this.spaceTicks > 0) {
+            return this.spaceCache;
+        }
+        this.spaceTicks = SPACE_CACHE_TICKS;
+        double headroom;
+        double ceiling = this.ceilingBlockYAt(this.blockPosition().getX(), this.blockPosition().getZ(),
+                this.ceilingScanStart());
+        if (ceiling == NO_CEILING) {
+            headroom = SPACE_UNBOUNDED;
+        } else {
+            headroom = ceiling - this.getY() - this.getBbHeight();
+        }
+        double clearance = this.probeClearance();
+        double need = this.orbitRadius();
+        boolean roomy = headroom >= 2.0D && clearance >= need * SPACE_ROOMY_FACTOR;
+        this.spaceCache = new SpaceBudget(headroom, clearance, roomy);
+        return this.spaceCache;
+    }
+
+    /**
+     * 水平净空：8 个方向各探"整条龙塞得下"的最远距离（步长 2 格、上限 24 格），取<b>中位数</b>。
+     *
+     * <p>用中位数而不是最小值：贴着墙的一侧必然是 0，最小值会让所有场地都判成"挤"；
+     * 中位数描述的是"整体有没有活动余地"。
+     */
+    private double probeClearance() {
+        double[] free = new double[8];
+        for (int i = 0; i < 8; i++) {
+            double angle = Math.PI * 2.0D * i / 8.0D;
+            double dx = Math.cos(angle);
+            double dz = Math.sin(angle);
+            double reach = 0.0D;
+            for (double d = 2.0D; d <= SPACE_PROBE_MAX; d += 2.0D) {
+                if (!this.fitsAt(this.getX() + dx * d, this.getY(), this.getZ() + dz * d)) {
+                    break;
+                }
+                reach = d;
+            }
+            free[i] = reach;
+        }
+        java.util.Arrays.sort(free);
+        return (free[3] + free[4]) * 0.5D;
+    }
+
+    /** 把整条龙放到这个位置塞不塞得下（不移动实体，只做包围盒检测）。 */
+    public boolean fitsAt(double x, double y, double z) {
+        AABB box = this.getBoundingBox().move(x - this.getX(), y - this.getY(), z - this.getZ());
+        return this.level().noCollision(this, box);
+    }
+
+    /** 空间预算缓存时长（tick）。 */
+    private static final int SPACE_CACHE_TICKS = 10;
+    /** 净空探测的最远距离（格）。 */
+    private static final double SPACE_PROBE_MAX = 24.0D;
+    /** 净空要 ≥ 绕圈半径 × 这个系数才算"开阔"。 */
+    private static final double SPACE_ROOMY_FACTOR = 1.5D;
+    /** 无天花板时的 headroom 取值。 */
+    private static final double SPACE_UNBOUNDED = 999.0D;
+    private SpaceBudget spaceCache;
+    private int spaceTicks;
+
     /**
      * 进入喷息的距离闸门（三维，身体中心 → 目标）。
      *

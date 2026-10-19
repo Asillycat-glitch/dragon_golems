@@ -402,10 +402,22 @@ public class DragonRangedGoal extends Goal {
         double speed = ORBIT_SPEED * this.dragon.flightSpeedFactor();
         double vx = 0.0D;
         double vz = 0.0D;
+        // ★ 空间预算：洞里不旋转（原地悬停扫射），平地才绕圈（观感优先）。
+        //   龙本体太大（1 倍就 26 格长、绕圈半径 20+），在山洞/工厂里"边飞边绕圈"物理上没有空间，
+        //   硬做只会贴着墙抽搐。这不是给某个边缘情况打补丁，而是按"这一刻有多大地方"选动作。
+        DragonGolemEntity.SpaceBudget space = this.dragon.spaceBudget();
+        if (!space.roomy()) {
+            this.dragon.setKeepAim(true);
+            this.dragon.setBodyRollDirect(0.0F);
+            this.holdHover();
+            return;
+        }
         if (len > 1.0E-3D) {
             double tx = -dz / len * this.orbitSign;
             double tz = dx / len * this.orbitSign;
-            double radial = Mth.clamp((this.dragon.orbitRadius() - len) * 0.08D, -0.3D, 0.3D);
+            // 绕圈半径也不超过实际净空的 0.7 —— 开阔地里它就是原来的 orbitRadius。
+            double radius = Math.min(this.dragon.orbitRadius(), space.clearance() * 0.7D);
+            double radial = Mth.clamp((radius - len) * 0.08D, -0.3D, 0.3D);
             vx = tx * speed + dx / len * radial;
             vz = tz * speed + dz / len * radial;
         }
