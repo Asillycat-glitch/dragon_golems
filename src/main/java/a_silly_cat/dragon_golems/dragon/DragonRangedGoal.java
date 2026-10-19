@@ -361,8 +361,26 @@ public class DragonRangedGoal extends Goal {
      * （1 倍 7.2 格、泰坦 4 倍 29 格），所以半径必须比"嘴的前伸量"大，
      * 否则龙头会直接穿到目标身上甚至背后去。
      */
+    /**
+     * 喷息时的移动：地形允许就绕圈边飞边喷，撞到东西就<b>原地悬停继续喷</b>。
+     *
+     * <h2>★ 为什么撞到就停绕圈（真机"喷息时进死角"）</h2>
+     * 绕圈用的是<b>固定切向</b>（{@code orbitSign} 定下来就不变）：一旦绕到墙角，
+     * 它仍然沿那个切向往墙里推，而喷息阶段速度是 goal 直接写的、避障和寻路都不参与 ——
+     * 于是越推越深、卡在死角里"因为固定的旋转方向而出不来"。
+     *
+     * <p>但喷息<b>根本不需要移动</b>（锥体只要求"嘴到目标的连线不被挡"）：
+     * 所以现在一检测到水平碰撞或嵌进方块，就直接原地悬停（保持瞄准、继续喷），
+     * 把"边飞边喷"只留在地形允许的时候。脱出/脱困由飞行辅助那一套负责。
+     */
     private void breathMotion(LivingEntity target) {
         if (!BREATH_WHILE_FLYING) {
+            this.holdHover();
+            return;
+        }
+        if (this.dragon.horizontalCollision || this.dragon.flightAssist().isEmbedded()) {
+            // 撞墙/嵌进方块：停止绕圈，原地悬停（朝向仍由 aim() 管，喷息照常）
+            this.dragon.setBodyRollDirect(0.0F);
             this.holdHover();
             return;
         }
