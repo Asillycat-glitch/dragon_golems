@@ -378,7 +378,11 @@ public class DragonDiveGoal extends Goal {
         this.dragon.setDivePhase(this.passS < 0.0D
                 ? DragonGolemEntity.DIVE_PHASE_SKIM
                 : DragonGolemEntity.DIVE_PHASE_PULL);
-        if (this.passS >= this.passForward() || this.phaseTicks > PASS_MAX || this.dragon.horizontalCollision) {
+        // ★ 结束条件只剩"跑完航线 / 超时 / 长时间位移停滞"。
+        //   以前这里还有 `|| dragon.horizontalCollision` —— 在狭窄场地里它本来就在贴墙飞，
+        //   一碰就判死：真机日志 `[dive] finish(): phase=PASS phaseTicks=1`，俯冲几乎永远执行不了。
+        //   "撞墙"由执行层/寻路的避障处理，"真的卡死"由 stalledOut() 兜（80 tick 位移不足 1.5 格）。
+        if (this.passS >= this.passForward() || this.phaseTicks > PASS_MAX) {
             this.finish();
         }
     }
