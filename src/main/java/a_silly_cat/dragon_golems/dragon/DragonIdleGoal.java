@@ -172,9 +172,8 @@ public class DragonIdleGoal extends Goal {
         //   "判断自己该去哪里，其余时候不移动"：目标/站位由攻击 goal 决定，
         //   到了洞里它就不该再满地图绕（那里也没空间）。
         if (this.dragon.profile() == DragonGolemEntity.DragonProfile.GUARDING) {
-            double dy = this.dragon.flightVerticalTarget() - this.dragon.getY();
-            double vy = Math.abs(dy) <= 0.2D ? 0.0D : Mth.clamp(dy * 0.1D, -0.2D, 0.2D);
-            this.dragon.setDiveVelocity(new Vec3(0.0D, vy, 0.0D));
+            // 竖直交给唯一跟踪器（高度目标已由高度场保证可行）
+            this.dragon.setDiveVelocity(new Vec3(0.0D, this.dragon.trackedVerticalSpeed(), 0.0D));
             if (!this.settled) {
                 this.settled = true;
                 this.dragon.setIdleSettled(true);
@@ -301,14 +300,12 @@ public class DragonIdleGoal extends Goal {
             vz = vz / horizontal * horizontalMax;
         }
 
-        // ---- 高度：地表高度 + 悬停高度 + 呼吸，但被头顶天花板按身体高度夹住 ----
-        // 用 hoverTargetY() 而不是自己拼：它会 min(局部地面+悬停高度, 天花板 − 身体高度)。
-        // 自己拼的话，洞里的龙会朝"世界地表 + 10"一直爬（实测 surface=70 / y=-6 → 目标 80），
-        // 表现为无限向上飞直到被回位传送拽回来。
-        // ★ 高度与寻路统合：航路点明显更高/更低（翻梁、爬出低房间）时改跟航线。
-        double wantY = this.dragon.flightVerticalTarget() + this.bob();
-        double vy = Mth.clamp((wantY - this.dragon.getY()) * VERTICAL_GAIN,
-                -VERTICAL_MAX * range, VERTICAL_MAX * range);
+        // ---- 高度：交给实体的唯一竖直跟踪器 ----
+        // 目标高度由 flightVerticalTarget() 给出（模式给想法、高度场给约束），
+        // "目标 → 速度"这一步也只由 trackedVerticalSpeed() 做一次。
+        // 以前这里自己再算一遍（wantY + bob、VERTICAL_GAIN 夹取），和 goal 里的 hoverDelta
+        // 是同一件事的第三份实现 —— 上限不同就会在贴顶/贴地时互相抢。
+        double vy = this.dragon.trackedVerticalSpeed();
         // 蹭到方块就抬一点，免得贴着树、墙原地磨 —— 但**头顶没有空间就别抬**：
         // 低房间里"撞墙→往上抬→顶到天花板→再撞"是一圈死循环，正是"它一直想往上飞"的一部分。
         if (this.dragon.horizontalCollision && this.dragon.hasHeadroomFor(0.5D)) {

@@ -104,8 +104,7 @@ public final class DragonFlightController {
             Vec3 away = this.dragon.retreatVelocity();
             if (away != null) {
                 this.mode = Mode.RETREAT;
-                Double hy = this.dragon.hoverYSpeed();
-                this.applySafety(new Vec3(away.x, hy == null ? 0.0D : hy, away.z));
+                this.applySafety(new Vec3(away.x, this.dragon.trackedVerticalSpeed(), away.z));
                 return;
             }
         }
@@ -128,12 +127,8 @@ public final class DragonFlightController {
         }
         this.mode = Mode.HOVER;
         this.dragon.setKeepAim(false);
-        Double hoverY = this.dragon.hoverYSpeed();
-        if (hoverY == null) {
-            return;      // 已经在目标高度附近：什么都不写（和原 applyHover 的早退一致）
-        }
         Vec3 current = this.dragon.getDeltaMovement();
-        this.applySafety(new Vec3(current.x, hoverY, current.z));
+        this.applySafety(new Vec3(current.x, this.dragon.trackedVerticalSpeed(), current.z));
     }
 
     /**

@@ -178,7 +178,7 @@ public final class DragonFlightAssist {
         Vec3 steer = dragon.pathFollower().steerPoint();
         Dragon_golems.LOGGER.info(
                 "[fly] mode={} stuck={} room={} embedded={} rescue={} noPhysics={} free={} dy={} hColl={} vColl={} "
-                        + "prof={} aim={} hoverT={} ceilB={} maxFeet={} roomy={} clr={} hd={} steerY={} onRoute={} skip={} blk={} thr={} pos={}",
+                        + "prof={} aim={} hoverT={} altT={} vy={} bandFits={} ceilB={} maxFeet={} roomy={} clr={} hd={} steerY={} onRoute={} skip={} blk={} thr={} pos={}",
                 dragon.flightController().mode().label,
                 this.stuckTicks, hasRoomFor(dragon, dragon.position()),
                 this.embedded, this.rescueTicks, dragon.noPhysics, this.freeFlight,
@@ -187,6 +187,9 @@ public final class DragonFlightAssist {
                 dragon.profile().label,
                 dragon.isAiming(),
                 String.format("%.2f", dragon.hoverTargetY()),
+                String.format("%.2f", dragon.flightVerticalTarget()),
+                String.format("%.3f", dragon.trackedVerticalSpeed()),
+                dragon.altitudeField().column(bx, bz).fits(),
                 ceil == DragonGolemEntity.NO_CEILING ? "inf" : String.format("%.2f", ceil),
                 maxFeet == DragonGolemEntity.NO_CEILING ? "inf" : String.format("%.2f", maxFeet),
                 // 注意：{} 是 SLF4J 占位符，个数必须和参数严格对齐 ——

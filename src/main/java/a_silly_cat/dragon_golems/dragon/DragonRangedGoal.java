@@ -388,7 +388,7 @@ public class DragonRangedGoal extends Goal {
         if (DragonDebug.RIDE && this.phaseTicks % 10 == 0) {
             Vec3 v = this.dragon.getDeltaMovement();
             Dragon_golems.LOGGER.info(
-                    "[breath] t={} yRot={} body={} roll={} dy={} dvx={} dvz={} len={} sign={} thr={} blk={} miss={} ovr={} mzd={}",
+                    "[breath] t={} yRot={} body={} roll={} dy={} dvx={} dvz={} len={} sign={} thr={} blk={} miss={} ovr={} mzd={} R={} arc={}",
                     this.phaseTicks,
                     String.format("%.1f", this.dragon.getYRot()),
                     String.format("%.1f", this.dragon.yBodyRot),
@@ -401,7 +401,9 @@ public class DragonRangedGoal extends Goal {
                     String.format("%.2f", this.dragon.flightController().throttle()),
                     this.dragon.flightIntentBlockedTicks(),
                     this.dragon.breathMissStreak(), this.hoverOnly,
-                    String.format("%.1f", this.dragon.mouthDistanceTo(target)));
+                    String.format("%.1f", this.dragon.mouthDistanceTo(target)),
+                    String.format("%.1f", this.arcRadius),
+                    String.format("%.0f", Math.toDegrees(this.arcPhase)));
         }
         if (this.phaseTicks >= BREATH_TICKS) {
             this.enter(Phase.BREATH_RECOVER);
@@ -468,66 +470,55 @@ public class DragonRangedGoal extends Goal {
             this.holdHover();
             return;
         }
-        double dx = this.dragon.getX() - target.getX();
-        double dz = this.dragon.getZ() - target.getZ();
-        double len = Math.sqrt(dx * dx + dz * dz);
         double speed = ORBIT_SPEED * this.dragon.flightSpeedFactor();
-        double vx = 0.0D;
-        double vz = 0.0D;
         // ★ 空间预算：洞里不旋转（原地悬停扫射），平地才绕圈（观感优先）。
-        //   龙本体太大（1 倍就 26 格长、绕圈半径 20+），在山洞/工厂里"边飞边绕圈"物理上没有空间，
-        //   硬做只会贴着墙抽搐。这不是给某个边缘情况打补丁，而是按"这一刻有多大地方"选动作。
         DragonGolemEntity.SpaceBudget space = this.dragon.spaceBudget();
-        if (!space.roomy()) {
+        double radius = this.dragon.orbitRadius();
+        // 净空连"嘴够不到的半径"都给不了 → 绕圈没意义，站桩喷（不然就是贴墙磨/嘴插进目标）
+        if (!space.roomy() || space.clearance() < radius * 0.8D) {
             this.dragon.setKeepAim(true);
             this.dragon.setBodyRollDirect(0.0F);
             this.holdHover();
             return;
         }
+        // ★ 绕圈 = 脚本弧线（相位驱动的 waypoint），不是速度场。
+        //   速度场（切向 + 径向 P 修正）有四个反馈环：半径误差、目标位移、净空变化、油门，
+        //   而且都没有阻尼 —— 真机表现就是"在大平原上绕圈总是乱动"（这轮 22 格、下轮 3.5 格）。
+        //   现在相位每 tick 按 ω = v/R 前进，waypoint 由相位算出，飞向它即可：**确定性几何**，
+        //   不会因为有反馈误差而改向；目标移动时圆心由 waypoint 自然跟随（不追自己的圈）。
+        if (!this.arcInited) {
+            // 从"当前方位"接着走，不跳相位
+            this.arcPhase = Math.atan2(this.dragon.getZ() - target.getZ(),
+                    this.dragon.getX() - target.getX());
+            this.arcInited = true;
+        }
+        this.arcPhase += this.orbitSign * (speed / radius);
+        this.arcRadius = radius;
+        double wx = target.getX() + Math.cos(this.arcPhase) * radius;
+        double wz = target.getZ() + Math.sin(this.arcPhase) * radius;
+        Vec3 to = new Vec3(wx - this.dragon.getX(), 0.0D, wz - this.dragon.getZ());
+        double len = to.length();
+        double vx = 0.0D;
+        double vz = 0.0D;
         if (len > 1.0E-3D) {
-            double tx = -dz / len * this.orbitSign;
-            double tz = dx / len * this.orbitSign;
-            // 绕圈半径也不超过实际净空的 0.7 —— 开阔地里它就是原来的 orbitRadius。
-            double radius = Math.min(this.dragon.orbitRadius(), space.clearance() * 0.7D);
-            // ★ 径向方向必须带滞回：以前用 sign(radius - len)，半径一跨过阈值符号就每 tick 翻转
-            //   → 运动方向在"往里/往外"之间跳 = 真机上那个"前后抖动"。
-            //   现在：误差超过 1.5 格才允许换向，并且用低通把方向平滑过去。
-            double err = radius - len;
-            if (err > RADIAL_HYSTERESIS) {
-                this.radialSign = 1.0D;
-            } else if (err < -RADIAL_HYSTERESIS) {
-                this.radialSign = -1.0D;
-            }
-            double radial = Mth.clamp(err * 0.08D, -0.3D, 0.3D);
-            // ★ 让"运动方向"靠近"朝向"：身体朝向跟着运动方向走（BodyRotationControl），
-            //   纯切向飞行时身体会横着对目标 —— 真机表现就是"侧着喷火"。
-            //   这里把切向压到 45%、径向（远离/靠近目标）占主导，机身与目标方向只差 ~24°。
-            double rx = dx / len;
-            double rz = dz / len;
-            double mixX = tx * 0.45D + rx * this.radialSign;
-            double mixZ = tz * 0.45D + rz * this.radialSign;
-            double mixLen = Math.sqrt(mixX * mixX + mixZ * mixZ);
-            if (mixLen > 1.0E-3D) {
-                mixX /= mixLen;
-                mixZ /= mixLen;
-            }
-            vx = mixX * speed + rx * radial;
-            vz = mixZ * speed + rz * radial;
+            vx = to.x / len * speed;
+            vz = to.z / len * speed;
         }
         this.dragon.setKeepAim(true);
         this.dragon.setBodyRollDirect(ORBIT_BANK * this.orbitSign);
         this.dragon.setDiveVelocity(new Vec3(vx, this.hoverDelta(), vz));
     }
 
+    /** 脚本弧线的相位 / 半径 / 是否已初始化（进入 BREATH 时复位）。 */
+    private double arcPhase;
+    private double arcRadius;
+    private boolean arcInited;
+
     /** 这一 tick 的锥体长度（格）：1 倍基准 × 体型倍率。 */
     private double coneLength() {
         return CONE_LENGTH * this.dragon.combatGeoScale();
     }
 
-    /** 径向方向（+1 = 往里靠，-1 = 往外退），带滞回，避免每 tick 翻转造成前后抖动。 */
-    private double radialSign = 1.0D;
-    /** 换向滞回：半径误差超过这么多格才允许换向。 */
-    private static final double RADIAL_HYSTERESIS = 1.5D;
     /**
      * 连续空轮后改用的"站桩"模式：不再绕圈，就近距离原地喷。
      *
@@ -575,9 +566,8 @@ public class DragonRangedGoal extends Goal {
      * {@code holdHover()}（前摇/收尾）保持纯悬停，不被航线带跑。
      */
     private double hoverDelta() {
-        double wantY = this.dragon.flightVerticalTarget();
-        double cap = 0.18D * this.dragon.speedScale();
-        return Mth.clamp((wantY - this.dragon.getY()) * 0.10D, -cap, cap);
+        // 统一交给实体的唯一竖直跟踪器（高度目标已由 altitudeField 保证可行）
+        return this.dragon.trackedVerticalSpeed();
     }
 
     /**
@@ -783,6 +773,8 @@ public class DragonRangedGoal extends Goal {
             // 视线计数必须每轮复位：否则上一轮的"被挡 20 tick"会带进下一轮，
             // 让下一轮刚开始就立刻收招（真机：`[breath] 视线被挡 13..20 tick` 每 tick 刷一行）。
             this.noLosTicks = 0;
+            // 脚本弧线每轮重新起相（从当前方位接着走，不跳相位）
+            this.arcInited = false;
         }
         // 只有开火阶段才上报姿态；靠拢阶段保持水平（否则会一直低着头飞）
         this.dragon.setDivePhase(next == Phase.CLOSE_IN

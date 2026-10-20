@@ -1768,33 +1768,16 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
-     * 悬停模式要用的<b>竖直速度</b>（{@code null} = 已经在目标高度附近，这一 tick 什么都不写）。
+     * 悬停/别处要用的竖直速度 —— <b>直接就是唯一跟踪器</b>（{@link #trackedVerticalSpeed()}）。
      *
-     * <p>这是从原来的 {@code applyHover()} 拆出来的：只算竖直分量，水平分量由调用方保留
-     * （原实现就是 {@code cur.x, fall, cur.z}），写速度统一交给
-     * {@link DragonFlightController}。判据与原来逐行一致：
-     * <ul>
-     *   <li>{@code |dy| ≤ 0.2} → 不动；</li>
-     *   <li>高于目标 → 慢慢压回去（下限 -0.02，避免"永远差一点"）；</li>
-     *   <li>低于目标但天花板已经把目标压低（{@code hoverTargetY < unclamped - 0.1}）→ 不往上顶；</li>
-     *   <li>否则按 {@code 0.03 + dy × 0.05} 上升，上限 {@link #HOVER_RISE_SPEED}。</li>
-     * </ul>
+     * <p>以前这里是另一套判据（{@code |dy| ≤ 0.2 不动}、{@code 0.03 + dy×0.05}、上限 0.18），
+     * 和 goal 里的 {@code hoverDelta()} 是同一件事的两份实现 —— 两边上限不同，
+     * 在"贴天花板/贴地"的边界上就会打架。现在统一交给跟踪器。
+     *
+     * @return 本 tick 的竖直速度（可能为 0，但不再是 {@code null}，调用方不需要判空）
      */
-    @Nullable
-    Double hoverYSpeed() {
-        double dy = hoverTargetY() - this.getY();
-        if (Math.abs(dy) <= 0.2D) {
-            return null;
-        }
-        if (dy < 0.0D) {
-            return Mth.clamp(dy * 0.05D, -HOVER_FALL_SPEED, -0.02D);
-        }
-        // 天花板已经把悬停目标压低了 → 别硬往上顶（贴着天花板抽搐的老毛病）
-        double unclamped = this.localFloorY() + this.hoverHeight();
-        if (this.hoverTargetY() < unclamped - 0.1D) {
-            return null;
-        }
-        return Mth.clamp(0.03D + dy * 0.05D, 0.03D, HOVER_RISE_SPEED);
+    double hoverYSpeed() {
+        return this.trackedVerticalSpeed();
     }
 
     /** 飞行辅助（goal 拿它做避障修正，按键拿它开关自由飞行）。 */
@@ -3704,8 +3687,19 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * <p>从<b>脚上方</b>开始扫，身体高度范围内的任何方块都会被视为"天花板"，
      * 于是 {@code 脚上限 = 那个方块 − bbHeight − 余量} 永远在挡块之下。
      */
-    private double ceilingScanStart() {
+    /** 天花板扫描的起点（从脚上方开始，身体高度范围内的任何方块都算天花板）。包内可见，供高度场使用。 */
+    double ceilingScanStart() {
         return this.getY() + 0.5D;
+    }
+
+    /** 某一列脚下支撑面的 Y（静水/地面，忽略流水）。供高度场使用。 */
+    public double supportYAt(int x, int z) {
+        return this.scanFloor(x, z, Mth.floor(this.getY())).y();
+    }
+
+    /** 房间比龙还矮时的最低悬停余量（格）。供高度场使用。 */
+    public static double minHoverClearance() {
+        return MIN_HOVER_CLEARANCE;
     }
 
     /**
@@ -3784,95 +3778,96 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return limit == NO_CEILING || limit - this.getY() > margin;
     }
 
+    /** <b>高度场</b>：所有"能不能待在这个高度"的问题都由它回答（见 {@link DragonAltitudeField}）。 */
+    private final DragonAltitudeField altitudeField = new DragonAltitudeField(this);
+
+    /** 高度场（诊断 / 别的模块读取）。 */
+    public DragonAltitudeField altitudeField() {
+        return this.altitudeField;
+    }
+
+    /** 每 tick 缓存的高度目标（goal 一个 tick 里会问好几次）。 */
+    private double altitudeObjective = Double.NaN;
+    private int altitudeObjectiveTick = Integer.MIN_VALUE;
+    /** 唯一竖直跟踪器的状态。 */
+    private double verticalSpeed;
+    private int verticalSpeedTick = Integer.MIN_VALUE;
+
     /**
-     * 统一的竖直目标：<b>有航线时跟着航路点的高度走（3D 寻路）</b>，没有航线时才回悬停高度。
+     * <b>单一高度目标</b>：想去的高度由模式给，<b>可行区间由世界给</b>。
      *
-     * <h2>为什么这样才对</h2>
-     * A* 的节点本来就带"空地判定"（{@link DragonFlyNodeEvaluator} 在每个节点按身体盒子采样），
-     * 所以<b>路线本身就是"哪儿能飞、飞多高"的答案</b>。以前只借它的水平走向、竖向永远听悬停的，
-     * 于是"要到高台上方 N 格"这种目标一旦被天花板挡住，悬停逻辑只会一直往上顶
-     * （"它一直尝试向上飞"）—— 因为没人告诉它"那个高度没有空间，路线会绕 / 会停在能到的高度"。
+     * <pre>
+     * want = 有目标且开启凋零式 ? 目标脚 Y + offset × 体型 : 局部地面 + 悬停高度
+     *        （航线节点更高时以航线为准：翻梁 / 绕地形）
+     * objective = altitudeField.feasible(want, 下一航路点)   // ← 保证整条龙塞得下
+     * </pre>
      *
-     * <p>现在：{@link DragonPathFollower#onRoute()} 为真时竖直目标 = 航路点 Y（爬升/下降跟着路线），
-     * 走完路线（{@code onRoute == false}）才回到悬停高度那套。
-     *
-     * <p>{@code pathfinding.verticalDeadband} 退化成"防微抖死区"：航路点高度和悬停高度差得太小就不动，
-     * 避免两条几乎相同的目标互相拉扯。
+     * <p>这是竖直方向<b>唯一</b>的目标来源：以前这里有"悬停 / 追击 / 航线 / 锁存 / 低通"五套逻辑，
+     * 各自有死区和上限，在边界上互相跳（真机 {@code dy: -0.022 → +0.696 → -0.086}）。
+     * 现在只剩"模式给想法、世界给约束"两步，剩下的交给 {@link #trackedVerticalSpeed()}。
      */
     public double flightVerticalTarget() {
-        // 每 tick 只算一次并做低通：goal 会在一个 tick 里问好几次，
-        // 每次都重算会让平滑失效（而且航线/悬停两个来源会各自算出一半）。
-        if (this.verticalTargetTick == this.tickCount) {
-            return this.verticalTargetSmooth;
+        if (this.altitudeObjectiveTick == this.tickCount) {
+            return this.altitudeObjective;
         }
-        this.verticalTargetTick = this.tickCount;
-        double raw = this.rawVerticalTarget();
-        if (Double.isNaN(this.verticalTargetSmooth)
-                || Math.abs(raw - this.verticalTargetSmooth) > VERTICAL_TARGET_SNAP) {
-            // 首次 / 换层掉崖这种大跳变：直接跟，不要慢慢滑
-            this.verticalTargetSmooth = raw;
+        this.altitudeObjectiveTick = this.tickCount;
+        double want;
+        LivingEntity target = this.getTarget();
+        double offset = DragonGolemConfig.flightTargetAltitudeOffset();
+        if (target != null && target.isAlive() && offset > 0.0D) {
+            // 凋零式：高度跟着目标走（上下都跟）；大体型留更多竖向间隙，但别无限放大
+            want = target.getY() + offset * Math.min(3.0D, Math.max(1.0D, this.bodyScale()));
         } else {
-            this.verticalTargetSmooth += (raw - this.verticalTargetSmooth) * VERTICAL_TARGET_LERP;
+            want = this.localFloorY() + this.hoverHeight();
         }
-        return this.verticalTargetSmooth;
+        Vec3 steer = this.pathFollower.steerPoint();
+        boolean onRoute = steer != null && this.pathFollower.onRoute();
+        if (onRoute && steer.y > want) {
+            // 航路点更高：要翻梁 / 爬出低房间，以航线为准
+            want = steer.y;
+        }
+        this.altitudeObjective = this.altitudeField.feasible(want, onRoute ? steer : null);
+        return this.altitudeObjective;
     }
 
     /**
-     * 未经平滑的竖直目标（航线高度 / 悬停高度 / 追击高度三者的裁决）。
+     * <b>唯一的竖直跟踪器</b>（临界阻尼），返回本 tick 的竖直速度。
      *
-     * <p><b>带锁存的死区</b>：以前是 {@code |steer.y − hover| <= deadband ? hover : steer.y}，
-     * 差值在死区边界附近每 tick 抖动时，竖直目标就会<b>在两条来源之间整体跳一次</b> ——
-     * 真机日志里的 {@code dy: -0.022 → +0.696 → 0.145 → -0.086} 就是这个跳变。
-     * 现在：差值超过 {@code 1.5×deadband} 才切到航线高度，低于 {@code 0.5×deadband} 才切回悬停，
-     * 中间保持上一次的选择（锁存）。
+     * <pre>
+     * v += (objective − y) · K − v · D        K = 0.06，D = 0.30
+     * v  = clamp(v, −maxFall, +maxClimb)
+     * </pre>
+     *
+     * <p>为什么要它：以前"目标 → 速度"这一步在四个 goal 里各写一遍（{@code hoverDelta()}），
+     * 而且控制器还要再用 flightBand 否决一次竖直速度 —— 三处都在做同一件事，边界上必然打架。
+     * 现在只有这一个函数：连续、无过冲、<b>不会在边界翻符号</b>，
+     * 大误差自动加速（追头顶目标）、小误差自动减速（贴地细调），连死区都不需要。
      */
-    private double rawVerticalTarget() {
-        double hover = this.hoverTargetY();
-        double relative = this.targetRelativeAltitude();
-        Vec3 steer = this.pathFollower.steerPoint();
-        boolean onRoute = steer != null && this.pathFollower.onRoute();
-        // ---- 航线高度（带锁存的死区）----
-        double routeY = Double.NaN;
-        if (onRoute) {
-            double deadband = DragonGolemConfig.pathVerticalDeadband();
-            double diff = Math.abs(steer.y - hover);
-            if (this.routeYLatched) {
-                if (diff < deadband * 0.5D) {
-                    this.routeYLatched = false;
-                }
-            } else if (diff > deadband * 1.5D) {
-                this.routeYLatched = true;
-            }
-            if (this.routeYLatched) {
-                routeY = steer.y;
-            }
-        } else {
-            this.routeYLatched = false;
+    public double trackedVerticalSpeed() {
+        if (this.verticalSpeedTick == this.tickCount) {
+            return this.verticalSpeed;
         }
-        double target;
-        if (!Double.isNaN(relative)) {
-            // ★ 凋零式：高度跟着目标走（上下都跟），地面只做硬下限
-            target = Math.max(relative, this.localFloorY() + MIN_HOVER_CLEARANCE + 1.0D);
-            // 航路点更高时仍然以航线为准（要翻梁 / 绕地形）
-            if (!Double.isNaN(routeY)) {
-                target = Math.max(target, routeY);
-            }
-        } else {
-            // 关闭目标相对高度：退回"悬停高度 / 航线高度"二选一
-            target = Double.isNaN(routeY) ? hover : routeY;
-        }
-        return clearCeiling(target);
+        this.verticalSpeedTick = this.tickCount;
+        double err = this.flightVerticalTarget() - this.getY();
+        double v = this.verticalSpeed + (err * ALT_K - this.verticalSpeed * ALT_D);
+        this.verticalSpeed = Mth.clamp(v, -ALT_MAX_FALL, ALT_MAX_CLIMB);
+        return this.verticalSpeed;
     }
 
-    /** 竖直目标是否锁在"航线高度"上（死区滞回用）。 */
-    private boolean routeYLatched;
-    /** 竖直目标平滑后的值 / 计算它的 tick。 */
-    private double verticalTargetSmooth = Double.NaN;
-    private int verticalTargetTick = Integer.MIN_VALUE;
-    /** 竖直目标低通系数（每 tick 靠拢 25%）。 */
-    private static final double VERTICAL_TARGET_LERP = 0.25D;
-    /** 超过这么多格就直通（换层 / 掉崖 / 追击目标瞬移）。 */
-    private static final double VERTICAL_TARGET_SNAP = 8.0D;
+    /** 竖直跟踪器复位（上/下龙、传送、模式大切换时用，避免带着旧速度冲过去）。 */
+    public void resetVerticalSpeed() {
+        this.verticalSpeed = 0.0D;
+        this.verticalSpeedTick = Integer.MIN_VALUE;
+    }
+
+    /** 跟踪器刚度（每格误差给多少加速度）。 */
+    private static final double ALT_K = 0.06D;
+    /** 跟踪器阻尼（越大越"稳"、越小越"弹"）。K/D = 稳态速度，0.06/0.30 = 0.2 格/tick。 */
+    private static final double ALT_D = 0.30D;
+    /** 最大上升速度（格/tick）：追头顶目标时的上限。 */
+    private static final double ALT_MAX_CLIMB = 0.40D;
+    /** 最大下降速度（格/tick）。 */
+    private static final double ALT_MAX_FALL = 0.32D;
 
     /**
      * <b>目标相对高度（凋零式）</b>：竖直目标 = 目标脚 Y + 偏移，再夹进 [地面下限, 天花板]。
