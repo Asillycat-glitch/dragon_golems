@@ -388,7 +388,7 @@ public class DragonRangedGoal extends Goal {
         if (DragonDebug.RIDE && this.phaseTicks % 10 == 0) {
             Vec3 v = this.dragon.getDeltaMovement();
             Dragon_golems.LOGGER.info(
-                    "[breath] t={} yRot={} body={} roll={} dy={} dvx={} dvz={} len={} sign={} thr={} blk={} miss={} ovr={} mzd={} R={} arc={} dhits={}",
+                    "[breath] t={} yRot={} body={} roll={} dy={} dvx={} dvz={} len={} sign={} thr={} blk={} miss={} ovr={} mzd={} R={} arc={} dhits={} aimErr={}",
                     this.phaseTicks,
                     String.format("%.1f", this.dragon.getYRot()),
                     String.format("%.1f", this.dragon.yBodyRot),
@@ -404,7 +404,11 @@ public class DragonRangedGoal extends Goal {
                     String.format("%.1f", this.dragon.mouthDistanceTo(target)),
                     String.format("%.1f", this.arcRadius),
                     String.format("%.0f", Math.toDegrees(this.arcPhase)),
-                    this.dragon.breathHitsThisVolley());
+                    this.dragon.breathHitsThisVolley(),
+                    String.format("%.1f", Mth.wrapDegrees(
+                            (float) (Mth.atan2(target.getZ() - this.dragon.getZ(),
+                                    target.getX() - this.dragon.getX()) * 180.0D / Math.PI) - 90.0F
+                                    - this.dragon.getYRot())));
         }
         if (this.phaseTicks >= BREATH_TICKS) {
             this.enter(Phase.BREATH_RECOVER);

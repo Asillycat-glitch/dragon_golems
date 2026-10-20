@@ -2175,6 +2175,16 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             //   先把这件事同步给客户端（渲染层据此把机身锁到瞄准方向），再交给执行层消费。
             this.entityData.set(DATA_AIMING, this.keepAimThisTick);
             this.flightController.tick(rider);
+            // ★ 攻击锁定转向：{@code super.aiStep()} 里的 {@code moveControl.tick()} 会把机身
+            //   拧向"移动方向"，它比我们早跑 —— 所以在这里（它之后）把 yaw 再锁回瞄准方向。
+            //   不加这一步，真机表现就是"攻击时总想往自己移动的方向转"（用户实测）。
+            //   aimLock 每 tick 由 goal 的 aimAt() 重新设置，用完即清，不会残留上一 tick 的瞄准。
+            if (this.aimLock) {
+                this.applyAimYaw(this.aimLockX, this.aimLockZ, this.aimLockRate);
+                this.aimLock = false;
+                this.yBodyRot = this.getYRot();
+                this.setYHeadRot(this.getYRot());
+            }
             // ★ 压弯（侧倾）统一在这里算：只看"本 tick 实际转过的角度"，所以骑手用鼠标转、
             //   AI 巡航转（FlyingMoveControl 拧的机头）、俯冲/冲锋的航线转，三种全都吃得到。
             //   早先压弯只在 faceMovement() 里按"它自己转了多少"算，而 AI 巡航的转向走
@@ -3080,8 +3090,22 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * <p>为什么不能直接用 {@code lookAt}：那玩意每 tick 能拽 30°，看起来像抽搐；而且它只改头，
      * 身体和子碰撞箱要等到 {@code BodyRotationControl} 慢慢跟。这里和 {@link #faceMovement} 一样
      * 一次性把 yRot / yBodyRot / yHeadRot 对齐，模型和判定箱立刻一致。
+     *
+     * <p><b>★ 攻击锁定转向（真的锁住）：</b>原版 {@code Mob.aiStep} 里的 {@code moveControl.tick()}
+     * 会把机身拧向"移动方向"，它跑在我们的 {@code aiStep} 尾部之前 —— 所以这里写完之后，
+     * 本 tick 末尾（{@link #aiStep()} 收尾）还会<b>再锁一次</b>。否则就变成
+     * "攻击时总想往自己移动的方向转"（用户实测）。
      */
     public void aimAt(double x, double z, float maxDegPerTick) {
+        this.aimLockX = x;
+        this.aimLockZ = z;
+        this.aimLockRate = maxDegPerTick;
+        this.aimLock = true;
+        this.applyAimYaw(x, z, maxDegPerTick);
+    }
+
+    /** 真正把 yaw 朝 (x,z) 拧过去（限速），并同步身体/头部。 */
+    private void applyAimYaw(double x, double z, float maxDegPerTick) {
         float want = (float) (Mth.atan2(z - this.getZ(), x - this.getX()) * 180.0D / Math.PI) - 90.0F;
         float delta = Mth.wrapDegrees(want - this.getYRot());
         float applied = Mth.clamp(delta, -maxDegPerTick, maxDegPerTick);
@@ -3089,6 +3113,12 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.yBodyRot = this.getYRot();
         this.setYHeadRot(this.getYRot());
     }
+
+    /** 本 tick 是否有瞄准请求（由 {@link #aimAt} 设置，{@code aiStep} 末尾消费）。 */
+    private boolean aimLock;
+    private double aimLockX;
+    private double aimLockZ;
+    private float aimLockRate;
 
     /**
      * 龙息的一跳伤害。
