@@ -60,6 +60,32 @@ public class DragonGolemRenderer
         }
     }
 
+    /**
+     * <b>攻击锁定转向（客户端那一半）</b>：瞄准期间把"被渲染的机身/头部朝向"强制成同步过来的 yaw。
+     *
+     * <h2>为什么服务端锁了还不够</h2>
+     * 服务端的 {@code aimErr} 全程 0.0（已经证明 yaw 锁在目标方位上），但视觉上机身仍然横着 ——
+     * 因为 {@code LivingEntityRenderer.setupRotations} 用的是<b>客户端的</b>
+     * {@code yBodyRotO / yBodyRot}，而客户端的 {@code BodyRotationControl} 是照<b>位移方向</b>
+     * （绕圈的切向）算的，和瞄准方向正好差 90°。
+     *
+     * <p>{@code yBodyRot} 不走网络同步（服务端写多少客户端都收不到），所以只能在渲染这一层修：
+     * 用同步过来的 {@link DragonGolemEntity#isAiming()} 判断，把四个插值字段一起按 yRot 对齐。
+     * 只改客户端实体字段（纯视觉，不参与逻辑），离开瞄准态立刻恢复正常转向。
+     */
+    @Override
+    public void render(DragonGolemEntity entity, float entityYaw, float partialTick,
+                       PoseStack pose, net.minecraft.client.renderer.MultiBufferSource buffer, int light) {
+        if (entity.isAiming()) {
+            float yaw = entity.getYRot();
+            entity.yBodyRot = yaw;
+            entity.yBodyRotO = yaw;
+            entity.yHeadRot = yaw;
+            entity.yHeadRotO = yaw;
+        }
+        super.render(entity, entityYaw, partialTick, pose, buffer, light);
+    }
+
     /** 当前姿势矩阵的线性缩放是否大到"只可能是 GUI 预览"（见 {@link #GUI_PREVIEW_POSE_SCALE}）。 */
     private static boolean isGuiPreviewPose(PoseStack pose) {
         Matrix4f m = pose.last().pose();
