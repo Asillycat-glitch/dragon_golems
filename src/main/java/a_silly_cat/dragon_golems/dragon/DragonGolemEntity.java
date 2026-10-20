@@ -3800,18 +3800,64 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 避免两条几乎相同的目标互相拉扯。
      */
     public double flightVerticalTarget() {
+        // 每 tick 只算一次并做低通：goal 会在一个 tick 里问好几次，
+        // 每次都重算会让平滑失效（而且航线/悬停两个来源会各自算出一半）。
+        if (this.verticalTargetTick == this.tickCount) {
+            return this.verticalTargetSmooth;
+        }
+        this.verticalTargetTick = this.tickCount;
+        double raw = this.rawVerticalTarget();
+        if (Double.isNaN(this.verticalTargetSmooth)
+                || Math.abs(raw - this.verticalTargetSmooth) > VERTICAL_TARGET_SNAP) {
+            // 首次 / 换层掉崖这种大跳变：直接跟，不要慢慢滑
+            this.verticalTargetSmooth = raw;
+        } else {
+            this.verticalTargetSmooth += (raw - this.verticalTargetSmooth) * VERTICAL_TARGET_LERP;
+        }
+        return this.verticalTargetSmooth;
+    }
+
+    /**
+     * 未经平滑的竖直目标（航线高度 / 悬停高度 / 追击高度三者的裁决）。
+     *
+     * <p><b>带锁存的死区</b>：以前是 {@code |steer.y − hover| <= deadband ? hover : steer.y}，
+     * 差值在死区边界附近每 tick 抖动时，竖直目标就会<b>在两条来源之间整体跳一次</b> ——
+     * 真机日志里的 {@code dy: -0.022 → +0.696 → 0.145 → -0.086} 就是这个跳变。
+     * 现在：差值超过 {@code 1.5×deadband} 才切到航线高度，低于 {@code 0.5×deadband} 才切回悬停，
+     * 中间保持上一次的选择（锁存）。
+     */
+    private double rawVerticalTarget() {
         double hover = this.hoverTargetY();
         Vec3 steer = this.pathFollower.steerPoint();
         if (steer == null || !this.pathFollower.onRoute()) {
+            this.routeYLatched = false;
             // 没有航线：悬停高度与"追击高度"取高者（没有目标时 chaseAltitude 是 -∞，不影响）
             return clearCeiling(Math.max(hover, chaseAltitude()));
         }
         double deadband = DragonGolemConfig.pathVerticalDeadband();
-        double target = Math.abs(steer.y - hover) <= deadband ? hover : steer.y;
+        double diff = Math.abs(steer.y - hover);
+        if (this.routeYLatched) {
+            if (diff < deadband * 0.5D) {
+                this.routeYLatched = false;
+            }
+        } else if (diff > deadband * 1.5D) {
+            this.routeYLatched = true;
+        }
+        double target = this.routeYLatched ? steer.y : hover;
         // 航路点的高度也要让位给"追击高度"：目标在头顶时，航线节点可能还是低处的点。
         target = Math.max(target, chaseAltitude());
         return clearCeiling(target);
     }
+
+    /** 竖直目标是否锁在"航线高度"上（死区滞回用）。 */
+    private boolean routeYLatched;
+    /** 竖直目标平滑后的值 / 计算它的 tick。 */
+    private double verticalTargetSmooth = Double.NaN;
+    private int verticalTargetTick = Integer.MIN_VALUE;
+    /** 竖直目标低通系数（每 tick 靠拢 25%）。 */
+    private static final double VERTICAL_TARGET_LERP = 0.25D;
+    /** 超过这么多格就直通（换层 / 掉崖 / 追击目标瞬移）。 */
+    private static final double VERTICAL_TARGET_SNAP = 8.0D;
 
     /**
      * <b>追击高度</b>：目标在头顶时，竖直目标跟着它上去。

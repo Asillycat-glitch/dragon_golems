@@ -286,17 +286,25 @@ public class DragonRangedGoal extends Goal {
             return;
         }
         // ★ 嘴插进目标里（喷口已经越过目标）→ 先后退到"嘴和目标有间隙"的位置，
-        //   否则锥体的 along 全为负、怎么喷都是零伤害（真机：miss=3 ovn 站桩喷）。
+        //   否则锥体的 along 全为负、怎么喷都是零伤害（真机：miss=3 站桩喷）。
+        //   ★ 带滞回：进入后退门槛是 MIN_MUZZLE_GAP，退到 MIN + 4×体型才允许重新靠近 ——
+        //   否则会在边界上"退一下、靠一下"地来回摆（用户实测的"前后移动"）。
         double mouthGapMin = MIN_MUZZLE_GAP * this.dragon.combatGeoScale();
+        double mouthGapExit = mouthGapMin + MUZZLE_GAP_HYSTERESIS * this.dragon.combatGeoScale();
         double mouthDist = this.dragon.mouthDistanceTo(target);
         if (mouthDist < mouthGapMin) {
+            this.backingOff = true;
+        } else if (mouthDist > mouthGapExit) {
+            this.backingOff = false;
+        }
+        if (this.backingOff) {
             Vec3 away = this.dragon.position().subtract(target.position());
             double len = Math.sqrt(away.x * away.x + away.z * away.z);
             if (len < 1.0E-3D) {
                 away = new Vec3(1.0D, 0.0D, 0.0D);
                 len = 1.0D;
             }
-            double want = mouthGapMin + this.dragon.mouthForward() + 2.0D;
+            double want = mouthGapExit + this.dragon.mouthForward() + 2.0D;
             Vec3 back = new Vec3(target.getX() + away.x / len * want, this.dragon.getY(),
                     target.getZ() + away.z / len * want);
             this.moveToward(back, CLOSE_SPEED * this.dragon.flightSpeedFactor());
@@ -322,6 +330,10 @@ public class DragonRangedGoal extends Goal {
 
     /** 喷口与目标之间至少留多少格（按体型放大），低于它就先后退再开火。 */
     private static final double MIN_MUZZLE_GAP = 2.5D;
+    /** 后退的滞回宽度（按体型放大）：退到 MIN + 这个值之后才允许重新靠近，避免边界上前后摆。 */
+    private static final double MUZZLE_GAP_HYSTERESIS = 4.0D;
+    /** 当前是否处于"后退拉开喷口间隙"的状态（见上）。 */
+    private boolean backingOff;
 
     /**
      * 前摇：<b>真的站住不动</b>、慢慢转头、嘴里聚粒子。
