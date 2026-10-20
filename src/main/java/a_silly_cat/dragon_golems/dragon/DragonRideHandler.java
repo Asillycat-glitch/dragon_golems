@@ -47,12 +47,28 @@ public final class DragonRideHandler {
         if (target instanceof PartEntity<?> part && part.getParent() instanceof DragonGolemEntity parent) {
             target = parent;
         }
+        // ★ 点到的是"坐在龙背上的傀儡乘客"时，认它<b>下面那条龙</b>。
+        //   否则骑乘手杖会把这名玩家挂到那只傀儡身上：视觉上"坐在龙背上"，但龙的
+        //   getPassengers() 里没有玩家 → getControllingPassenger() 返回 null → 不能操控，
+        //   日志就是 `[ride] state ... rider=false`（用户报的"骑不上"，其实是骑到了乘客身上）。
+        if (target instanceof AbstractGolemEntity<?, ?> golem
+                && golem.getVehicle() instanceof DragonGolemEntity vehicle) {
+            Dragon_golems.LOGGER.info("[ride] 点到的是龙背上的傀儡乘客 → 改骑它下面那条龙");
+            target = vehicle;
+        }
         if (!(target instanceof DragonGolemEntity dragon)) {
             return;
         }
         Player player = event.getEntity();
         if (!DragonGolemEntity.canRideWith(event.getItemStack())) {
             return;
+        }
+        // ★ 玩家此刻正骑在"这条龙的某个傀儡乘客"身上（也是上面那种误骑）→ 先下来再上龙，
+        //   不然 startRiding 会因为"已经有坐骑"直接失败。
+        if (player.getVehicle() instanceof AbstractGolemEntity<?, ?> mounted
+                && mounted.getVehicle() == dragon) {
+            Dragon_golems.LOGGER.info("[ride] 玩家原骑在乘客傀儡上 → 先下傀儡再上龙");
+            player.stopRiding();
         }
         // 已经骑在**傀儡**背上时不做任何事（包括正骑着这条龙）：本家手杖的约定是
         // "骑着傀儡时右键 = 下龙"（{@code RiderWandItem.interactLivingEntity} 只看玩家的坐骑、
