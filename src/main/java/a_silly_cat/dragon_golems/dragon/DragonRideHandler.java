@@ -70,6 +70,15 @@ public final class DragonRideHandler {
             Dragon_golems.LOGGER.info("[ride] 玩家原骑在乘客傀儡上 → 先下傀儡再上龙");
             player.stopRiding();
         }
+        // ★ 已经骑在**这条龙**上：右键不再当作"下车"。
+        //   本家手杖的约定是"骑着傀儡时右键 = 下龙"，但那条约定落到龙身上会变成
+        //   "连点两下右键 = 骑上又立刻下来"（真机：`[ride] rider=true` 下一行就 `rider=false`）。
+        //   下车仍然有明确入口：Shift（原版下车键）。
+        if (player.getVehicle() == dragon) {
+            event.setCancellationResult(InteractionResult.SUCCESS);
+            event.setCanceled(true);
+            return;
+        }
         // 已经骑在**傀儡**背上时不做任何事（包括正骑着这条龙）：本家手杖的约定是
         // "骑着傀儡时右键 = 下龙"（{@code RiderWandItem.interactLivingEntity} 只看玩家的坐骑、
         // 根本不看目标），让这次交互原样落回它那条分支。

@@ -326,6 +326,19 @@ public final class DragonGolemConfig {
     }
 
     /**
+     * 【凋零式】竖直目标 = 目标脚 Y + 这个偏移（格）；0 = 关闭（退回"地面 + 悬停高度"）。
+     *
+     * <p>参考原版凋零的追击：它的飞行高度跟着<b>目标高度</b>走（目标脚 Y + 约 5 格，再夹速度），
+     * 而不是"地面 + 固定悬停高度"。后者在"目标在头顶"时只会仰头喷、不爬升；
+     * 在"目标在脚下"时又会悬得太高、龙息角度很陡（观感差）。
+     *
+     * <p>地面与天花板仍然是硬下限 / 硬上限：地面保证不沉进地板，天花板保证不穿结构。
+     */
+    public static double flightTargetAltitudeOffset() {
+        return Math.max(0.0D, num(COMMON.targetAltitudeOffset, 4.0D));
+    }
+
+    /**
      * 巡航轨迹的平滑系数（每 tick 朝"期望速度"插值多少）。
      *
      * <p>巡航是"永不刹停"的：到点立刻换下一个采样点，速度方向可能整个反过去。
@@ -526,6 +539,7 @@ public final class DragonGolemConfig {
         public final ForgeConfigSpec.DoubleValue rollPerDegree;
         public final ForgeConfigSpec.DoubleValue trajectoryLerp;
         public final ForgeConfigSpec.DoubleValue ceilingClearance;
+        public final ForgeConfigSpec.DoubleValue targetAltitudeOffset;
 
         public final ForgeConfigSpec.BooleanValue flowingFluidIsFloor;
         public final ForgeConfigSpec.BooleanValue pushedByFluid;
@@ -657,6 +671,12 @@ public final class DragonGolemConfig {
                             "悬停上限 = 天花板方块 Y − 身体高度 − 这个值；调大 = 更贴地、更安全，调小 = 更高",
                             "0.25 是默认；模型翅膀比判定箱高出一点，别设太小")
                     .defineInRange("ceilingClearance", 0.25D, 0.0D, 2.0D);
+            this.targetAltitudeOffset = builder
+                    .comment("【凋零式】竖直目标 = 目标脚 Y + 这个偏移（格）；0 = 关闭",
+                            "开启后高度跟着目标走：目标在头顶就爬上去、在脚下就降到它上方",
+                            "不再死守『地面 + 悬停高度』；地面与天花板仍是硬下限/上限",
+                            "4.0 是默认（1 倍体型约等于『在目标上方一小段』），大体型会自动放大")
+                    .defineInRange("targetAltitudeOffset", 4.0D, 0.0D, 24.0D);
             builder.pop();
 
             builder.comment("悬停参照系（支撑面 / 液体）").push("hover");

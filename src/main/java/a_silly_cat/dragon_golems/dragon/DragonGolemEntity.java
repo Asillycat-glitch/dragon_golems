@@ -3828,24 +3828,39 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      */
     private double rawVerticalTarget() {
         double hover = this.hoverTargetY();
+        double relative = this.targetRelativeAltitude();
         Vec3 steer = this.pathFollower.steerPoint();
-        if (steer == null || !this.pathFollower.onRoute()) {
-            this.routeYLatched = false;
-            // 没有航线：悬停高度与"追击高度"取高者（没有目标时 chaseAltitude 是 -∞，不影响）
-            return clearCeiling(Math.max(hover, chaseAltitude()));
-        }
-        double deadband = DragonGolemConfig.pathVerticalDeadband();
-        double diff = Math.abs(steer.y - hover);
-        if (this.routeYLatched) {
-            if (diff < deadband * 0.5D) {
-                this.routeYLatched = false;
+        boolean onRoute = steer != null && this.pathFollower.onRoute();
+        // ---- 航线高度（带锁存的死区）----
+        double routeY = Double.NaN;
+        if (onRoute) {
+            double deadband = DragonGolemConfig.pathVerticalDeadband();
+            double diff = Math.abs(steer.y - hover);
+            if (this.routeYLatched) {
+                if (diff < deadband * 0.5D) {
+                    this.routeYLatched = false;
+                }
+            } else if (diff > deadband * 1.5D) {
+                this.routeYLatched = true;
             }
-        } else if (diff > deadband * 1.5D) {
-            this.routeYLatched = true;
+            if (this.routeYLatched) {
+                routeY = steer.y;
+            }
+        } else {
+            this.routeYLatched = false;
         }
-        double target = this.routeYLatched ? steer.y : hover;
-        // 航路点的高度也要让位给"追击高度"：目标在头顶时，航线节点可能还是低处的点。
-        target = Math.max(target, chaseAltitude());
+        double target;
+        if (!Double.isNaN(relative)) {
+            // ★ 凋零式：高度跟着目标走（上下都跟），地面只做硬下限
+            target = Math.max(relative, this.localFloorY() + MIN_HOVER_CLEARANCE + 1.0D);
+            // 航路点更高时仍然以航线为准（要翻梁 / 绕地形）
+            if (!Double.isNaN(routeY)) {
+                target = Math.max(target, routeY);
+            }
+        } else {
+            // 关闭目标相对高度：退回"悬停高度 / 航线高度"二选一
+            target = Double.isNaN(routeY) ? hover : routeY;
+        }
         return clearCeiling(target);
     }
 
@@ -3860,29 +3875,28 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     private static final double VERTICAL_TARGET_SNAP = 8.0D;
 
     /**
-     * <b>追击高度</b>：目标在头顶时，竖直目标跟着它上去。
+     * <b>目标相对高度（凋零式）</b>：竖直目标 = 目标脚 Y + 偏移，再夹进 [地面下限, 天花板]。
      *
-     * <h2>为什么必须单独拿出来（用户实测）</h2>
-     * 以前竖直目标 = {@code 局部地面 + 悬停高度}（{@code hoverTargetY()}），
-     * 于是<b>头顶有敌人时它只会原地朝上喷，不会飞上去追</b> —— 高度被"脚下地面"锁死了。
-     * 龙是飞行单位，高度应该由<b>目标</b>决定，地面只负责"别沉下去"。
-     *
-     * <p>规则：
+     * <h2>为什么用这个，而不是"地面 + 悬停高度"</h2>
+     * 原版凋零的追击就是这么做的：飞行高度跟着<b>目标高度</b>走（目标脚 Y + 约 5 格，再夹速度）。
+     * 而"地面 + 悬停高度"会带来两个真机问题：
      * <ul>
-     *   <li>没有目标 → 返回 {@code -∞}（不参与取最大值，竖直还是悬停那套）；</li>
-     *   <li>有目标 → 返回 {@code 目标脚 Y + 贴身余量}（打飞行目标/高处目标时向上追）；</li>
-     *   <li>目标在脚下时不强行下压（那属于俯冲/下降的事），所以只在它<b>更高</b>时生效。</li>
+     *   <li>目标在头顶 → 只仰头喷、<b>不爬升追击</b>（高度被脚下地面锁死）；</li>
+     *   <li>目标在脚下 → 悬得太高、龙息角度很陡，观感差（大平地尤其明显）。</li>
      * </ul>
-     * 天花板仍然有效（{@link #clearCeiling}）—— 那是"别穿墙"，不是"限高"。
+     * 现在高度跟着目标走（上下都跟），地面只保证"别沉进地板"、天花板只保证"别穿结构"。
+     *
+     * @return 目标相对高度；没有目标或关闭（{@code flight.targetAltitudeOffset = 0}）时返回 NaN
      */
-    private double chaseAltitude() {
+    private double targetRelativeAltitude() {
         LivingEntity target = this.getTarget();
-        if (target == null || !target.isAlive()) {
-            return -Double.MAX_VALUE;
+        double offset = DragonGolemConfig.flightTargetAltitudeOffset();
+        if (target == null || !target.isAlive() || offset <= 0.0D) {
+            return Double.NaN;
         }
-        double want = target.getY() + CHASE_CLEARANCE * this.combatGeoScale();
-        // 只在"比当前高"时作为提升项参与，避免它为了贴目标脚而往下扎
-        return want > this.getY() ? want : -Double.MAX_VALUE;
+        // 大体型要留更多竖向间隙（喷口在下巴、脖子长），但别无限放大
+        double scaled = offset * Math.min(3.0D, Math.max(1.0D, this.bodyScale()));
+        return target.getY() + scaled;
     }
 
     /** 把竖直目标夹到"头顶天花板允许的最高脚位"，顺便挡住穿天花板（不是限高）。 */
@@ -3891,9 +3905,6 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.ceilingScanStart());
         return limit == NO_CEILING ? target : Math.min(target, limit);
     }
-
-    /** 追击时脚比起目标脚高多少（格，按体型放大）。 */
-    private static final double CHASE_CLEARANCE = 2.0D;
 
     /**
      * 挨打 → 记录攻击者位置，进入"远离"状态（{@link #markRetreat}）。
