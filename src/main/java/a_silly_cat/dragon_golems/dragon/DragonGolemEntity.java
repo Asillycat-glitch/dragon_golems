@@ -3218,6 +3218,11 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return this.breathVolley ? this.breathHits.getOrDefault(target.getId(), 0) : 0;
     }
 
+    /** 这一轮龙息打中过多少个<b>不同</b>目标（0 = 到现在还没打中任何人，诊断用）。 */
+    public int breathHitsThisVolley() {
+        return this.breathVolley ? this.breathHits.size() : 0;
+    }
+
     /** 这一跳的递减倍率：{@code max(下限, 1 - 步长 × 已命中次数)}；不在某一轮里 / 配置关掉时恒为 1。 */
     private float breathDiminishing(LivingEntity target) {
         if (!this.breathVolley || !DragonGolemConfig.breathDiminishing()) {

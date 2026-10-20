@@ -388,7 +388,7 @@ public class DragonRangedGoal extends Goal {
         if (DragonDebug.RIDE && this.phaseTicks % 10 == 0) {
             Vec3 v = this.dragon.getDeltaMovement();
             Dragon_golems.LOGGER.info(
-                    "[breath] t={} yRot={} body={} roll={} dy={} dvx={} dvz={} len={} sign={} thr={} blk={} miss={} ovr={} mzd={} R={} arc={}",
+                    "[breath] t={} yRot={} body={} roll={} dy={} dvx={} dvz={} len={} sign={} thr={} blk={} miss={} ovr={} mzd={} R={} arc={} dhits={}",
                     this.phaseTicks,
                     String.format("%.1f", this.dragon.getYRot()),
                     String.format("%.1f", this.dragon.yBodyRot),
@@ -403,7 +403,8 @@ public class DragonRangedGoal extends Goal {
                     this.dragon.breathMissStreak(), this.hoverOnly,
                     String.format("%.1f", this.dragon.mouthDistanceTo(target)),
                     String.format("%.1f", this.arcRadius),
-                    String.format("%.0f", Math.toDegrees(this.arcPhase)));
+                    String.format("%.0f", Math.toDegrees(this.arcPhase)),
+                    this.dragon.breathHitsThisVolley());
         }
         if (this.phaseTicks >= BREATH_TICKS) {
             this.enter(Phase.BREATH_RECOVER);
@@ -473,19 +474,22 @@ public class DragonRangedGoal extends Goal {
         double speed = ORBIT_SPEED * this.dragon.flightSpeedFactor();
         // ★ 空间预算：洞里不旋转（原地悬停扫射），平地才绕圈（观感优先）。
         DragonGolemEntity.SpaceBudget space = this.dragon.spaceBudget();
-        double radius = this.dragon.orbitRadius();
-        // 净空连"嘴够不到的半径"都给不了 → 绕圈没意义，站桩喷（不然就是贴墙磨/嘴插进目标）
+        // 弧线半径 = 绕圈半径 × 1.3：orbitRadius 是"嘴刚好够得到目标"的下限，
+        // 按它绕圈时喷口离目标只有 3 格（真机 mzd=3.2）—— 看起来像"鼻子顶在目标脸上喷"。
+        // 放大 1.3 倍后喷口到目标约 6~8 格，锥体覆盖正常、画面也像在扫射而不是贴脸。
+        double radius = this.dragon.orbitRadius() * ARC_RADIUS_FACTOR;
+        // 净空连这个半径都给不了 → 绕圈没意义，站桩喷
         if (!space.roomy() || space.clearance() < radius * 0.8D) {
             this.dragon.setKeepAim(true);
             this.dragon.setBodyRollDirect(0.0F);
             this.holdHover();
             return;
         }
-        // ★ 绕圈 = 脚本弧线（相位驱动的 waypoint），不是速度场。
-        //   速度场（切向 + 径向 P 修正）有四个反馈环：半径误差、目标位移、净空变化、油门，
-        //   而且都没有阻尼 —— 真机表现就是"在大平原上绕圈总是乱动"（这轮 22 格、下轮 3.5 格）。
-        //   现在相位每 tick 按 ω = v/R 前进，waypoint 由相位算出，飞向它即可：**确定性几何**，
-        //   不会因为有反馈误差而改向；目标移动时圆心由 waypoint 自然跟随（不追自己的圈）。
+        // ★ 绕圈 = 脚本弧线（相位驱动的 waypoint）+ 阻尼径向修正。
+        //   纯"瞄准 speed 前方那一点"的追踪在半径误差上几乎没有切向引导：
+        //   真机 len 在 9.7~12.7 之间摆（R=11），mzd 3.2~7.6 —— 那就是剩下的"抖动"。
+        //   现在：向"前方一个角度"的点追踪（切向引导强），径向误差用带限幅的阻尼项慢慢收；
+        //   相位仍按 ω = v/R 匀速前进，所以整套动作依然是确定性的几何。
         if (!this.arcInited) {
             // 从"当前方位"接着走，不跳相位
             this.arcPhase = Math.atan2(this.dragon.getZ() - target.getZ(),
@@ -494,20 +498,36 @@ public class DragonRangedGoal extends Goal {
         }
         this.arcPhase += this.orbitSign * (speed / radius);
         this.arcRadius = radius;
-        double wx = target.getX() + Math.cos(this.arcPhase) * radius;
-        double wz = target.getZ() + Math.sin(this.arcPhase) * radius;
+        double dx = this.dragon.getX() - target.getX();
+        double dz = this.dragon.getZ() - target.getZ();
+        double len = Math.sqrt(dx * dx + dz * dz);
+        // 向前看的角度：半径误差越大看得越远（追回圆上更"果断"），限制在 20°~70°
+        double err = radius - len;
+        double lookahead = Mth.clamp(0.45D + Math.abs(err) * 0.05D, 0.35D, 1.2D);
+        double aimed = this.arcPhase + this.orbitSign * lookahead;
+        double wx = target.getX() + Math.cos(aimed) * radius;
+        double wz = target.getZ() + Math.sin(aimed) * radius;
         Vec3 to = new Vec3(wx - this.dragon.getX(), 0.0D, wz - this.dragon.getZ());
-        double len = to.length();
+        double dist = to.length();
         double vx = 0.0D;
         double vz = 0.0D;
+        if (dist > 1.0E-3D) {
+            vx = to.x / dist * speed;
+            vz = to.z / dist * speed;
+        }
+        // 阻尼径向修正（限幅到 40% 速度）：把半径误差平滑压回 0，不会像 sign() 那样来回翻
         if (len > 1.0E-3D) {
-            vx = to.x / len * speed;
-            vz = to.z / len * speed;
+            double radial = Mth.clamp(err * 0.12D, -speed * 0.4D, speed * 0.4D);
+            vx += dx / len * radial;
+            vz += dz / len * radial;
         }
         this.dragon.setKeepAim(true);
         this.dragon.setBodyRollDirect(ORBIT_BANK * this.orbitSign);
         this.dragon.setDiveVelocity(new Vec3(vx, this.hoverDelta(), vz));
     }
+
+    /** 弧线半径相对 {@code orbitRadius()} 的放大系数（见 breathMotion 的说明）。 */
+    private static final double ARC_RADIUS_FACTOR = 1.3D;
 
     /** 脚本弧线的相位 / 半径 / 是否已初始化（进入 BREATH 时复位）。 */
     private double arcPhase;
