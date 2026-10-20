@@ -1164,15 +1164,28 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         // 本 tick 是否处于"瞄准态"（喷息/龙弹）。同步给客户端：渲染层据此把机身/头
         // 锁在瞄准方向，而不是跟着运动方向转（"侧着喷火"的根因）。
         this.entityData.define(DATA_AIMING, false);
+        // 瞄准俯仰（度，正 = 向下）：从<b>喷口</b>到目标胸口的实际角度。
+        // 模型的头只跟"机体俯仰"走、还夹在 ±40°，目标在下方时头不会低下来 ——
+        // 火焰往下喷、脖子却直着，看起来就是"没锁住"。这里把真实瞄准角同步给渲染层。
+        this.entityData.define(DATA_AIM_PITCH, 0.0F);
     }
 
     /** 同步字段：本 tick 是否在瞄准（喷息/龙弹期间为真）。 */
     private static final EntityDataAccessor<Boolean> DATA_AIMING =
             SynchedEntityData.defineId(DragonGolemEntity.class, EntityDataSerializers.BOOLEAN);
 
+    /** 同步字段：瞄准俯仰（度，正 = 向下，喷口 → 目标胸口）。 */
+    private static final EntityDataAccessor<Float> DATA_AIM_PITCH =
+            SynchedEntityData.defineId(DragonGolemEntity.class, EntityDataSerializers.FLOAT);
+
     /** 是否处于瞄准态（客户端渲染用它把机身锁到瞄准方向）。 */
     public boolean isAiming() {
         return this.entityData.get(DATA_AIMING);
+    }
+
+    /** 瞄准俯仰（度，正 = 向下）。渲染层在瞄准期间用它摆头。 */
+    public float getAimPitch() {
+        return this.entityData.get(DATA_AIM_PITCH);
     }
 
     /** 同步字段：骑手冲锋进行中。客户端据此让出位置权威（见 isControlledByLocalInstance）。 */
@@ -2184,6 +2197,19 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.aimLock = false;
                 this.yBodyRot = this.getYRot();
                 this.setYHeadRot(this.getYRot());
+            }
+            // ★ 瞄准俯仰同步：从<b>喷口</b>到目标胸口的真实角度（正 = 向下）。
+            //   渲染层在瞄准期间用它摆头 —— 否则目标在下方时头不会低下来，
+            //   火焰往下喷、脖子却直着（用户："锁的不够硬"的最后一环）。
+            LivingEntity aimTargetPitch = this.keepAimThisTick ? this.getTarget() : null;
+            if (aimTargetPitch != null && aimTargetPitch.isAlive()) {
+                Vec3 mouth = this.mouthPosition();
+                Vec3 chest = aimTargetPitch.getBoundingBox().getCenter();
+                double horizontal = Math.hypot(chest.x - mouth.x, chest.z - mouth.z);
+                float pitch = (float) Math.toDegrees(Math.atan2(mouth.y - chest.y, Math.max(0.1D, horizontal)));
+                this.entityData.set(DATA_AIM_PITCH, pitch);
+            } else {
+                this.entityData.set(DATA_AIM_PITCH, 0.0F);
             }
             // ★ 压弯（侧倾）统一在这里算：只看"本 tick 实际转过的角度"，所以骑手用鼠标转、
             //   AI 巡航转（FlyingMoveControl 拧的机头）、俯冲/冲锋的航线转，三种全都吃得到。

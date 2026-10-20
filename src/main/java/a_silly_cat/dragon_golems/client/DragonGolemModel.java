@@ -189,6 +189,8 @@ public class DragonGolemModel extends HierarchicalModel<DragonGolemEntity>
         boolean speedInit;
         /** 张嘴程度（0 = 只有本家的拍翅开合，1 = 喷息时锁到最大张开）。 */
         float jawOpen;
+        /** 是否处于瞄准态（瞄准期间放开头/脖子的角度限制，见 {@code setupAnim}). */
+        boolean aiming;
         /** 这条龙"身体部件"的材料 id：贴图没画对应皮肤时退回去用它，见 {@link #getTextureLocationInternal}。 */
         ResourceLocation bodyMaterial;
     }
@@ -353,6 +355,17 @@ public class DragonGolemModel extends HierarchicalModel<DragonGolemEntity>
             st.speedInit = true;
         }
         st.speed = Mth.lerp(FLAP_SPEED_LERP, st.speed, now);
+        // ★ 瞄准锁定（视觉）：瞄准期间头/脖子的偏航与俯仰改用<b>同步过来的真实瞄准角</b>。
+        //   - 偏航：服务端已把 yHeadRot = yRot（瞄向目标方位），这里放开模型 ±60° 的夹取到 ±85°，
+        //     免得"身体对了、头还被夹住"；
+        //   - 俯仰：模型只跟机体俯仰走（还 ×0.5），目标在下方时头不会低下来 ——
+        //     而龙息是"嘴→目标"算的方向，于是火焰往下喷、脖子直着。
+        boolean aiming = entity.isAiming();
+        st.aiming = aiming;
+        if (aiming) {
+            netHeadYaw = 0.0F;
+            headPitch = entity.getAimPitch();
+        }
         pose(ageInTicks, netHeadYaw, headPitch, st.speed, st);
     }
 
@@ -416,6 +429,11 @@ public class DragonGolemModel extends HierarchicalModel<DragonGolemEntity>
         // 整条脖子会比身体少走一格，于是脖子和身体之间就裂开一道缝。
         float yaw = (float) Math.toRadians(Mth.clamp(netHeadYawDeg, -60.0F, 60.0F));
         float pitch = (float) Math.toRadians(Mth.clamp(headPitchDeg, -40.0F, 40.0F)) * 0.5F;
+        if (st.aiming) {
+            // 瞄准期间：头的偏航/俯仰直接用"喷口 → 目标"的真实角度，不再被 ±60°/±40°×0.5 夹住
+            yaw = (float) Math.toRadians(Mth.clamp(netHeadYawDeg, -85.0F, 85.0F));
+            pitch = (float) Math.toRadians(Mth.clamp(headPitchDeg, -75.0F, 75.0F));
+        }
         // 前颈起点（模型像素，模型空间里 +y 是"向下"）。这是整条脖子+头的动画基准高度，不要拿它
         // 去对判定箱：判定箱的高度换算见 DragonGolemEntity.partUp()（那里要把 MODEL_LIFT 和
         // 本家渲染器的 translate(0,-1.501,0) 一起算进去）。
