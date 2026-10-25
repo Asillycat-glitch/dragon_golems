@@ -38,6 +38,8 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.tags.FluidTags;
+import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.damagesource.DamageType;
 import net.minecraft.world.effect.MobEffect;
@@ -46,8 +48,10 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.OwnableEntity;
 import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.attributes.RangedAttribute;
@@ -56,6 +60,7 @@ import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.ai.goal.WrappedGoal;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
+import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
@@ -70,6 +75,7 @@ import net.minecraft.util.Mth;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.UUID;
 
@@ -555,6 +561,25 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     /** 本 tick 的压弯已由 {@link #setBodyRollDirect(float)} 指定（绕圈喷息），{@link #tickBodyRoll()} 让位。 */
     private boolean bodyRollDirectThisTick;
 
+    /** 寻路跟随器（A* + 航点；每只龙一份，见 {@link DragonPathFollower}）。 */
+    private DragonPathFollower pathFollower;
+
+    /** 取到目标后至少承诺这么久不再重新挑选（防止来回换目标导致方向抖动）。 */
+    private int patrolCommitUntil = Integer.MIN_VALUE;
+
+    /**
+     * 寻路跟随器：AI 的"该朝哪飞"由它回答（体型感知 A* + 航点跟随）。
+     *
+     * <p>配置 {@code pathfinding.enabled = false} 时它直接把目标点原样返回 —— 也就是退回
+     * "直飞目标"的旧行为，不需要在 goal 里各写一份开关。
+     */
+    public DragonPathFollower pathFollower() {
+        if (this.pathFollower == null) {
+            this.pathFollower = new DragonPathFollower(this);
+        }
+        return this.pathFollower;
+    }
+
     public DragonGolemEntity(EntityType<DragonGolemEntity> type, Level level) {
         super(WEAPONS, type, level);
         // 飞行怪的移动控制在构造里换掉（原版 Mob 没有 createMoveControl 这个钩子）。
@@ -745,6 +770,25 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             return true;
         }
         return super.isControlledByLocalInstance();
+    }
+
+    /**
+     * 幽灵模式不参与流体推动（气泡柱 / 水流 / 瀑布）。
+     *
+     * <p>真机就是被**灵魂沙气泡柱**顶到洞顶以上的：{@code noPhysics} 只跳过方块碰撞，
+     * 原版 {@code travel} 仍然会把水流/气泡柱的推力叠进 {@code deltaMovement}，
+     * 于是"竖直目标明明在天花板下面，位置却一直往上走"。幽灵既然是"穿墙飞行"，
+     * 就不该再被流体推着走；非幽灵保持原版行为。
+     */
+    @Override
+    public boolean isPushedByFluid() {
+        return !this.noPhysics && super.isPushedByFluid();
+    }
+
+    /** 同上：幽灵不吃水的浮力/阻力，用普通飞行 travel。 */
+    @Override
+    protected boolean isAffectedByFluids() {
+        return !this.noPhysics && super.isAffectedByFluids();
     }
 
     /**
@@ -1116,6 +1160,16 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     @Override
     public void setTarget(@Nullable LivingEntity target) {
         if (target != null && this.isRiderControlled()) {
+            return;
+        }
+        // ★ 任何来源的自动索敌（本家 TargetManager、兼容 goal、巡场）都过一遍过滤：
+        //   只接受 Enemy / 别人的傀儡 / 命令手杖 forcedTarget / 刚刚打我的那个。
+        //   不这样做的话，MG 的目标管理器仍可能把马、蝙蝠、试验假人塞进 getTarget，
+        //   我们只在巡场那里过滤是不够的。
+        if (target != null
+                && target != this.forcedTarget
+                && target != this.getLastHurtByMob()
+                && (this.isAlliedTo(target) || !this.isValidPatrolTarget(target))) {
             return;
         }
         // 诊断：骑手冲锋途中目标被清空，整个航线就废了（真机症状：phase=LINEUP 卡 37 tick
@@ -1591,82 +1645,133 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      */
     private final DragonFlightAssist flightAssist = new DragonFlightAssist();
 
+    /** 洞穴站位（挑"近战打不到"的位置；环状采样，不做寻路）。 */
+    private final DragonCavePosition cavePosition = new DragonCavePosition(this);
+
     /** 每次回血回复的血量。和原版末影龙一致：1 点 = 半颗心。 */
     private static final float CRYSTAL_HEAL_AMOUNT = 1.0F;
 
-    /**
-     * 治疗光效的节流：每 N 次回血才起一次脉冲（回血是 0.5 秒一次，每 2 次 = 1 秒一发）。
-     * 比"每 4 次"更频繁是有意的 —— 现在每次只放一小段粒子，多放几次反而更连续。
-     */
-    private static final int CRYSTAL_FX_INTERVAL = 2;
-    /** 一发脉冲在"水晶 → 龙"这条线上走多少 tick 走完。 */
-    private static final int CRYSTAL_PULSE_TICKS = 6;
+    /** 水晶护盾的护甲 modifier（固定 UUID，便于按需增删）。 */
+    private static final UUID CRYSTAL_ARMOR_UUID =
+            UUID.fromString("c1a5b7e0-3d2f-4a9c-8b61-7e4d2f9a6c30");
+    /** 水晶护盾的韧性 modifier。 */
+    private static final UUID CRYSTAL_TOUGHNESS_UUID =
+            UUID.fromString("d4e6c8f1-5b3a-4c7d-9e82-1f6a3b5c7d41");
 
-    /** 治疗光效的计数器（决定什么时候起下一发）。 */
-    private int crystalFxTicks;
-    /** 当前这发脉冲已经走了几个 tick；-1 = 没有在走的脉冲。 */
-    private int crystalPulseTicks = -1;
-    /** 当前这发脉冲的起点（水晶）。 */
-    private Vec3 crystalPulseFrom;
-    /** 当前这发脉冲的终点（龙受击点）。 */
-    private Vec3 crystalPulseTo;
+    /** 上一次应用护盾时的水晶数量；没变化就不重复改属性。 */
+    private int lastGuardCrystals = -1;
+    /** 读档后第一次 tick 清理旧 beamTarget（只做一次）。 */
+    private boolean crystalBeamCleanupDone;
 
     /**
-     * 水晶治疗的光效。
+     * 水晶护盾：附近每有一块存活水晶，给龙加一份护甲/护甲韧性。
      *
-     * <p><b>为什么得自己做：</b>原版<b>没有</b>回血特效 —— javap 查过 {@code EnderDragon}
-     * 和 {@code EndCrystal}，治疗那条路上一个 {@code addParticle} 都没有
-     * （水晶到龙的那道光束纯粹是渲染层读 {@code DATA_BEAM_TARGET} 画出来的）。
-     * 所以"看不见在回血"是必然的，得自己补。
-     *
-     * <p><b>为什么不是"整条线铺满粒子"</b>（第一版就是这么做的，已废弃）：<br>
-     * 一是<b>看不见流动</b>——粒子均匀撒在 32 格上，看着像一团静止的灰雾，不像能量在输送；<br>
-     * 二是<b>开销大</b>——每 2 秒沿整条线撒一遍，在末地那种开阔地形里粒子量很可观。
-     * 现在改成<b>一颗沿直线飞过去的脉冲光点</b>：沿途只放少量粒子，
-     * 到位时在龙身上炸开一圈。既看得出"能量从水晶流向龙"，粒子量也降了一个数量级。
+     * <p>这是<b>常驻光环</b>，和"受伤后才开始回血"无关；水晶被拆掉后 1 秒内
+     * 属性会回落到原值。数值由 {@code crystal.guard*} 配置控制。
      */
-    private void crystalHealEffects(EndCrystal crystal) {
-        if (!(this.level() instanceof ServerLevel server)) {
+    private void applyCrystalGuard() {
+        int count = DragonGolemConfig.crystalGuard() ? this.crystalHeal.guardCrystals() : 0;
+        if (count == this.lastGuardCrystals) {
             return;
         }
-        // ---- 推进已经在飞的那发脉冲 ----
-        if (this.crystalPulseTicks >= 0) {
-            this.crystalPulseTicks++;
-            if (this.crystalPulseTicks >= CRYSTAL_PULSE_TICKS) {
-                this.crystalPulseArrived(server);
-            } else {
-                double u = this.crystalPulseTicks / (double) CRYSTAL_PULSE_TICKS;
-                Vec3 p = this.crystalPulseFrom.lerp(this.crystalPulseTo, u);
-                // 光点本体 + 一点点拖尾：拖着才看得出方向
-                server.sendParticles(ParticleTypes.END_ROD, p.x, p.y, p.z, 2, 0.05D, 0.05D, 0.05D, 0.0D);
-            }
+        this.lastGuardCrystals = count;
+        double armor = Math.min(DragonGolemConfig.crystalArmorCap(),
+                count * DragonGolemConfig.crystalArmorPerCrystal());
+        double toughness = Math.min(DragonGolemConfig.crystalToughnessCap(),
+                count * DragonGolemConfig.crystalToughnessPerCrystal());
+        this.setCrystalModifier(Attributes.ARMOR, CRYSTAL_ARMOR_UUID, "dragon_crystal_armor", armor);
+        this.setCrystalModifier(Attributes.ARMOR_TOUGHNESS, CRYSTAL_TOUGHNESS_UUID,
+                "dragon_crystal_toughness", toughness);
+        if (DragonGolemConfig.pathLog()) {
+            Dragon_golems.LOGGER.info("[crystal] guard crystals={} armor={} toughness={}",
+                    count, String.format("%.1f", armor), String.format("%.1f", toughness));
         }
-
-        // ---- 起一发新的（受节流控制） ----
-        if (++this.crystalFxTicks < CRYSTAL_FX_INTERVAL) {
-            return;
-        }
-        this.crystalFxTicks = 0;
-        this.crystalPulseFrom = crystal.position().add(0.0D, 0.6D, 0.0D);
-        this.crystalPulseTo = this.position().add(0.0D, this.getBbHeight() * 0.5D, 0.0D);
-        this.crystalPulseTicks = 0;
-        // 起点先给一小簇，交代"这一发是从这块水晶出来的"
-        server.sendParticles(ParticleTypes.END_ROD,
-                this.crystalPulseFrom.x, this.crystalPulseFrom.y, this.crystalPulseFrom.z,
-                4, 0.15D, 0.15D, 0.15D, 0.02D);
     }
 
-    /** 脉冲打到龙身上：撒一圈绿色十字 + 一声清亮的钟鸣。 */
-    private void crystalPulseArrived(ServerLevel server) {
-        this.crystalPulseTicks = -1;
-        Vec3 to = this.crystalPulseTo;
-        server.sendParticles(ParticleTypes.HAPPY_VILLAGER, to.x, to.y, to.z,
-                8, this.getBbWidth() * 0.35D, this.getBbHeight() * 0.3D, this.getBbWidth() * 0.35D, 0.0D);
-        server.playSound(null, this.blockPosition(), SoundEvents.AMETHYST_BLOCK_CHIME,
-                SoundSource.NEUTRAL, 0.7F, 1.5F);
+    /** 增删一个固定 UUID 的临时属性 modifier（数量为 0 时移除）。 */
+    private void setCrystalModifier(Attribute attribute, UUID id, String name, double amount) {
+        AttributeInstance instance = this.getAttribute(attribute);
+        if (instance == null) {
+            return;
+        }
+        AttributeModifier old = instance.getModifier(id);
+        if (amount <= 0.0D) {
+            if (old != null) {
+                instance.removeModifier(id);
+            }
+            return;
+        }
+        if (old != null && Math.abs(old.getAmount() - amount) < 1.0E-6D) {
+            return;
+        }
+        if (old != null) {
+            instance.removeModifier(id);
+        }
+        instance.addTransientModifier(new AttributeModifier(
+                id, name, amount, AttributeModifier.Operation.ADDITION));
     }
 
     /** 飞行辅助（goal 拿它做避障修正，按键拿它开关自由飞行）。 */
+    public DragonCavePosition cavePosition() {
+        return this.cavePosition;
+    }
+
+    /**
+     * 身体现在是不是"完整地待在开阔空间里"（整条龙塞得下、没有压在方块里）。
+     *
+     * <p>给"不许躲在墙里输出"用：引导喷息只在它为 true 时才结算伤害。
+     */
+    public boolean bodyClear() {
+        // ★ 判定用"缩进 0.35 格的身体盒"：整条龙塞得下太苛刻（洞里几乎永远不成立，它就完全不开火），
+        //   但也不能允许"半个身子在墙里"。缩进一点 = 允许擦边，不允许深埋。
+        return this.level().noCollision(this, this.getBoundingBox().deflate(0.35D));
+    }
+
+    @Override
+    public boolean hurt(DamageSource source, float amount) {
+        // ★ 水晶自爆是"自己的强化设施"，不是敌人：只对 EndCrystal 作为直接来源的爆炸免疫。
+        //   这是来源级过滤，不是 blanket 爆炸免疫 —— TNT/苦力怕/火球仍然走爆炸免疫/海绵升级。
+        if (this.isCrystalExplosion(source) && DragonGolemConfig.crystalExplosionImmune()) {
+            if (DragonGolemConfig.pathLog() && !this.level().isClientSide()) {
+                Dragon_golems.LOGGER.info("[hurt] ignore crystal explosion direct={} entity={}",
+                        source.getDirectEntity() == null ? "null" : source.getDirectEntity().getType(),
+                        source.getEntity() == null ? "null" : source.getEntity().getType());
+            }
+            return false;
+        }
+        // 挨打就尽快重挑安全位
+        this.cavePosition.onHurt();
+        // ★ 诊断：谁打的、多远、高度差多少 —— 回答"为什么还能被近战打中"
+        if (DragonGolemConfig.pathLog() && !this.level().isClientSide()) {
+            LivingEntity attacker = source.getEntity() instanceof LivingEntity le ? le : null;
+            Dragon_golems.LOGGER.info("[hurt] src={} dmg={} attacker={} dist={} dy={} dyTop={} noPhysics={}",
+                    source.getMsgId(), String.format("%.1f", amount),
+                    attacker == null ? "null" : attacker.getName().getString(),
+                    attacker == null ? "-" : String.format("%.1f", this.distanceTo(attacker)),
+                    attacker == null ? "-" : String.format("%.1f", this.getY() - attacker.getY()),
+                    attacker == null ? "-" : String.format("%.1f",
+                            this.getY() - (attacker.getY() + attacker.getBbHeight())),
+                    this.noPhysics);
+        }
+        return super.hurt(source, amount);
+    }
+
+    /**
+     * 这次伤害是不是"末地水晶自爆"。
+     *
+     * <p>原版 {@code EndCrystal.hurt()} 被非爆炸伤害打掉时，会调用
+     * {@code damageSources().explosion(this, breaker)} 再 {@code level.explode(...)}；
+     * 所以爆炸的 {@code directEntity} 就是那块水晶。TNT/苦力怕/火球的直接来源不是
+     * {@code EndCrystal}，不会被这里误伤/误免。
+     */
+    private boolean isCrystalExplosion(DamageSource source) {
+        if (!source.is(DamageTypeTags.IS_EXPLOSION)) {
+            return false;
+        }
+        return source.getDirectEntity() instanceof EndCrystal
+                || source.getEntity() instanceof EndCrystal;
+    }
+
     public DragonFlightAssist flightAssist() {
         return this.flightAssist;
     }
@@ -1703,6 +1808,44 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         // 不另做同步 —— 少一个包、也少一处"两边不一致"的可能。
         return this.noPhysics;
     }
+
+    /**
+     * 现在是不是"幽灵穿墙"档（洞穴 AI / 玩家自由飞行 / 自动脱困 / 常驻幽灵）。
+     *
+     * <p>移动逻辑必须问它：<b>幽灵时直线就是合法路线</b>，不该再让 A*、避障、碰撞检测
+     * 把方向改开 —— 否则就会出现"明明能穿墙，却在墙前面绕/站桩"。
+     */
+    public boolean isGhostFlight() {
+        return this.noPhysics;
+    }
+
+    /**
+     * 现在是不是<b>洞穴模式主动开启</b>的幽灵（而不是玩家自由飞行 / 自动脱困被动开的）。
+     *
+     * <p>飞行辅助要靠它区分两种情况：
+     * <ul>
+     *   <li>主动幽灵 = "穿墙就是设计"：不把嵌进方块当卡住，不触发脱困/把龙往外推；</li>
+     *   <li>被动幽灵 = "卡住了才临时穿"：照旧走脱困、找开阔处。</li>
+     * </ul>
+     */
+    public boolean isCaveGhostActive() {
+        if (this.getControllingPassenger() != null || !DragonGolemConfig.caveGhost()) {
+            return false;
+        }
+        if (this.inCave()) {
+            this.lastCaveGhostTick = this.tickCount;
+            return true;
+        }
+        // ★ 滞回：洞穴判定每 10 tick 重算一次，在洞口 / 水池边可能闪成 false 一两拍。
+        //   没有这段宽限就会出现"这一 tick 关掉 noPhysics、下一 tick 又打开"——
+        //   关掉的那一 tick 里 travel 会按碰撞处理，龙直接卡在墙上（日志里 hColl/vColl=true）。
+        return this.lastCaveGhostTick != Integer.MIN_VALUE
+                && this.tickCount - this.lastCaveGhostTick < CAVE_GHOST_GRACE_TICKS;
+    }
+
+    /** 洞穴幽灵的判定滞回：离开洞穴后还保持这么久（5 秒）。 */
+    private static final int CAVE_GHOST_GRACE_TICKS = 100;
+    private int lastCaveGhostTick = Integer.MIN_VALUE;
 
     // ---- 骑手升降键（客户端 DragonRideInputPacket） ----
 
@@ -2030,6 +2173,71 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             this.diagnoseAttack();
             // 掷骰子选技能（两个攻击 goal 都靠这个决定自己该不该上）
             this.tickSkillRoll();
+            // ★ 巡场：没有目标时主动找附近的敌对生物（洞穴里"不动"最大的问题就是不会主动找敌人）。
+            //   每 20 tick 扫一次 24 格；只认 Monster，不抢玩家的目标，也不碰友方傀儡。
+            // ★ 取目标要"承诺一段时间"：否则目标被清掉后每 20 tick 重新选一次，
+            //   选中的最近的怪一换，移动方向就翻转 —— 观感就是"来回颤动"。
+            if (!this.level().isClientSide() && this.dragonCurrentTarget() != null) {
+                this.patrolCommitUntil = this.tickCount + 60;
+            }
+            if (!this.level().isClientSide() && this.dragonCurrentTarget() == null
+                    && this.tickCount % 20 == 0 && this.tickCount >= this.patrolCommitUntil) {
+                // ★ 别只认 Monster：地牢里打的往往是"傀儡"（MG 的 MetalGolemEntity 等），
+                //   它们不是 Monster → 之前巡场永远扫不到目标（日志里 target=null 就是这个）。
+                //   但也不能是"任何 LivingEntity"：马、蝙蝠、试验假人都能被 canAttack 放行，
+                //   于是龙会丢下正在打的傀儡去追动物 —— 真机就是"龙傀儡逃跑了"。
+                java.util.List<LivingEntity> nearby =
+                        this.level().getEntitiesOfClass(LivingEntity.class,
+                                this.getBoundingBox().inflate(32.0D),
+                                m -> m.isAlive() && !m.isSpectator()
+                                        && !(m instanceof net.minecraft.world.entity.player.Player)
+                                        && !this.isAlliedTo(m)
+                                        && this.isValidPatrolTarget(m)
+                                        && this.canAttack(m));
+                LivingEntity best = null;
+                double bestDist = Double.MAX_VALUE;
+                for (LivingEntity mob : nearby) {
+                    double d = this.distanceToSqr(mob);
+                    if (d < bestDist) {
+                        bestDist = d;
+                        best = mob;
+                    }
+                }
+                if (best != null) {
+                    this.setTarget(best);
+                }
+            }
+            // ★ 巡场目标过滤：只打"敌对生物"和"别人的傀儡"，不打马/蝙蝠/试验假人/自己的宠物。
+            //   否则龙会丢下正在打的敌人去追路过的小动物，看起来就是"逃跑了"。
+            //   （命令手杖强制指定的 forcedTarget 不走这里，所以用假人测试仍然能打。）
+            if (DragonGolemConfig.pathLog() && !this.level().isClientSide() && this.tickCount % 100 == 0) {
+                LivingEntity t = this.dragonCurrentTarget();
+                if (t != null) {
+                    Dragon_golems.LOGGER.info("[target] {} ({}) forced={} patrolValid={} enemy={} golem={}",
+                            t.getName().getString(), t.getClass().getSimpleName(),
+                            this.forcedTarget == t,
+                            this.isValidPatrolTarget(t), t instanceof Enemy,
+                            t instanceof AbstractGolemEntity<?, ?>);
+                }
+            }
+            // ★ 攻击诊断（每 40 tick 一行）：回答"为什么不打" ——
+            //   target=null → 没目标；embedded→被嵌住；movable/parked→模式不对；dist/range/los→够不着。
+            if (DragonGolemConfig.pathLog() && !this.level().isClientSide() && this.tickCount % 40 == 0) {
+                LivingEntity atkTarget = this.dragonCurrentTarget();
+                Dragon_golems.LOGGER.info(
+                        "[atk] target={} movable={} sitting={} embedded={} noPhysics={} pending={} dist={} range={} los={} cave={} y={} ceilLimit={} hoverT={}",
+                        atkTarget == null ? "null" : atkTarget.getName().getString(),
+                        this.isMovable(), this.isInSittingPose(),
+                        this.flightAssist() != null && this.flightAssist().isEmbedded(),
+                        this.noPhysics, this.pendingSkill(),
+                        atkTarget == null ? "-" : String.format("%.1f", this.distanceTo(atkTarget)),
+                        String.format("%.1f", this.breathRange()),
+                        atkTarget != null && this.hasLineOfSight(atkTarget),
+                        this.caveSpace().cave(),
+                        String.format("%.1f", this.getY()),
+                        String.format("%.1f", this.ceilingFeetLimit()),
+                        String.format("%.1f", this.hoverTargetY()));
+            }
             // 摘掉本家挂上去的、我们不想要的 goal（近战 / 三维距离传送）
             this.disableNativeGoals();
             // 竖直速度的三种来源，<b>互斥</b>：
@@ -2103,6 +2311,29 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.keepAimThisTick = false;
                 this.applyHover();
             }
+            // ★ 闪避：投射物朝我飞来 / 刚挨近战 → 侧向脱离（8 tick，不寻路、不求解碰撞）
+            Vec3 safeVel = this.cavePosition.tick(DragonGolemConfig.caveDodge() && this.inCave());
+            if (safeVel != null) {
+                this.setNoGravity(true);
+                // 闪避/站位也不能往岩浆里钻
+                this.setDeltaMovement(this.flightAssist.lavaAvoidance(this, safeVel));
+                this.fallDistance = 0.0F;
+            }
+            // ★ 卡在方块里：直接朝"最近的有空气、塞得下这头龙的位置"飞（优先于一切 AI 意图）。
+            //   之前只有"脱困计时器"触发时才走 rescueVelocity，而 embedded 状态本身
+            //   并不会马上触发脱困 —— 于是它一边嵌在墙里一边继续执行悬停/绕圈。
+            Vec3 unstick = this.flightAssist.unstickTarget(this);
+            if (unstick != null) {
+                Vec3 to = unstick.subtract(this.position());
+                if (to.lengthSqr() > 1.0E-4D) {
+                    this.setNoGravity(true);
+                    this.setDeltaMovement(to.normalize().scale(0.35D * this.speedScale()));
+                    this.fallDistance = 0.0F;
+                    this.getNavigation().stop();
+                    this.pathFollower().invalidate();
+                    this.faceMovement(to);
+                }
+            }
             // ★ 压弯（侧倾）统一在这里算：只看"本 tick 实际转过的角度"，所以骑手用鼠标转、
             //   AI 巡航转（FlyingMoveControl 拧的机头）、俯冲/冲锋的航线转，三种全都吃得到。
             //   早先压弯只在 faceMovement() 里按"它自己转了多少"算，而 AI 巡航的转向走
@@ -2117,17 +2348,36 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 this.tickBodyRoll();
             }
         }
-        // 飞行辅助：撞墙计数、自动脱困的进出、noPhysics 的唯一写入口。
+        // 飞行辅助：撞墙计数、自动脱困的进出、noPhysics 的被动写入口
+        // （洞穴主动幽灵是下面那条"设计上就要穿墙"的独立档位）。
         // 必须在上面那段之后 —— 那里才刚决定本 tick 的速度。
-        this.flightAssist.tick(this);
+        // ★ noPhysics 是同步字段，只在服务端写：客户端写它会被服务端同步覆盖，
+        //   还可能在"客户端认为在洞里、服务端没这么认为"时产生短暂分歧。
+        if (!this.level().isClientSide) {
+            this.flightAssist.tick(this);
+            // ★ 洞穴模式：允许穿墙（默认开）。
+            //   洞里"塞不下"是必然；与其做避障/脱困/寻路（会卡死服务器），不如直接穿墙：
+            //   不碰撞 → 不会嵌住 → 不需要脱困 → 不需要 A*，输出改由引导伤害保证（见 DragonRangedGoal）。
+            // ★ 这条现在只对"洞穴 + 没有骑手"生效（cave.ghost）：开阔地交回飞行辅助的
+            //   自动脱困 / 常驻幽灵。之前是"只要没有骑手就一律穿墙"的测试开关，
+            //   会让 A*、避障、脱困在 AI 身上全部变成死代码 —— 这也是"幽灵却不认路"的来源之一。
+            if (this.isCaveGhostActive()) {
+                this.noPhysics = true;
+            }
+        }
         // 末地水晶治疗：每 30 秒一轮、每轮最多 12 个可用水晶，详见 DragonCrystalHeal 的说明。
         // 放在这里（服务端 tick 收尾）而不是 goal 里：它是"被动光环"，不该和 AI 决策抢调度。
         if (!this.level().isClientSide) {
+            if (!this.crystalBeamCleanupDone) {
+                this.crystalBeamCleanupDone = true;
+                this.crystalHeal.cleanupStaleBeams(this);
+            }
             EndCrystal usedCrystal = this.crystalHeal.tick(this);
             if (usedCrystal != null) {
                 this.setHealth(Math.min(this.getMaxHealth(), this.getHealth() + CRYSTAL_HEAL_AMOUNT));
-                this.crystalHealEffects(usedCrystal);
             }
+            // 水晶护盾和回血共用同一组"附近水晶"扫描结果（每 20 tick 更新）
+            this.applyCrystalGuard();
         }
         // 诊断：定期报一次"竖直相关的全部状态"。排查"按了上升却不动 / 一直往上飞"
         // 必须同时看到 y / 竖直速度 / 水平速度 / 重力 / 目标高度 / 地表高度 / 各模式标志
@@ -2188,6 +2438,31 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     // ---- 攻击调度（供 DragonDiveGoal / DragonRangedGoal 查询）----
 
     /**
+     * 巡场自动索敌只打这两类：
+     * <ul>
+     *   <li>{@link Enemy}（原版/模组的敌对生物）；</li>
+     *   <li><b>别人的傀儡</b>（{@link AbstractGolemEntity} 且 owner 不是自己）——
+     *       地牢里的傀儡不是 Monster，但也不能像动物一样被当成路人。</li>
+     * </ul>
+     * 马、蝙蝠、试验假人、村民、自己的宠物都不在列表里。命令手杖的 forcedTarget
+     * 不走这条过滤，所以拿假人测试仍然能打。
+     */
+    private boolean isValidPatrolTarget(LivingEntity mob) {
+        if (mob instanceof Enemy) {
+            return true;
+        }
+        if (mob instanceof AbstractGolemEntity<?, ?> golem) {
+            Player owner = this.getOwner();
+            return owner == null || golem.getOwner() != owner;
+        }
+        // 自己的宠物（狼/猫/马…）即使能被 canAttack 放行也不打
+        if (mob instanceof OwnableEntity ownable && ownable.getOwner() == this.getOwner()) {
+            return false;
+        }
+        return false;
+    }
+
+    /**
      * 每 tick 决定"这一轮该用哪个技能"。
      *
      * <p>顺序是：两个大招 CD 各自递减 → 都就绪就掷骰子选一个 → 大招都用不了时<b>直接用龙息</b>
@@ -2195,7 +2470,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 交给 {@link DragonRangedGoal} 的 CLOSE_IN 飞过去。
      */
     private void tickSkillRoll() {
-        LivingEntity target = this.getTarget();
+        LivingEntity target = this.dragonCurrentTarget();
         if (this.diveCooldown > 0) {
             this.diveCooldown--;
         }
@@ -2223,6 +2498,13 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 // 执行态会一直挂着。这里强制放行，免得龙从此不再出手。
                 this.skillInProgress = false;
             }
+            if (!this.skillInProgress && this.pendingSkill == DragonSkill.DIVE
+                    && !this.diveCanExecute(target)) {
+                // 抽中的俯冲已经不可能执行（洞穴禁俯冲 / 没视线 / 距离变了）→ 立刻重掷，
+                // 别让 DragonRangedGoal 因为 pending=DIVE 一直不上，白等 60 tick。
+                this.pendingSkill = null;
+                this.skillPendingTicks = 0;
+            }
             if (!this.skillInProgress && ++this.skillPendingTicks > SKILL_PENDING_TIMEOUT) {
                 this.pendingSkill = null;
                 this.skillPendingTicks = 0;
@@ -2231,6 +2513,25 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         }
         this.pendingSkill = this.pickSkill(target);
         this.skillPendingTicks = 0;
+    }
+
+    /**
+     * 这一轮抽中的俯冲现在还能不能真的起飞。
+     *
+     * <p>必须和 {@code DragonDiveGoal.canUse()} 的距离/视线/洞穴闸门保持一致，
+     * 否则会出现"调度器抽了俯冲、DiveGoal 不起飞、远程 goal 又因为 pending 不是自己没有输出"。
+     */
+    private boolean diveCanExecute(LivingEntity target) {
+        if (this.diveCooldown > 0) {
+            return false;
+        }
+        if (DragonGolemConfig.caveNoDive() && this.inCave()) {
+            return false;
+        }
+        double hDist = Mth.sqrt((float) ((target.getX() - this.getX()) * (target.getX() - this.getX())
+                + (target.getZ() - this.getZ()) * (target.getZ() - this.getZ())));
+        return hDist >= this.diveMinH() && hDist <= this.diveMaxH()
+                && this.hasLineOfSight(target);
     }
 
     /**
@@ -2245,10 +2546,12 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     @Nullable
     private DragonSkill pickSkill(LivingEntity target) {
         double dist = this.distanceTo(target);
-        double hDist = Mth.sqrt((float) ((target.getX() - this.getX()) * (target.getX() - this.getX())
-                + (target.getZ() - this.getZ()) * (target.getZ() - this.getZ())));
         boolean los = this.hasLineOfSight(target);
-        boolean diveOk = this.diveCooldown <= 0 && hDist >= this.diveMinH() && hDist <= this.diveMaxH();
+        // ★ 俯冲必须有视线、距离合适，且洞穴里默认禁用（见 diveCanExecute）。
+        //   旧版这里只看了距离/冷却：日志里 pending=DIVE、los=false，DiveGoal 拒绝起飞，
+        //    而 DragonRangedGoal 看到 pending 不是 BREATH/ROCKET 又直接不上 ——
+        //   龙就在那里游荡 60 tick 再重掷，整场战斗几乎零输出。
+        boolean diveOk = this.diveCanExecute(target);
         // 龙弹和音爆共享一条 CD：CD 没好两个都不能上。
         // 音爆还要身体是幽匿（音波系），其它材料的龙不参与这个骰子。
         boolean blastReady = this.blastCooldown <= 0;
@@ -2633,7 +2936,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         if (!ATTACK_DIAGNOSTIC || this.tickCount % 100 != 0) {
             return;
         }
-        LivingEntity target = this.getTarget();
+        LivingEntity target = this.dragonCurrentTarget();
         if (target == null) {
             return;
         }
@@ -2769,9 +3072,84 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 所以"嘴离目标还有多远" = |绕圈半径 − 这个值|。1 倍体型约 7.2 格、泰坦（4 倍）约 29 格 ——
      * 半径小于它时龙头就直接穿到目标身上甚至背后去了。
      */
+    /**
+     * <b>喷口到目标碰撞箱中心的距离</b> —— 判断"嘴已经能够到"的正式口径。
+     *
+     * <p>用身体中心距离会晚很多：龙头在身体前方 {@link #mouthForward()} 格，
+     * 等身体靠近到射程内时，嘴早就捅进目标里了（真机："头明明能喷了它还在往前顶"）。
+     */
+    public double mouthDistanceTo(net.minecraft.world.entity.Entity target) {
+        return this.mouthPosition().distanceTo(target.getBoundingBox().getCenter());
+    }
+
     public double mouthForward() {
         return Math.abs(this.rotateAndLift(HEAD_UP_PX + 2.0D, HEAD_FORWARD_PX + MOUTH_FORWARD_PX,
                 this.getBodyPitch())[1]);
+    }
+
+    /**
+     * <b>洞穴战斗站位距离</b>（身体中心 → 目标中心，格）：近了就后撤、远了才靠拢。
+     *
+     * <h2>为什么不能只用一个"嘴够得着"的常数</h2>
+     * 原版 1.20.1 的近战距离不是 3 格：{@code Mob.getMeleeAttackRangeSqr} 是
+     * {@code (攻击者宽度 × 2)² + 目标宽度} —— 一个 3 格宽的傀儡算出来接近 <b>6 格</b>，
+     * 而 MG 的 {@code GolemMeleeGoal} 还会读 {@code forge:entity_reach}。
+     * 所以"贴在目标上方 3 格"照样会被打；必须同时满足：
+     * <ul>
+     *   <li><b>高度</b>：目标头顶 + {@code cave.attackHeight}（默认 4 格）；</li>
+     *   <li><b>水平</b>：把上面那个高度换算到"嘴够得着"的球面半径上；</li>
+     *   <li><b>近战</b>：目标的实际攻击距离 + 双方半宽 + 1 格缓冲。</li>
+     * </ul>
+     * 挨打后的 10 tick 再加 1.5 格（{@link #hurtTime}），让它被打一下就往后退，
+     * 而不是原地继续挨第二下。
+     */
+    public double caveStandoff(LivingEntity target) {
+        double base = this.mouthForward() * 1.15D * DragonGolemConfig.caveStandoffFactor();
+        double radius = base + DragonGolemConfig.caveAttackHeight();
+        double above = Math.max(0.0D, this.getY() - (target.getY() + target.getBbHeight()));
+        double orbit = Math.max(base * 0.85D,
+                Math.sqrt(Math.max(1.0D, radius * radius - above * above)));
+        double standoff = Math.max(orbit, this.meleeSafeDistance(target));
+        // 刚挨打：额外退一点（10 tick），"打一下就退"比"站着换血"更像龙
+        if (this.hurtTime > 0) {
+            standoff += 1.5D;
+        }
+        // ★ 但站位再远也不能超过"嘴前伸量 / 近战安全距离 + 1"太多：
+        //   洞里的水池/房间常常只有十几格宽，退到 15 格会正好退出视线，
+        //   表现就是"一直往外退、看不见人、也不喷"。
+        //   用嘴前伸量（和上一版的洞穴喷息半径同源）而不是 orbitRadius：
+        //   后者是平原绕圈半径，在洞穴里本来就偏大。
+        double factor = DragonGolemConfig.caveStandoffFactor();
+        double cap = Math.max(this.mouthForward() * 1.15D * factor,
+                this.meleeSafeDistance(target)) + 1.5D;
+        return Math.min(standoff, cap);
+    }
+
+    /**
+     * 目标能把近战打到多远（含双方宽度和 1 格缓冲）。
+     *
+     * <p>同时认两套口径：原版 {@code Mob} 的"攻击者宽度 × 2"和 Forge / MG 的
+     * {@code forge:entity_reach}。取更大的那个 —— 宁可站远一点。
+     */
+    public double meleeSafeDistance(LivingEntity target) {
+        double range = Math.max(3.0D, 2.0D * target.getBbWidth());
+        AttributeInstance reach = target.getAttribute(ForgeMod.ENTITY_REACH.get());
+        if (reach != null) {
+            range = Math.max(range, reach.getValue());
+        }
+        return range + (target.getBbWidth() + this.getBbWidth()) * 0.5D + 1.0D;
+    }
+
+    /**
+     * 洞穴里"现在这个距离能不能开始/继续开火"。
+     *
+     * <p><b>不要求先站到完整站位</b>：完整站位（{@link #caveStandoff}）往往在十几格外，
+     * 如果非要先退到那里再开火，观感就是"一直往后跑、完全不打"。
+     * 这里只要求已经离开目标的<b>实际近战范围</b>（{@link #meleeSafeDistance}）；
+     * 前摇 / 喷息阶段会继续后撤到完整站位，所以仍然是"边打边退"。
+     */
+    public boolean caveAttackDistanceOk(LivingEntity target) {
+        return !this.inCave() || this.distanceTo(target) >= this.meleeSafeDistance(target);
     }
 
     /**
@@ -2802,7 +3180,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * <p><b>为什么不用原版那两条：</b>原版的 {@code minecraft:bypasses_cooldown} 标签是<b>空的</b>
      * （连 {@code sonic_boom} 自己都不免无敌帧），而这条通道每 10 tick 就打一次 ——
      * 只要把目标顶进无敌帧，旁边的地面傀儡一拳上去就会被按差值削掉一截、甚至整个被吞。
-     * 我们自己那两条伤害类型都塞进了 {@code bypasses_cooldown}，再配 {@link #hurtWithoutFrames}
+     * 我们自己那两条伤害类型都塞进了 {@code bypasses_cooldown}，跳数由技能节奏自己控制（{@link #applySkillHit}）
      * 把目标原本的无敌帧原样放回去，于是"龙的持续输出"和"地面傀儡的单发重击"互不干扰。
      * <b>整合包换成自己的伤害类型时，要照这样也进 {@code bypasses_cooldown}</b>，
      * 否则龙息会把目标顶在无敌帧里、把旁边地面傀儡的伤害吞掉。
@@ -2855,7 +3233,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      *       玩家按键时由 {@link #riderCombat} 临时放行。</li>
      * </ol>
      *
-     * <p>这里统一走 {@link #hurtWithoutFrames}：把目标原本的无敌帧原样放回去，
+     * <p>这里统一走 {@link #applySkillHit}：目标的无敌帧由伤害类型的 {@code bypasses_cooldown} 处理，
      * 免得"每 10 tick 一跳"的龙息替别人占住无敌帧。想给龙加新技能（或者第三方想挂自己的招式）
      * 就直接调这个方法，其余那套升级管线会自动接上。
      *
@@ -2867,7 +3245,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         DamageSource src = source == null ? this.damageSources().mobAttack(this) : source;
         // 先把 mob 归属记上（原版 hurt 内部也会记，这里对"绕过 hurt 的伤害类型"也保证生效）
         target.setLastHurtByMob(this);
-        boolean hurt = this.hurtWithoutFrames(target, src, damage);
+        boolean hurt = this.applySkillHit(target, src, damage);
         if (hurt && knockback > 0.0D) {
             target.knockback(knockback, this.getX() - target.getX(), this.getZ() - target.getZ());
         }
@@ -2949,24 +3327,25 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     /**
-     * 打一下，但<b>不把目标顶进无敌帧</b>。
+     * 打出一跳技能伤害。
      *
-     * <p>原版 {@code LivingEntity.hurt} 只要命中成功就会把目标的 {@code invulnerableTime} 重置成 20 tick，
-     * 于是"每 10 tick 跳一次"的龙息会让目标长期处在无敌帧里：地面上的傀儡一拳上去，
-     * 要么被按差值削掉一截，要么直接吞掉。
+     * <h2>无敌帧：只靠"伤害类型进 {@code bypasses_cooldown}"，<b>不写目标字段</b></h2>
+     * 旧写法是"打之前存下 {@code target.invulnerableTime}、打完再放回去"。这种写法已被否掉：
+     * 它是在替目标维护状态，一旦有别的伤害源在同一 tick 前后进来，就会读到被我们改过的值；
+     * 而且"改目标字段"本身没有语义保证（哪一帧写、谁写、写多少都不明确）。
      *
-     * <p>所以这里把目标原本的 {@code invulnerableTime} 记下来、打完再放回去
-     * （{@code Entity.invulnerableTime} 是 public 字段，**不用 mixin**）。我们自己的伤害照样进得去
-     * （伤害类型在 {@code bypasses_cooldown} 里，不靠无敌帧判定），而且<b>不会替别人占住无敌帧</b>。
+     * <p>规范写法（隔壁军械库已整改成这套，见 {@code BYPASS-DESIGN.md}）：
+     * <ol>
+     *   <li>伤害类型进 {@code minecraft:bypasses_cooldown}（我们两条都在）；</li>
+     *   <li><b>跳数/节奏由技能自己维护</b>：龙息每 10 tick 一跳、一次喷息最多 6 跳，
+     *       俯冲有 {@code HIT_COOLDOWN}，引导喷息也是每 10 tick —— 全都由调用方控制；</li>
+     *   <li>不碰 {@code invulnerableTime} / {@code lastHurt}，让原版对<b>别的</b>伤害源的判定保持原样。</li>
+     * </ol>
      *
-     * <p>{@code lastHurt} 是 protected 改不了 —— 它只参与"无敌帧内的差值结算"，
-     * 而且我们的命中把它压低反而让后面的大伤害进得更完整，所以放着不管。
+     * <p>换句话说：我们保证"我们自己不会在同一 tick 重复结算"，而不是"帮目标把帧恢复回去"。
      */
-    private boolean hurtWithoutFrames(LivingEntity target, DamageSource source, float damage) {
-        int saved = target.invulnerableTime;
-        boolean hurt = target.hurt(source, damage);
-        target.invulnerableTime = saved;
-        return hurt;
+    private boolean applySkillHit(LivingEntity target, DamageSource source, float damage) {
+        return target.hurt(source, damage);
     }
 
     /**
@@ -3213,7 +3592,11 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     }
 
     private void applyHover() {
-        double dy = hoverTargetY() - this.getY();
+        // 幽灵洞穴：竖直目标必须和战斗 goal 共用一套（真实天花板 + 岩浆液面），
+        // 否则某些没有 goal 写速度的 tick 会按 hoverTargetY（地面 + 10）继续往上顶。
+        double targetY = this.isGhostFlight() && this.inCave()
+                ? this.combatAltitudeY() : this.hoverTargetY();
+        double dy = targetY - this.getY();
         if (Math.abs(dy) <= 0.2D) {
             return;
         }
@@ -3239,7 +3622,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         //   和"实际可用空间"，不再依赖单个方块的取整巧合。
         //   注意比较基准也要用局部地面（不再用世界地表），否则洞里会误判。
         double unclamped = this.localFloorY() + this.hoverHeight();
-        if (this.hoverTargetY() < unclamped - 0.1D) {
+        if (targetY < unclamped - 0.1D) {
             return;
         }
         this.setNoGravity(true);
@@ -3302,7 +3685,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 真机反馈是"跟在身边的龙右键完全没反应"，已经去掉。
      */
     public boolean isParked() {
-        return this.getMode() == GolemModes.STAND || (this.idleSettled && this.getTarget() == null);
+        return this.getMode() == GolemModes.STAND
+                || (this.idleSettled && this.dragonCurrentTarget() == null);
     }
 
     /** 悬停高度的体型倍率：{@code max(1, bodyScale())} 的 {@link #HOVER_SCALE_EXP} 次方。 */
@@ -3333,6 +3717,23 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      */
     public double hoverTargetY() {
         double target = this.localFloorY() + this.hoverHeight();
+        double ceiling = this.hoverCeilingY();
+        return ceiling == NO_CEILING ? target : Math.min(target, ceiling);
+    }
+
+    /**
+     * <b>任意水平坐标</b>的悬停目标高度（寻路用）：那一列的地面 + {@link #hoverHeight()}，
+     * 再由头顶天花板夹一次。
+     *
+     * <p>和 {@link #hoverTargetY()} 的区别只是"算哪一列"：寻路在规划航线时要知道
+     * "如果飞到这个格子，会悬在多高"，否则航线高度只能按当前位置估算，
+     * 跨过沟壑/台阶时航点会不可达。
+     */
+    public double hoverTargetYAt(double x, double z) {
+        int bx = Mth.floor(x);
+        int bz = Mth.floor(z);
+        double floor = this.scanFloor(bx, bz, Mth.floor(this.getY())).y();
+        double target = floor + this.hoverHeight();
         double ceiling = this.hoverCeilingY();
         return ceiling == NO_CEILING ? target : Math.min(target, ceiling);
     }
@@ -3390,8 +3791,8 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return this.scanFloor(x, z, Mth.floor(this.getY())).liquid();
     }
 
-    /** {@link #scanFloor} 的结果：支撑面高度 + 那一层是不是液体。 */
-    private record Floor(double y, boolean liquid) {
+    /** {@link #scanFloor} 的结果：支撑面高度 + 那一层是不是液体 + 是不是岩浆。 */
+    private record Floor(double y, boolean liquid, boolean lava) {
     }
 
     /**
@@ -3408,16 +3809,28 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
             BlockState state = level.getBlockState(cursor);
             if (!state.getCollisionShape(level, cursor).isEmpty()) {
                 // 方块占据 [y, y+1)，所以站在它上面的高度就是 y+1
-                return new Floor(y + 1.0D, false);
+                return new Floor(y + 1.0D, false, false);
             }
             if (!state.getFluidState().isEmpty()) {
-                // 水草、海带这类"含水方块"的流体状态非空，所以它们和纯水一样算液面
-                return new Floor(this.liquidTopY(x, z, y) + 1.0D, true);
+                // ★ 流水不算支撑面（除非配置打开）：
+                //   瀑布/水渠的流体状态非空但 isSource() == false，旧版把整根水柱的顶面当"地面"，
+                //   于是龙会顺着瀑布一格一格往上爬（真机："冲不过瀑布 / 在瀑布里抽搐"）。
+                //   静水（isSource）照旧算液面，水草/海带这类含水方块也跟着算。
+                //   ★ 岩浆例外：流动岩浆也是岩浆，不能像流水一样忽略（会直接钻进去）。
+                boolean lavaFluid = state.getFluidState().is(FluidTags.LAVA);
+                if (!state.getFluidState().isSource() && !DragonGolemConfig.flowingFluidIsFloor() && !lavaFluid) {
+                    continue;
+                }
+                int top = this.liquidTopY(x, z, y);
+                boolean lava = level.getBlockState(cursor.set(x, top, z)).getFluidState().is(FluidTags.LAVA);
+                return new Floor(top + 1.0D, true, lava);
             }
         }
-        // 兜底：往下扫不到东西（悬在深渊/高空），用世界地表作参照。
-        // 注意 MOTION_BLOCKING_NO_LEAVES 本身就把液体算作"挡高度"，所以这个兜底值也在液面之上。
-        return new Floor(level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z) - FLOOR_FALLBACK, false);
+        // 兜底：往下扫不到东西（悬在深渊/高空），用世界地表作参照 —— 但**不允许高于当前位置**。
+        //   真机事故：矿洞里跨过竖井时扫不到地面 → 兜底拿了"上方山丘的世界地表 − 16" = 63，
+        //   而龙在 y=49 → 悬停目标 73 → 它直接顺着竖井飞出了洞穴。
+        double fallback = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z) - FLOOR_FALLBACK;
+        return new Floor(Math.min(fallback, this.getY()), false, false);
     }
 
     /**
@@ -3443,30 +3856,234 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     private Vec3 riderDivePrevPos = Vec3.ZERO;
 
     /**
-     * 头顶第一层挡路方块的下沿 Y（再往下留一格余量）；正上方 {@link #CEILING_SCAN} 格内
-     * 全是空气就返回 {@link #NO_CEILING}。
+     * <b>按"整条龙塞得下"算出来的脚底上限</b>：本列（及朝向两侧各一列）头顶最低的那层天花板，
+     * 减去身体高度与 {@link #CEILING_CLEARANCE} 余量。没有天花板时是 {@link Double#MAX_VALUE}。
+     *
+     * <h2>0.4 里的旧写法为什么会让龙"往上飞/顶天花板"</h2>
+     * 旧版从 {@code Y + bbHeight + 0.5} 往上扫，命中后返回 {@code y - 1}：
+     * 这个值被当作"脚底上限"用，于是脚底可以停在 {@code y - 1}，头就顶到
+     * {@code y - 1 + bbHeight} —— 已经<b>插进方块里 {@code bbHeight - 1} 格</b>。
+     * 洞里悬停目标一直算得偏高 → 龙一直往上顶、被卡住再掉回来，来回抽。
+     *
+     * <p>现在两点都改了：
+     * <ul>
+     *   <li>扫描从<b>脚上方</b>开始（身体范围内有方块也能发现），返回值换算成"脚底能到的最高位置"；</li>
+     *   <li>采样<b>三列</b>（中心 + 朝向前后各 2.5 格）取最低 —— 龙身长 7+ 格，只测中心列会出现
+     *       "中心有空间、脖子/尾巴插进顶"的情况，那就还得靠幽灵模式救。</li>
+     * </ul>
      *
      * <p>用 {@code getCollisionShape().isEmpty()} 判断"挡不挡路"，所以草、雪层、藤蔓
      * 这些没有碰撞箱的方块不算天花板 —— 和 {@code DragonFlightAssist.hasRoomFor} 是同一套判据。
      */
     private double hoverCeilingY() {
+        if (this.ceilingCacheTick == this.tickCount) {
+            return this.ceilingCache;
+        }
+        this.ceilingCacheTick = this.tickCount;
+        float yawRad = this.getYRot() * Mth.DEG_TO_RAD;
+        // 朝向前方（MC: 偏航 0 = +Z，所以前方向量是 (-sin, cos)）
+        double fx = -Math.sin(yawRad);
+        double fz = Math.cos(yawRad);
+        double limit = this.ceilingLimitAt(this.getX(), this.getZ());
+        limit = Math.min(limit, this.ceilingLimitAt(this.getX() + fx * 2.5D, this.getZ() + fz * 2.5D));
+        limit = Math.min(limit, this.ceilingLimitAt(this.getX() - fx * 2.5D, this.getZ() - fz * 2.5D));
+        this.ceilingCache = limit;
+        return limit;
+    }
+
+    /** 单列的天花板脚底上限（见 {@link #hoverCeilingY()}）。 */
+    private double ceilingLimitAt(double atX, double atZ) {
         Level level = this.level();
-        double from = this.getY() + this.getBbHeight() + 0.5D;
-        int x = this.blockPosition().getX();
-        int z = this.blockPosition().getZ();
+        int x = Mth.floor(atX);
+        int z = Mth.floor(atZ);
+        // ★ 从"脚所在方块的<b>上一层</b>"开始扫：
+        //   从 getY()+0.5 开始会把龙自己脚踩着的楼梯/半砖（脚就在它里面）当成天花板，
+        //   于是算出"脚底上限 30.3 < 当前 y 33" → 龙被要求往下沉 → 越沉越嵌（真机日志 hoverTarget=30.30 / y=33）。
+        int from = Mth.floor(this.getY()) + 1;
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
         for (int i = 0; i < CEILING_SCAN; i++) {
-            int y = Mth.floor(from) + i;
+            int y = from + i;
             if (y >= level.getMaxBuildHeight()) {
                 break;
             }
             cursor.set(x, y, z);
             if (!level.getBlockState(cursor).getCollisionShape(level, cursor).isEmpty()) {
-                // 目标 = 障碍下沿再减一格（留出身体高度），但这个值会再由 hoverTargetY 取 min
-                return y - 1.0D;
+                // 方块占据 [y, y+1)：脚底最高只能到"方块下沿 - 身体高度 - 余量"
+                return y - this.getBbHeight() - CEILING_CLEARANCE;
             }
         }
         return NO_CEILING;
+    }
+
+    private double ceilingCache = NO_CEILING;
+    private int ceilingCacheTick = Integer.MIN_VALUE;
+
+    /**
+     * 脚底允许的最高高度（没有天花板时是 {@link Double#MAX_VALUE}）。
+     *
+     * <p><b>永远不低于当前高度</b>：这个值的语义是"别再往上了"，不是"往下沉"。
+     * 低于当前高度只可能意味着龙已经被挤进方块里了，那时该交给碰撞解算/脱困，
+     * 而不是让悬停目标把它继续往下按（那会越按越嵌）。
+     */
+    public double ceilingFeetLimit() {
+        double limit = this.hoverCeilingY();
+        return limit == NO_CEILING ? Double.MAX_VALUE : Math.max(limit, this.getY());
+    }
+
+    /**
+     * 真实天花板（<b>不</b>把"当前高度"当成下限）。
+     *
+     * <p>{@link #ceilingFeetLimit()} 为了"别把已经嵌进方块的龙继续往下按"会返回
+     * {@code max(limit, y)}。这对非幽灵是对的，但对幽灵会形成<b>向上棘轮</b>：
+     * 一旦贴到天花板，limit 低于 y → 返回值变成 y → 再叠加 {@code cave.ceilingSlack}，
+     * 目标高度就变成 y + 1.5；下一 tick 又一样，于是每 tick 往上 1.5 格，
+     * 直接穿过洞顶飞进石头里。幽灵模式必须用这个"真实值"。
+     */
+    private double rawCeilingFeetLimit() {
+        double limit = this.hoverCeilingY();
+        return limit == NO_CEILING ? Double.MAX_VALUE : limit;
+    }
+
+    /**
+     * <b>洞穴模式的"战斗高度"</b>：它才是洞穴里竖直意图的唯一来源。
+     *
+     * <h2>为什么不能继续用"离地 10 格"</h2>
+     * {@link #hoverTargetY()} 是开阔地的巡航高度（地面 + 悬停高度，1 倍体型 10 格）。
+     * 洞里房间通常只有 6~8 格高，于是这个目标永远在房间之上 —— 龙的<b>竖直意图</b>
+     * 天生就是"往上"，再叠加地板兜底、撞墙抬升、避障扇面，就表现为贴顶/顺竖井飞出场地。
+     *
+     * <p>洞穴里的战斗高度只跟两件事有关：<b>目标在哪</b>、<b>地面和天花板之间还剩多少</b>。
+     * 没有目标时保持当前高度（不主动爬升）。
+     */
+    public double combatAltitudeY() {
+        boolean ghost = this.isGhostFlight();
+        // ★ 幽灵用"真实天花板"：ceilingFeetLimit() 的 max(limit, y) 会在贴顶后
+        //   每 tick 把目标抬到 y + ceilingSlack，形成穿过洞顶的棘轮。
+        double ceiling = ghost ? this.rawCeilingFeetLimit() : this.ceilingFeetLimit();
+        if (ceiling != Double.MAX_VALUE && !ghost) {
+            ceiling += DragonGolemConfig.caveCeilingSlack();
+        }
+        if (!this.inCave()) {
+            double cruise = this.hoverTargetY();
+            return ceiling == Double.MAX_VALUE ? cruise : Math.min(cruise, ceiling);
+        }
+        LivingEntity target = this.dragonCurrentTarget();
+        // ★ 洞穴战斗高度 = 目标上方 attackHeight（默认 4.0），不再只是 +1：
+        //   之前 +1 让它在追击/站桩时和目标同层（真机："还是和目标一样的高度攻击"）。
+        double want = (target != null && target.isAlive())
+                ? target.getY() + target.getBbHeight() + DragonGolemConfig.caveAttackHeight()
+                : this.getY();
+        // 泡进岩浆/水时必须往上浮（noClip 不挡液体伤害）
+        if (this.isInLava()) {
+            want = Math.max(want, this.getY() + 2.0D);
+        }
+        // ★ 液面兜底：水只留 1.5 格，岩浆留 cave.lavaClearance（默认 3 格）。
+        //   龙的模型（翅膀/尾巴）比判定箱宽，贴着液面飞会"蹭"进去；而且岩浆没有碰撞箱，
+        //   只按 bodyClear 判定是发现不了的。
+        Floor floor = this.scanFloor(this.blockPosition().getX(), this.blockPosition().getZ(),
+                Mth.floor(this.getY()));
+        double floorClearance = floor.lava() ? DragonGolemConfig.caveLavaClearance() : 1.5D;
+        double min = floor.y() + floorClearance;
+        // ★ 幽灵 + 身体嵌在方块/天花板里：绝不继续往上爬。
+        //   否则"目标在上方"会把它一路顶进石头里（真机："飞到天花板以上，头都出不来"）。
+        //   允许往目标下方下降；目标在上方时保持当前高度，靠 nudge 横向找出口。
+        if (ghost && !this.isInLava() && !this.bodyClear()) {
+            return Math.min(want, this.getY());
+        }
+        // ★ 自己已经钻到"目标所在楼层"的上方时，脚下扫到的"地面"其实是上层天花板顶面，
+        //   不能拿它当 min 把龙继续往上托。幽灵直接朝目标高度下降即可。
+        boolean floorAboveTarget = ghost && target != null && target.isAlive()
+                && floor.y() > target.getY() + target.getBbHeight();
+        if (floorAboveTarget) {
+            double y = want;
+            return ceiling == Double.MAX_VALUE ? y : Math.min(y, ceiling);
+        }
+        double y = Math.max(want, min);
+        if (ceiling == Double.MAX_VALUE) {
+            return y;
+        }
+        if (ghost) {
+            // 幽灵：天花板是硬上限（不再加 slack），别穿出洞顶
+            return Math.min(y, ceiling);
+        }
+        // ★ 液面兜底优先于天花板：如果这条矿道低到"贴着岩浆顶"（min > ceiling），
+        //   宁可在幽灵模式下压一点天花板，也不要把脚底留在岩浆面上。
+        return Math.max(min, Math.min(y, ceiling));
+    }
+
+    /**
+     * <b>竖直目标（优先级链，取最小）</b>：悬停高度 / 头顶上限 / 航线高度。
+     *
+     * <p>寻路给出的航点高度只允许把目标<b>压低</b>（钻门洞、下矿道），
+     * 不允许把它抬高 —— 抬高在洞穴里就是"往天花板上顶"。
+     */
+    public double verticalTargetY() {
+        double target = this.hoverTargetY();
+        Vec3 waypoint = this.pathFollower().steerPoint();
+        if (waypoint != null) {
+            target = Math.min(target, waypoint.y);
+        }
+        return target;
+    }
+
+    /** 头顶天花板与身体之间留的余量（格）。 */
+    private static final double CEILING_CLEARANCE = 0.5D;
+
+    // ---- 洞穴模式（0.4 追加，不改任何已有逻辑）----
+
+    /**
+     * 洞穴判定结果：{@code cave} = 是否按洞穴处理，另两个是判定依据（方便调试/日志）。
+     *
+     * @param ceilingRoom 头顶可用空间（格；无天花板时是 {@code Double.MAX_VALUE}）
+     * @param sideRoom    水平净空：8 个方向"整条龙塞得下"的最远距离的中位数（格）
+     */
+    public record CaveSpace(boolean cave, double ceilingRoom, double sideRoom) {
+    }
+
+    private CaveSpace caveSpace;
+    private int caveSpaceTick = Integer.MIN_VALUE;
+
+    /**
+     * 当前空间是不是"洞穴 / 狭小场地"（废弃工厂、矿洞、室内）。每 10 tick 量一次。
+     *
+     * <p>两条判据取或：头顶可用空间不够（{@code cave.ceilingRoom}），或者水平净空不够
+     * （{@code orbitRadius × cave.sideRoomFactor}）。水平净空用 8 个方向的中位数，
+     * 所以"贴着一面墙"不会误判成洞穴。
+     *
+     * <p>这是<b>在 0.4 上追加</b>的能力：0.4 原本默认所有场地都按开阔地处理（绕圈喷息、照常俯冲）。
+     */
+    public CaveSpace caveSpace() {
+        if (this.caveSpace != null && this.tickCount - this.caveSpaceTick < 10) {
+            return this.caveSpace;
+        }
+        this.caveSpaceTick = this.tickCount;
+        double ceiling = this.hoverCeilingY();
+        double ceilingRoom = ceiling == NO_CEILING ? Double.MAX_VALUE : Math.max(0.0D, ceiling - this.getY());
+        double[] free = new double[8];
+        for (int i = 0; i < 8; i++) {
+            double angle = Math.PI * 2.0D * i / 8.0D;
+            double dx = Math.cos(angle);
+            double dz = Math.sin(angle);
+            double reach = 0.0D;
+            for (double d = 2.0D; d <= 24.0D; d += 2.0D) {
+                if (!DragonFlightAssist.hasRoomFor(this, this.position().add(dx * d, 0.0D, dz * d))) {
+                    break;
+                }
+                reach = d;
+            }
+            free[i] = reach;
+        }
+        Arrays.sort(free);
+        double sideRoom = (free[3] + free[4]) * 0.5D;
+        boolean cave = ceilingRoom < DragonGolemConfig.caveCeilingRoom()
+                || sideRoom < this.orbitRadius() * DragonGolemConfig.caveSideRoomFactor();
+        this.caveSpace = new CaveSpace(cave, ceilingRoom, sideRoom);
+        return this.caveSpace;
+    }
+
+    /** 是否按洞穴模式行事（总开关 {@code cave.enabled} + 空间判定）。 */
+    public boolean inCave() {
+        return DragonGolemConfig.caveMode() && this.caveSpace().cave();
     }
 
     /**
@@ -3527,6 +4144,15 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
     @Override
     public boolean causeFallDamage(float distance, float multiplier, DamageSource source) {
         return false;
+    }
+
+    /** 龙被移除/收回/卸载时，把借用的水晶光束目标还原，别在原位置留一条光束。 */
+    @Override
+    public void remove(Entity.RemovalReason reason) {
+        if (!this.level().isClientSide) {
+            this.crystalHeal.clearBeam();
+        }
+        super.remove(reason);
     }
 
     /**

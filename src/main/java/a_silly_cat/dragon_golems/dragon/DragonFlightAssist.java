@@ -2,6 +2,7 @@ package a_silly_cat.dragon_golems.dragon;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
 import net.minecraft.core.BlockPos;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -30,13 +31,22 @@ import org.jetbrains.annotations.Nullable;
  *       向上的分量随"卡住时长"递增，所以真正被埋住时它会坚决地爬出来。
  *       <b>并且优先挑不沾液体（水 / 岩浆）的方向</b>（见 {@link #isLiquidFree(DragonGolemEntity, Vec3)}）——
  *       贴着湖岸绕行时，朝湖那一侧同样"塞得下龙"。</li>
+ *   <li><b>岩浆前探（{@link #lavaAvoidance}）</b>：任何模式（含幽灵穿墙）都生效。
+ *       前方一小段会碰到岩浆就侧移 + 抬升；已经泡在岩浆里就优先上浮。模型比判定箱宽，
+ *       所以判定箱还带一点模型余量（见 {@link #isLavaFree(DragonGolemEntity, Vec3, double)}）。</li>
  * </ol>
+ *
+ * <p><b>主动幽灵与被动幽灵</b>：洞穴模式（{@code cave.ghost}）和玩家自由飞行是<b>主动</b>幽灵，
+ * 穿墙就是设计，{@link #handleStuck} 直接跳过全部卡住/脱困逻辑；只有"嵌进方块里"的
+ * <b>被动</b>幽灵才走自动脱困。否则会出现"明明能穿墙，却不断被脱困逻辑从墙里推出来"。
+ * 主动幽灵还会关掉流体的推力/浮力（见 {@code DragonGolemEntity.isPushedByFluid}），
+ * 否则灵魂沙气泡柱会把它一路顶到洞顶以上。
  *
  * <h2>为什么用 {@code noPhysics} 而不是"允许穿过某些方块"</h2>
  * 原版只有这一个粒度：{@code Entity.noPhysics} 为真时 {@code move()} 跳过所有方块碰撞。
  * 想做到"只穿树叶不穿石头"就得自己接管 {@code move()} 或开 mixin，代价远大于收益 ——
  * 而且真卡在石头里时，恰恰需要能穿石头才能出来。所以这里做成<b>有时限的救援</b>，
- * 而不是常态能力。
+ * 而主动幽灵（洞穴/自由飞行）是另一条明确的档位，由实体在 {@code aiStep} 末尾设置。
  */
 public final class DragonFlightAssist {
 
@@ -83,11 +93,11 @@ public final class DragonFlightAssist {
     private int ghostClearChecks;
 
     /** 累计撞墙多少次之后进入常驻幽灵。 */
-    private static final int GHOST_AFTER_HITS = 60;
+    private static final int GHOST_AFTER_HITS = 24;
     /** 常驻幽灵期间每隔多少 tick 检查一次"还在不在墙里"。600 tick = 30 秒。 */
-    private static final int GHOST_CHECK_INTERVAL = 600;
+    private static final int GHOST_CHECK_INTERVAL = 40;
     /** 连续多少次检查都"没在墙里"才退出常驻幽灵。 */
-    private static final int GHOST_CLEAR_CHECKS = 3;
+    private static final int GHOST_CLEAR_CHECKS = 2;
     /** 长时间不撞墙就衰减累计值（tick）。1800 = 90 秒。 */
     private static final int HITS_DECAY_TICKS = 1800;
     /** 距离上次撞墙的 tick 数，用于衰减。 */
@@ -156,9 +166,10 @@ public final class DragonFlightAssist {
             return;
         }
         Dragon_golems.LOGGER.info(
-                "[fly] stuck={} room={} embedded={} rescue={} noPhysics={} free={} dy={} hColl={} vColl={} pos={}",
+                "[fly] stuck={} room={} embedded={} rescue={} noPhysics={} free={} water={} pushedByFluid={} dy={} hColl={} vColl={} pos={}",
                 this.stuckTicks, hasRoomFor(dragon, dragon.position()),
                 this.embedded, this.rescueTicks, dragon.noPhysics, this.freeFlight,
+                dragon.isInWater(), dragon.isPushedByFluid(),
                 String.format("%.3f", dragon.getDeltaMovement().y),
                 dragon.horizontalCollision, dragon.verticalCollision, dragon.position());
     }
@@ -169,6 +180,21 @@ public final class DragonFlightAssist {
      * <p>判据是"水平被挡"而不是"完全没动"：龙悬停时会主动消掉速度，用位移判断会误判成卡住。
      */
     private void handleStuck(DragonGolemEntity dragon) {
+        // ★ 主动幽灵（洞穴模式 / 玩家自由飞行）不参与"卡住"判定。
+        //   穿墙是设计，不是事故：如果这里还按 noRoom 计数，就会不断触发脱困、
+        //   把龙从墙里"救"出来 —— 表现正是"明明能穿墙，却总是绕着墙/被墙弹出来"。
+        if (this.freeFlight || dragon.isCaveGhostActive()) {
+            this.stuckTicks = 0;
+            this.embedded = false;
+            this.rescueTicks = -1;
+            this.retreatTicks = 0;
+            this.stickyGhost = false;
+            this.totalHits = 0;
+            this.ghostClearChecks = 0;
+            this.repathAttempts = 0;
+            this.lastRepathNode = null;
+            return;
+        }
         boolean blocked = dragon.horizontalCollision;
         // "当前位置塞不下"本身就是最硬的卡住信号。
         // 为什么必须把它单独拿出来（真机踩到的死锁）：
@@ -307,6 +333,60 @@ public final class DragonFlightAssist {
         return this.embedded;
     }
 
+    private Vec3 unstickTarget;
+    private int unstickTick = Integer.MIN_VALUE;
+
+    /**
+     * 卡进方块时：<b>最近的一个"有空气、整条龙塞得下"的位置</b>（脚底坐标）；没卡住返回 null。
+     *
+     * <p>"最近"按环状搜索：每圈试 8 个水平方向 × 5 个高度，第一个有解的圈就是最近距离；
+     * 每 8 tick 重算一次。
+     *
+     * <p>调用方（实体 {@code aiStep}）拿到它之后会<b>直接覆盖</b>本 tick 的速度 ——
+     * 卡在墙里时，任何 AI 意图（悬停/绕圈/冲刺）都不该继续执行。
+     */
+    @Nullable
+    public Vec3 unstickTarget(DragonGolemEntity dragon) {
+        if (!this.embedded) {
+            this.unstickTarget = null;
+            return null;
+        }
+        if (dragon.tickCount - this.unstickTick < 8 && this.unstickTarget != null) {
+            return this.unstickTarget;
+        }
+        this.unstickTick = dragon.tickCount;
+        Vec3 base = dragon.position();
+        Vec3 best = null;
+        double bestDist = Double.MAX_VALUE;
+        double[] heights = {0.0D, 1.0D, -1.0D, 2.0D, -2.0D};
+        for (double r = 1.0D; r <= 10.0D; r += 1.0D) {
+            for (int i = 0; i < 8; i++) {
+                double angle = Math.PI * 2.0D * i / 8.0D;
+                for (double h : heights) {
+                    Vec3 candidate = new Vec3(base.x + Math.cos(angle) * r,
+                            base.y + h, base.z + Math.sin(angle) * r);
+                    if (!hasRoomFor(dragon, candidate)) {
+                        continue;
+                    }
+                    // 脱困也不能把落点选在岩浆/水里
+                    if (!isLiquidFree(dragon, candidate, 0.15D)) {
+                        continue;
+                    }
+                    double dist = candidate.distanceToSqr(base);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        best = candidate;
+                    }
+                }
+            }
+            if (best != null) {
+                break; // 这一圈有解就是最近的
+            }
+        }
+        this.unstickTarget = best;
+        return best;
+    }
+
     /** 脱困结束：撤掉 no-clip，清计数（否则会立刻又触发一次）。 */
     private void endRescue(DragonGolemEntity dragon) {
         if (DragonDebug.RIDE) {
@@ -326,7 +406,7 @@ public final class DragonFlightAssist {
         if (this.rescueTicks < 0) {
             return null;
         }
-        Vec3 escape = findOpenDirection(dragon);
+        Vec3 escape = findOpenDirection(dragon, true);
         if (escape == null) {
             // 实在找不到：坚决往上（地面上方一定比地下空）
             return new Vec3(0.0D, RESCUE_SPEED, 0.0D);
@@ -354,6 +434,14 @@ public final class DragonFlightAssist {
      * @return 修正后的速度；没有障碍时原样返回 {@code want}
      */
     public Vec3 avoidance(DragonGolemEntity dragon, Vec3 want) {
+        // ★ 岩浆规避先于一切：幽灵模式也不能免疫岩浆伤害，而且模型比判定箱宽，
+        //   贴着液面飞会"蹭"进去。这一段在 noPhysics 的早退之前执行。
+        want = this.lavaAvoidance(dragon, want);
+        // ★ 幽灵模式（noPhysics）下不做任何避障：它本来就能穿墙，避障只会让它"觉得过不去"。
+        //   真机现象：常驻幽灵但它绕着墙走、贴着墙磨 —— 就是这里在改方向。
+        if (dragon.noPhysics) {
+            return want;
+        }
         // 强制回退中：故意朝"背离当前路径点"的方向走，先把死角甩开再重新规划。
         // 这一步必须在 horizontalCollision 判断之前 —— 回退期间它可能已经不撞墙了
         // （正在往回飞），但仍需要走完这段脱离动作。
@@ -384,7 +472,7 @@ public final class DragonFlightAssist {
         //   完全没用上"寻路已经算好的一条绕行路线"。只要路径还有下一个节点，
         //   那个节点的方向就是最可靠的"往哪绕"，比扇面碰运气准得多。
         Vec3 pathDir = this.pathDirection(dragon);
-        Vec3 open = pathDir != null ? pathDir : findOpenDirection(dragon);
+        Vec3 open = pathDir != null ? pathDir : findOpenDirection(dragon, true);
         if (open == null) {
             // 四周都堵死：往上顶（这是唯一可能出去的方向），但保留一点原方向避免完全停住
             double vy = risePhase ? 0.15D + 0.25D * stuckRatio : 0.06D;
@@ -447,6 +535,124 @@ public final class DragonFlightAssist {
     // ---- 空间查询 ----
 
     /**
+     * 岩浆规避：任何模式（含幽灵穿墙）都生效。
+     *
+     * <p>为什么不能只靠寻路：{@code pathfinding.enabled} 可以被关掉，幽灵模式也根本不走 A*。
+     * 而"模型蹭进岩浆"是纯几何问题 —— 只要前方一小段会碰到岩浆，就侧移绕开、同时抬一点高度；
+     * 已经泡在岩浆里时则优先向上浮。
+     *
+     * @param want 原本想去的速度（y 分量忽略）
+     * @return 修正后的速度；前方干净时原样返回
+     */
+    public Vec3 lavaAvoidance(DragonGolemEntity dragon, Vec3 want) {
+        // 已经泡在岩浆里：别再往前钻，优先上浮
+        if (dragon.isInLava()) {
+            return new Vec3(want.x * 0.35D, Math.max(want.y, 0.22D), want.z * 0.35D);
+        }
+        // 判定箱（含一点模型余量）已经和岩浆重叠：立刻上浮 + 减速，别继续横着蹭
+        if (!isLavaFree(dragon, dragon.position(), 0.3D)) {
+            return new Vec3(want.x * 0.5D, Math.max(want.y, 0.20D), want.z * 0.5D);
+        }
+        double speed = Math.hypot(want.x, want.z);
+        if (speed < 0.02D) {
+            return want;
+        }
+        Vec3 dir = new Vec3(want.x / speed, 0.0D, want.z / speed);
+        double lookahead = Math.min(4.5D, Math.max(2.5D, dragon.getBbWidth() * 1.2D));
+        if (!this.lavaAhead(dragon, dir, lookahead)) {
+            return want;
+        }
+        // 前方会碰到岩浆：左右偏转，优先挑"不碰岩浆、身体也塞得下"的方向
+        double[] angles = {30.0D, -30.0D, 60.0D, -60.0D, 90.0D, -90.0D, 180.0D};
+        double probe = Math.min(4.0D, Math.max(2.0D, dragon.getBbWidth() * 0.6D));
+        for (double angle : angles) {
+            Vec3 side = rotateY(dir, angle);
+            if (this.lavaAhead(dragon, side, lookahead)) {
+                continue;
+            }
+            Vec3 at = dragon.position().add(side.x * probe, 0.0D, side.z * probe);
+            if (!dragon.noPhysics && !hasRoomFor(dragon, at)) {
+                continue;
+            }
+            if (!isLiquidFree(dragon, at, 0.35D)) {
+                continue;
+            }
+            // 同时抬一点：龙的模型（翅膀/尾巴）比判定箱宽，贴边绕过去也容易蹭到液面
+            double vy = Math.max(want.y, 0.10D);
+            return new Vec3(side.x * speed, vy, side.z * speed);
+        }
+        // 实在绕不开：减速 + 坚决上浮，宁可悬停也别扎进岩浆
+        return new Vec3(want.x * 0.25D, Math.max(want.y, 0.18D), want.z * 0.25D);
+    }
+
+    /** 沿水平方向前探，前方 {@code dist} 格内会不会碰到岩浆（判定箱带模型余量）。 */
+    private boolean lavaAhead(DragonGolemEntity dragon, Vec3 dir, double dist) {
+        double step = 0.9D;
+        for (double d = step; d <= dist; d += step) {
+            Vec3 probe = dragon.position().add(dir.x * d, 0.0D, dir.z * d);
+            if (!isLavaFree(dragon, probe, 0.4D)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 后撤方向：先试"背离目标"的方向，再向两侧/后方偏转；优先挑<b>整条龙塞得下且不沾液体</b>的。
+     * 全都不行时（很窄的矿道）返回原始背离方向 —— 幽灵模式靠它直接穿墙脱身。
+     */
+    public Vec3 retreatDirection(DragonGolemEntity dragon, Vec3 awayFrom) {
+        Vec3 flat = new Vec3(awayFrom.x, 0.0D, awayFrom.z);
+        if (flat.horizontalDistance() < 1.0E-4D) {
+            // 兜底：朝"身后"退（龙的机头通常对着目标，正前方不是退路）
+            flat = new Vec3(Math.sin(Math.toRadians(dragon.getYRot())), 0.0D,
+                    -Math.cos(Math.toRadians(dragon.getYRot())));
+        }
+        flat = flat.normalize();
+        double probe = Math.min(4.0D, Math.max(2.0D, dragon.getBbWidth() * 0.75D));
+        double[] angles = {0.0D, 30.0D, -30.0D, 60.0D, -60.0D, 90.0D, -90.0D, 135.0D, -135.0D, 180.0D};
+        for (double angle : angles) {
+            Vec3 dir = rotateY(flat, angle);
+            Vec3 at = dragon.position().add(dir.x * probe, 0.0D, dir.z * probe);
+            if (!hasRoomFor(dragon, at)) {
+                continue;
+            }
+            if (!isLiquidFree(dragon, at, 0.35D)) {
+                continue;
+            }
+            return dir;
+        }
+        return flat;
+    }
+
+    private static Vec3 rotateY(Vec3 dir, double degrees) {
+        double r = Math.toRadians(degrees);
+        double cos = Math.cos(r);
+        double sin = Math.sin(r);
+        return new Vec3(dir.x * cos - dir.z * sin, 0.0D, dir.x * sin + dir.z * cos);
+    }
+
+    /**
+     * 找一个"整条龙塞得下"的扇面方向（含竖直分量），给幽灵模式离开墙体用。
+     * 没有可用方向时返回 {@code null}。
+     */
+    @Nullable
+    public Vec3 openDirection(DragonGolemEntity dragon) {
+        return this.findOpenDirection(dragon, true);
+    }
+
+    /**
+     * 同上，但可以选择"只找水平/向下出口"。
+     *
+     * <p>幽灵在洞穴里贴着天花板时，扇面第一优先是"正上"——那正好会把它顶进石头里。
+     * 竖直目标不允许上升时，这里也必须禁止向上找路。
+     */
+    @Nullable
+    public Vec3 openDirection(DragonGolemEntity dragon, boolean allowUp) {
+        return this.findOpenDirection(dragon, allowUp);
+    }
+
+    /**
      * 找一个真正塞得下龙的方向（单位向量，只关心方向）。
      *
      * <p>扇面顺序是刻意排的：<b>先上、再斜上、最后左右</b>。
@@ -454,7 +660,7 @@ public final class DragonFlightAssist {
      * 而"左右绕"在矿洞里往往是另一面墙。要绕的时候它才绕。
      */
     @Nullable
-    private Vec3 findOpenDirection(DragonGolemEntity dragon) {
+    private Vec3 findOpenDirection(DragonGolemEntity dragon, boolean allowUp) {
         Vec3 forward = Vec3.directionFromRotation(0.0F, dragon.getYRot());
         // 扇面比原来密得多：真机反馈"往柱子上撞、绕不过去"就是因为原来 7 个方向
         // 在大体型的判定箱下全部探到障碍，于是只能往上顶。
@@ -482,13 +688,18 @@ public final class DragonFlightAssist {
         for (boolean allowLiquid : new boolean[]{false, true}) {
             for (double dist : distances) {
                 for (double[] f : fan) {
+                    // 竖直目标不允许上升时，扇面里所有"向上"的方向都必须跳过，
+                    // 否则会从一个贴着天花板的位置继续往上找出口。
+                    if (!allowUp && f[1] > 0.25D) {
+                        continue;
+                    }
                     Vec3 dir = new Vec3(
                             forward.x * f[0], f[1], forward.z * f[0]).normalize();
                     Vec3 probe = dragon.position().add(dir.scale(dist));
                     if (!hasRoomFor(dragon, probe)) {
                         continue;
                     }
-                    if (!allowLiquid && !isLiquidFree(dragon, probe)) {
+                    if (!allowLiquid && !isLiquidFree(dragon, probe, 0.35D)) {
                         continue;
                     }
                     return dir;
@@ -515,7 +726,7 @@ public final class DragonFlightAssist {
      * 那龙一进水就会满足 {@code noRoom}，直接被当成"嵌在方块里"而打开 {@code noPhysics} 幽灵飞行。
      */
     public static boolean hasRoomFor(DragonGolemEntity dragon, Vec3 pos) {
-        return !boxHits(dragon, pos, true);
+        return !boxHits(dragon, pos, HitKind.SOLID, 0.0D);
     }
 
     /**
@@ -525,21 +736,61 @@ public final class DragonFlightAssist {
      * 沾到一格液体就算"不干净"。注意区块没加载时一律当作"干净"（见 {@link #boxHits}）。
      */
     public static boolean isLiquidFree(DragonGolemEntity dragon, Vec3 pos) {
-        return !boxHits(dragon, pos, false);
+        return isLiquidFree(dragon, pos, 0.0D);
+    }
+
+    /**
+     * 同上，但把判定箱向外扩 {@code margin} 格。
+     *
+     * <p>龙的<b>模型</b>（翅膀/尾巴）比判定箱宽；贴边飞的时候判定箱没碰到，模型已经蹭进去了。
+     * 所以给"离岩浆远一点"的场合留一个余量。
+     */
+    public static boolean isLiquidFree(DragonGolemEntity dragon, Vec3 pos, double margin) {
+        return !boxHits(dragon, pos, HitKind.LIQUID, margin);
+    }
+
+    /**
+     * 把判定箱搬到 {@code pos} 之后，箱内<b>不沾岩浆</b>吗？
+     *
+     * <p>和 {@link #isLiquidFree} 分开：寻路/直飞判定里"水"通常可以接受（龙在湖面上空飞，
+     * 判定箱根本碰不到液面），但岩浆要单独留余量 —— 模型比判定箱宽，蹭到液面很难看。
+     */
+    public static boolean isLavaFree(DragonGolemEntity dragon, Vec3 pos) {
+        return !boxHits(dragon, pos, HitKind.LAVA, 0.0D);
+    }
+
+    /** 带模型余量的岩浆判定（见 {@link #isLiquidFree(DragonGolemEntity, Vec3, double)}）。 */
+    public static boolean isLavaFree(DragonGolemEntity dragon, Vec3 pos, double margin) {
+        return !boxHits(dragon, pos, HitKind.LAVA, margin);
+    }
+
+    /** 这个位置既塞得下（固体），又不沾液体 —— 寻路拉直/直飞时的统一判据。 */
+    public static boolean canTravelThrough(DragonGolemEntity dragon, Vec3 pos) {
+        return canTravelThrough(dragon, pos, 0.0D);
+    }
+
+    /** 同上，液体判定带模型余量（固体仍按精确判定箱，避免把正常通道也判死）。 */
+    public static boolean canTravelThrough(DragonGolemEntity dragon, Vec3 pos, double liquidMargin) {
+        return hasRoomFor(dragon, pos) && isLiquidFree(dragon, pos, liquidMargin);
+    }
+
+    /** {@link #boxHits} 要找哪一类方块。 */
+    private enum HitKind {
+        SOLID, LIQUID, LAVA
     }
 
     /**
      * 把判定箱搬到 {@code pos} 之后逐格检查。
      *
-     * @param solid {@code true} 找"挡路的固体"（有碰撞形状的方块）；
-     *              {@code false} 找液体（水 / 岩浆 —— 它们恰恰没有碰撞形状）
+     * @param kind   找"挡路的固体"（有碰撞形状的方块）/ 任意液体 / 岩浆
+     * @param margin 判定箱额外向外扩多少格（模型余量）
      * @return 找到了就 true；两个角所在区块有一个没加载时一律 false
      *         （"未知"不下结论：不要因为没加载就疯狂脱困，也不要因此拒绝一个落点）
      */
-    private static boolean boxHits(DragonGolemEntity dragon, Vec3 pos, boolean solid) {
+    private static boolean boxHits(DragonGolemEntity dragon, Vec3 pos, HitKind kind, double margin) {
         AABB box = dragon.getBoundingBox().move(
                 pos.x - dragon.getX(), pos.y - dragon.getY(), pos.z - dragon.getZ())
-                .inflate(-CLEARANCE);
+                .inflate(-CLEARANCE + margin);
         Level level = dragon.level();
         if (!level.hasChunkAt(BlockPos.containing(box.minX, box.minY, box.minZ))
                 || !level.hasChunkAt(BlockPos.containing(box.maxX, box.maxY, box.maxZ))) {
@@ -549,7 +800,7 @@ public final class DragonFlightAssist {
                 BlockPos.containing(box.minX, box.minY, box.minZ),
                 BlockPos.containing(box.maxX, box.maxY, box.maxZ))) {
             BlockState state = level.getBlockState(bp);
-            if (solid) {
+            if (kind == HitKind.SOLID) {
                 if (state.isAir()) {
                     continue;
                 }
@@ -560,8 +811,13 @@ public final class DragonFlightAssist {
                 return true;
             }
             if (!state.getFluidState().isEmpty()) {
-                // 含水方块（水草、海带）同样算液体
-                return true;
+                if (kind == HitKind.LIQUID) {
+                    // 含水方块（水草、海带）同样算液体
+                    return true;
+                }
+                if (state.getFluidState().is(FluidTags.LAVA)) {
+                    return true;
+                }
             }
         }
         return false;

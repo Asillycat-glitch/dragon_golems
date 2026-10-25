@@ -1,0 +1,32 @@
+{
+  "type": "modulargolems:golem_add_slot",
+  "addition": [
+    {
+      "item": "minecraft:copper_ingot"
+    },
+    {
+      "item": "minecraft:gold_ingot"
+    },
+    {
+      "item": "minecraft:iron_ingot"
+    },
+    {
+      "item": "minecraft:netherite_ingot"
+    },
+    {
+      "tag": "modulargolems:sculk_materials"
+    },
+    {
+      "tag": "forge:ingots"
+    }
+  ],
+  "base": {
+    "item": "dragon_golems:dragon_golem_holder"
+  },
+  "result": {
+    "item": "dragon_golems:dragon_golem_holder"
+  },
+  "template": {
+    "item": "modulargolems:netherite_expansion_template"
+  }
+}

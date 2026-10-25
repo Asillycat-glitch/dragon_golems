@@ -58,6 +58,18 @@ public class DragonFlyingNavigation extends FlyingPathNavigation {
         super(mob, level);
     }
 
+    /**
+     * ★ 体型感知评估器（A 项）：原版 {@code FlyNodeEvaluator} 只看方块格、不看实体尺寸，
+     * 2.6 格宽的龙会被规划进 1 格缝 —— 真机表现就是"贴着墙蹭、过不去还一直顶"。
+     * 换成 {@link DragonFlyNodeEvaluator} 后，塞不下的格子直接 BLOCKED。
+     */
+    @Override
+    protected net.minecraft.world.level.pathfinder.PathFinder createPathFinder(int maxPathLength) {
+        this.nodeEvaluator = new DragonFlyNodeEvaluator();
+        this.nodeEvaluator.setCanFloat(true);
+        return new net.minecraft.world.level.pathfinder.PathFinder(this.nodeEvaluator, maxPathLength);
+    }
+
     /** 缓存 goal 指定的射程，供 {@link #recomputePath()} 复用。 */
     @Override
     public boolean moveTo(double x, double y, double z, double speed) {

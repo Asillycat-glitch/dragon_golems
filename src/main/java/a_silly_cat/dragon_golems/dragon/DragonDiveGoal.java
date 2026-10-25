@@ -1,6 +1,7 @@
 package a_silly_cat.dragon_golems.dragon;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
+import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
@@ -50,8 +51,15 @@ public class DragonDiveGoal extends Goal {
         /** 向前飞到航线入口。 */
         LINEUP,
         /** 掠过（不换挡的一整段弧线）。 */
-        PASS
+        PASS,
+        /** 洞穴冲刺：无前摇、短距离直线冲撞（见 {@link #tickDash}）。 */
+        DASH
     }
+
+    /** 洞穴冲刺的线速度（基准值，会再乘速度倍率）。 */
+    private static final double DASH_SPEED = 1.25D;
+    /** 洞穴冲刺的最长持续 tick（到点就收，避免一头撞进墙里还在推）。 */
+    private static final int DASH_MAX = 24;
 
     /** 诊断开关：打印每次俯冲的几何信息。默认关。 */
     private static final boolean DEBUG = false;
@@ -205,11 +213,30 @@ public class DragonDiveGoal extends Goal {
             }
             return false;
         }
-        LivingEntity target = this.dragon.getTarget();
+        LivingEntity target = this.dragon.dragonCurrentTarget();
         if (target == null || !target.isAlive()) {
             if (trace) {
                 Dragon_golems.LOGGER.info("[dive] canUse=false: 目标为空或已死 target={} forced={}",
                         target, this.dragon.forcedTarget);
+            }
+            return false;
+        }
+        // ★ 洞穴模式（0.4 追加）：狭小场地里不抽 AI 俯冲 —— 大弧度动作在工厂/矿洞里
+        //   只会变成贴墙磨。骑手指令（按 R）仍然放行：那是玩家明确要的。
+        if (DragonGolemConfig.caveNoDive() && !DragonGolemConfig.caveDash()
+                && this.dragon.inCave() && !this.dragon.isRiderOrderedDive()) {
+            if (trace) {
+                Dragon_golems.LOGGER.info("[dive] canUse=false: 洞穴模式 (ceilingRoom={} sideRoom={})",
+                        String.format("%.1f", this.dragon.caveSpace().ceilingRoom()),
+                        String.format("%.1f", this.dragon.caveSpace().sideRoom()));
+            }
+            return false;
+        }
+        // ★ 俯冲必须"看得见目标"：这是直线冲刺，中间隔着一堵墙时它只会一头撞上去
+        //   （真机日志：[dive] start y=52.9 → finish y=64.2，撞墙期间还在爬升）。
+        if (!this.dragon.isRiderOrderedDive() && !this.dragon.hasLineOfSight(target)) {
+            if (trace) {
+                Dragon_golems.LOGGER.info("[dive] canUse=false: 没有视线（俯冲是直线冲刺，别撞墙）");
             }
             return false;
         }
@@ -263,7 +290,7 @@ public class DragonDiveGoal extends Goal {
         this.finished = false;
         if (DragonDebug.RIDE) {
             Dragon_golems.LOGGER.info("[dive] start(): riderOrdered={} target={} pos={}",
-                    this.dragon.isRiderOrderedDive(), this.dragon.getTarget(), this.dragon.position());
+                    this.dragon.isRiderOrderedDive(), this.dragon.dragonCurrentTarget(), this.dragon.position());
         }
         // 告诉调度器"这一轮真的开打了"：俯冲整套（LINEUP→DIVE→PLOW→CLIMB）远超 60 tick 的重掷窗口
         this.dragon.onSkillStarted(DragonGolemEntity.DragonSkill.DIVE);
@@ -276,6 +303,20 @@ public class DragonDiveGoal extends Goal {
         this.targetAt = null;
         // 这一轮还没触发过"近战族"升级（地震/跳劈），见 triggerMeleeUpgradesOnDive
         this.meleeFired = false;
+        // ★ 洞穴模式 = 冲刺（dash）：不做 "飞到目标后方 16 格、爬 12 格高" 的前摇，
+        //   直接从当前位置朝目标方向加速冲过去（PASS 的弧线本身带冲刺+掠过判定）。
+        if (this.dragon.inCave() && !this.dragon.isRiderOrderedDive() && DragonGolemConfig.caveDash()) {
+            LivingEntity target = this.dragon.dragonCurrentTarget();
+            if (target != null) {
+                this.dir = this.horizontalDir(this.dragon.getX(), this.dragon.getZ(), target.getX(), target.getZ());
+            }
+            if (DragonDebug.RIDE) {
+                Dragon_golems.LOGGER.info("[dive] 洞穴冲刺：跳过 LINEUP，直接 PASS，dir={}", this.dir);
+            }
+            this.enter(Phase.DASH);
+            this.dragon.setAggressive(true);
+            return;
+        }
         this.enter(Phase.LINEUP);
         this.dragon.setAggressive(true);
     }
@@ -284,7 +325,7 @@ public class DragonDiveGoal extends Goal {
     public void stop() {
         if (DragonDebug.RIDE) {
             Dragon_golems.LOGGER.info("[dive] stop(): phase={} phaseTicks={} riderOrdered={} target={}",
-                    this.phase, this.phaseTicks, this.dragon.isRiderOrderedDive(), this.dragon.getTarget());
+                    this.phase, this.phaseTicks, this.dragon.isRiderOrderedDive(), this.dragon.dragonCurrentTarget());
         }
         this.dragon.setDiveVelocity(null);
         this.dragon.setDivePhase(DragonGolemEntity.DIVE_PHASE_NONE);
@@ -302,13 +343,15 @@ public class DragonDiveGoal extends Goal {
 
     @Override
     public void tick() {
-        LivingEntity target = this.dragon.getTarget();
+        LivingEntity target = this.dragon.dragonCurrentTarget();
         this.phaseTicks++;
         // 用 if/else 而不是 enum switch：enum 的 statement switch 会让 javac 生成一个合成类
         // DragonDiveGoal$1（$SwitchMap）。那个类一旦因为任何原因（比如游戏运行中替换 jar）
         // 加载不到，就会在实体 tick 里抛 NoClassDefFoundError 直接崩档。少一个合成类少一个坑。
         if (this.phase == Phase.LINEUP) {
             this.tickLineup(target);
+        } else if (this.phase == Phase.DASH) {
+            this.tickDash(target);
         } else {
             this.tickPass(target);
         }
@@ -452,6 +495,42 @@ public class DragonDiveGoal extends Goal {
     }
 
     /**
+     * <b>洞穴冲刺</b>：没有高度前摇，从当前位置朝目标方向直线加速冲过去。
+     *
+     * <p>为什么不复用 PASS：PASS 的弧线是按"入口在目标后方 16 格、离地 12 格"设计的，
+     * 从当前位置直接进 PASS 会先按弧线抬升 —— 真机日志就是 {@code start y=49 → finish y=75}，
+     * 表现成"想往上飞"。冲刺只要方向、速度和一段短距离。
+     */
+    private void tickDash(@Nullable LivingEntity target) {
+        if (target == null || !target.isAlive()) {
+            this.finish();
+            return;
+        }
+        if (this.dir == null) {
+            this.dir = this.horizontalDir(this.dragon.getX(), this.dragon.getZ(), target.getX(), target.getZ());
+        }
+        double speed = DASH_SPEED * this.speedFactor();
+        // 竖直只做很小的修正（追平目标高度），不做爬升动作
+        double dy = Mth.clamp((target.getY() + 1.0D - this.dragon.getY()) * 0.08D, -0.25D, 0.25D);
+        this.dragon.setDiveVelocity(new Vec3(this.dir.x * speed, dy, this.dir.z * speed));
+        this.scanContact();
+        // ★ 前 6 tick 不因碰撞结束：矿道里本来就一路擦墙，第一 tick 就收会让冲刺变成"原地抖一下"
+        //   （真机日志：phaseTicks=1/3/8 就 finish）。
+        if (this.phaseTicks >= 6 && this.dragon.horizontalCollision) {
+            this.finish();
+            return;
+        }
+        if (this.phaseTicks > DASH_MAX) {
+            this.finish();
+            return;
+        }
+        // 冲到目标身边就收（伤害已由 scanContact 的接触盒结算）
+        if (this.dragon.distanceTo(target) < 3.0D * this.geo()) {
+            this.finish();
+        }
+    }
+
+    /**
      * 接触结算：每个目标本次掠过的第一次接触按撞击倍率（走横扫管线），
      * 之后每 {@link #HIT_COOLDOWN} tick 补一次擦伤。
      */
@@ -571,7 +650,7 @@ public class DragonDiveGoal extends Goal {
             // 谁把它结束的、当时目标还在不在 —— 骑手冲锋被"瞬时中断"时必须看到这两样
             Dragon_golems.LOGGER.info("[dive] finish(): phase={} phaseTicks={} riderOrdered={} target={} pos={}",
                     this.phase, this.phaseTicks, this.dragon.isRiderOrderedDive(),
-                    this.dragon.getTarget(), this.dragon.position());
+                    this.dragon.dragonCurrentTarget(), this.dragon.position());
         }
         this.stop();
     }
@@ -586,13 +665,13 @@ public class DragonDiveGoal extends Goal {
         }
         // 进入掠过：把参数从入口开始，并锁定落点（之后不再追着目标转）
         if (this.targetAt == null) {
-            LivingEntity target = this.dragon.getTarget();
+            LivingEntity target = this.dragon.dragonCurrentTarget();
             if (target != null) {
                 this.recordTarget(target);
             }
         }
         double dist = 0.0D;
-        LivingEntity target = this.dragon.getTarget();
+        LivingEntity target = this.dragon.dragonCurrentTarget();
         if (target != null) {
             dist = this.horizontalDistance(this.dragon.getX(), this.dragon.getZ(), target.getX(), target.getZ());
         }

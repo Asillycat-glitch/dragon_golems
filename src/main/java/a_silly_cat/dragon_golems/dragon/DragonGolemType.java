@@ -4,6 +4,7 @@ import com.tterrag.registrate.util.entry.EntityEntry;
 import a_silly_cat.dragon_golems.client.DragonGolemOverlayControl;
 import dev.xkmc.modulargolems.content.core.GolemMenuControl;
 import dev.xkmc.modulargolems.content.core.GolemOverlayControl;
+import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 import dev.xkmc.modulargolems.content.core.GolemType;
 import dev.xkmc.modulargolems.content.core.ModelProvider;
 import dev.xkmc.modulargolems.content.menu.equipment.EquipmentsMenu;
@@ -26,6 +27,15 @@ public class DragonGolemType extends GolemType<DragonGolemEntity, DragonGolemPar
     public DragonGolemType(EntityEntry<DragonGolemEntity> entry,
                            Supplier<ModelProvider<DragonGolemEntity, DragonGolemPartType>> model) {
         super(entry, DragonGolemPartType::values, DragonGolemPartType.BODY, model);
+    }
+
+    /**
+     * 升级槽数量：和本家 {@code MetalGolemType#getUpgradeSlots()} 同一套做法 —— 读配置。
+     * 默认 5 = 5 个部件各占一槽（本家基类的默认行为）。
+     */
+    @Override
+    public int getUpgradeSlots() {
+        return (int) DragonGolemConfig.upgradeSlots();
     }
 
     @Override

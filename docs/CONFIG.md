@@ -41,6 +41,18 @@ ModLoadingContext.get().registerConfig(type, COMMON_SPEC, path);
 | `attributes.logOverflow` | `true` | 属性被原版上限夹掉时打日志 |
 | `attributes.maxHealthCapFix` | `true` | 内置版 AttributeFix：放宽**最大生命**上限 |
 | `attributes.maxHealthCap` | `100000` | 上面那条放宽到多少 |
+| `cave.ghost` | `true` | 洞穴里 AI 直接穿墙（无骑手时）；关闭后交回自动脱困 |
+| `cave.lavaClearance` | `3.0` | 洞穴战斗时脚底离岩浆液面的最小高度（格） |
+| `cave.attackHeight` | `4.0` | 洞穴战斗时站在目标头顶上方多少格 |
+| `cave.standoffFactor` | `1.0` | 洞穴站位倍率（调大 = 站得更远） |
+| `pathfinding.enabled` | `true` | 寻路总开关；直飞干净时不跑 A* |
+| `pathfinding.lavaMargin` | `0.6` | 航点与岩浆额外保持的距离（格） |
+| `crystal.guard` | `true` | 附近水晶是否给龙加护甲/韧性 |
+| `crystal.explosionImmune` | `false` | 是否免疫"末地水晶自爆"（只限水晶直接来源，不是全爆炸免疫；默认关，和原版一致） |
+| `crystal.armorPerCrystal` | `4.0` | 每块存活水晶提供的护甲 |
+| `crystal.armorCap` | `16.0` | 水晶护盾的护甲上限 |
+| `crystal.toughnessPerCrystal` | `2.0` | 每块存活水晶提供的护甲韧性 |
+| `crystal.toughnessCap` | `8.0` | 水晶护盾的韧性上限 |
 
 ## 二、龙息递减（"一次龙息总伤害过高"）
 
@@ -286,3 +298,108 @@ public boolean dealSkillDamage(LivingEntity target, @Nullable DamageSource sourc
 | 不要放宽最大生命上限 | `attributes.maxHealthCapFix = false`（超上限的部分会重新被夹掉，也可以改装 AttributeFix） |
 | 让 `*AttackGoal`（goal 族）回来 | `skills.nativeSkillGoals = true` |
 | 俯冲不再触发地震/跳劈 | `skills.diveTriggersMelee = false` |
+
+## 九、洞穴战斗 / 寻路 / 岩浆（0.4 追加）
+
+### 洞穴站位（"贴上去挨揍"）
+
+洞穴里不再用"嘴够到就停"的写法，而是由 `DragonGolemEntity.caveStandoff(...)` 算一个
+**身体中心到目标中心**的安全距离：
+
+- 高度：目标头顶 + `cave.attackHeight`（默认 4 格）；
+- 水平：把该高度换算到"嘴够得着"的球面半径上（和喷息动画共用同一个半径）；
+- 近战：目标实际攻击距离（原版 `2 × 目标宽度` 与 `forge:entity_reach` 取大）
+  + 双方半宽 + 1 格缓冲；刚挨打后的 10 tick 再加 1.5 格；
+- **上限**：`max(嘴前伸量 × 1.15 × standoffFactor, 近战安全距离) + 1.5`。
+  防止在十几格宽的水池/房间里退到 15 格以外、直接退出视线（真机"看不见人、也不喷"）。
+
+前摇 / 喷息 / 收尾阶段都会继续维持这个距离（能退就退），不再站桩把 20+60 tick 白送给近战。
+**开火闸门只要求离开目标的实际近战范围**（`meleeSafeDistance`），不要求先退到完整站位；
+所以观感是"边打边退"，而不是"一直往后跑、不打"。
+想整体站得更远：调大 `cave.standoffFactor`；想贴得更近：调小它。
+
+### 幽灵模式（"能穿墙却不认路"）
+
+`cave.ghost = true` 时，**没有骑手且洞穴判定成立**的 AI 龙会主动 `noPhysics`：
+
+- 移动层直接走直线：`DragonPathFollower` 不跑 A*，也不会因为"没路线"站桩；
+- 飞行辅助不再把"身体嵌在方块里"当卡住（不触发脱困、不把龙往外推）；
+- **不吃气泡柱 / 水流推动**（`isPushedByFluid` / `isAffectedByFluids` 在幽灵时返回 false）——
+  否则灵魂沙气泡柱会把它一路顶到洞顶以上；
+- 离开洞穴 / 关掉 `cave.ghost` 后自动恢复碰撞与自动脱困（有 5 秒滞回，防止洞口判定闪烁）；
+- **竖直方向不再往上棘轮**：贴到天花板后不会每 tick 被 `ceilingFeetLimit` 的 `max(y)` 再抬 1.5 格；
+  身体嵌在方块里时只允许下降/横移，`nudge` 也禁止再向上找出口。
+
+### 寻路（A* 卡顿）
+
+A* 不是每 tick 跑，而是：
+
+- 直线（身体盒 + 液体）干净时**根本不跑 A***；
+- 需要 A* 时，每只龙**最多每秒一次**（`pathfinding.repathTicks` 默认 20，代码下限也是 20）；
+- 全服每 tick 最多 1 次搜索，单次最多 400 节点、搜索半径 16 格；
+- 单次超过 10ms 就冷却 200 tick；
+- **算不出路线就原地停**：goal 每 tick 只做一次廉价检查，真正的重算等到下一秒；
+  找到路线后下一 tick 自动恢复。
+
+日志：`[path] A* ok/null nodes=... ms=...`、`[path] noRoute → hold ...`。
+如果某次 A* 的 `ms` 仍然很大，或者你只想要最省性能：`pathfinding.enabled = false`（退回直飞，
+移动层的岩浆规避仍然生效）。
+
+### 命令手杖（"右键很多次不能标记敌人"）
+
+本家 `CommandWandItem` 对"目标也是 `AbstractGolemEntity`"走的是打开模式轮盘的分支，
+所以在打"敌人本身是傀儡"的整合包里永远走不到 `resetTarget(target)`。
+`DragonCommandWandHandler` 在 `EntityInteract`（实体交互之前）接管：
+
+- 目标是自己的傀儡/自己的宠物 → 原样交给本家（轮盘/curios 不变）；
+- 其它目标 → 扫描玩家周围 32 格、归属玩家、配置卡过滤通过的傀儡，逐个 `resetTarget(target)`，
+  发和本家一样的 "N Golems will attack X" 提示，并取消事件；
+- 日志：`[wand] command target=... markedGolems=...`（`debug.pathLog` 开启时）。
+
+### 岩浆（"模型蹭到岩浆"）
+
+- 洞穴战斗高度给岩浆单独留 `cave.lavaClearance`（默认 3 格；水只留 1.5 格）；
+- 寻路节点按 `pathfinding.lavaMargin` 向外扩一圈查岩浆，路线拉直也要求"不沾液体"；
+- 移动层再加一层前探：前方 2~3 格内有岩浆就侧移 + 抬升，幽灵模式也生效
+  （幽灵不免疫岩浆伤害）。
+
+### 水晶治疗光束与护盾（"参考末影龙的特效"）
+
+- **光束**：不再自己撒"从水晶飞向龙的光点"，而是把附近一块存活水晶的
+  `beamTarget` 指到龙的身体中心（每 4 tick 更新），让原版 `EndCrystalRenderer`
+  直接画 `end_crystal_beam.png` —— 和末影龙拉水晶是同一条纹理。
+  - 水晶原本已经有玩家设置的 beamTarget 时不抢；结束/龙死亡/收回时还原；
+  - **不再叠加任何 `END_ROD` 脉冲/拖尾/落点粒子**。之前那层"方向性脉冲"
+    在服务端卡顿追帧时会把几秒的粒子一次性补出来，真机就是满房间白色星点；
+    现在治疗表现只有原版光束本身。
+  - **光束只在龙和水晶互相有视线（`hasLineOfSight`）时绑定**，每 4 tick 复查一次。
+    龙在洞穴幽灵模式里躲到墙后时，光束不会穿过整面墙指向一个玩家看不到龙的方向；
+    没有视线时只保留回血，不画光束。
+- **护盾**：附近每有一块存活水晶，给龙加 `crystal.armorPerCrystal` 点护甲 /
+  `crystal.toughnessPerCrystal` 点韧性，按 `crystal.armorCap` / `crystal.toughnessCap` 封顶。
+  这是常驻光环（和"受伤后才回血"无关），水晶拆掉后 1 秒内属性回落。
+  日志：`[crystal] guard crystals=... armor=... toughness=...`；
+  水晶实际数量变化时才会打。
+- **水晶自爆免疫**（`crystal.explosionImmune`，默认 **关**）：
+  只拦截"直接来源是 `EndCrystal` 的爆炸"（原版水晶被非爆炸伤害打掉时产生的自爆）。
+  TNT、苦力怕、火球、其他爆炸仍然照常结算，继续走 L2C 的"爆炸免疫"或 MG 的"海绵升级"，
+  所以**不是 blanket 爆炸免疫，不会和这两个升级冲突**。
+  - **原版末影龙并不免疫水晶自爆**：`EnderDragon.onCrystalDestroyed` 在最近的水晶被拆时
+    会调用 `hurt(head, explosion(crystal, player), 10.0F)`，固定吃 10 点；它的 `hurt`
+    只是"非玩家来源的伤害不结算"，不是爆炸免疫。所以默认保持 `false`，让水晶继续是风险/收益。
+  - 如果你要让龙傀儡把水晶当纯增益，把它设成 `true`；或以后做"水晶爆炸伤害上限/减伤"的中间档。
+  - MG 海绵升级是 `1 - 等级 × 20%` 的爆炸减伤（5 级时到 0），不是回血/吸收；
+    水晶自爆被单独免掉后，海绵不会"少吸一次血"，因为本来就没有回血。
+  - 如果整合包里的"爆炸吸收"是**按爆炸伤害回血/充能**，那水晶免疫会让水晶爆炸不触发它；
+    想保留这个联动就保持 `false`。
+
+### 自动索敌与命令手杖锁定
+
+- 巡场自动索敌只接受 `Enemy` 和**别人的 `AbstractGolemEntity`**；马、蝙蝠、试验假人、
+  村民、自己的宠物不再被自动锁定（之前会丢下敌人去追动物，表现为"龙傀儡逃跑了"）。
+- 命令手杖的 `forcedTarget` 不走这条过滤，并且**所有攻击 goal、技能调度、洞穴战斗高度**
+  都统一读 `dragonCurrentTarget()`（先 forcedTarget，再本家目标槽）。
+  这样"用手杖锁了下面的，却喷上面的"不会再出现两边目标不一致。
+- 日志：`[target] ... forced=true/false patrolValid=...`。
+- 龙息伤害现在对**每个候选目标**单独做"嘴 → 目标"的方块遮挡检查；
+  隔着地板/墙角的上层目标不会再掉血（同一锥体里、视线通畅的目标仍然吃 AoE）。

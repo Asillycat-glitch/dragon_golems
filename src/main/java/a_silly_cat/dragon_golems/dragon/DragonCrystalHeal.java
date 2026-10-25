@@ -1,7 +1,10 @@
 package a_silly_cat.dragon_golems.dragon;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
@@ -38,6 +41,12 @@ import java.util.List;
  * <p>现在改成：<b>计时器只在判定成功时清零</b>。满血时的判定失败<b>不</b>清零，
  * 所以时钟一直在走 —— 龙一受伤就会被立刻接管（"上次判定已经过去 30 秒了"这个条件早已满足），
  * 既保留了"30 秒最多开局一次"的限制，又没有任何人工等待。
+ *
+ * <h2>治疗光束</h2>
+ * 原版 {@code EndCrystal} 的 {@code beamTarget} 会被 {@code EndCrystalRenderer} 直接画成
+ * {@code end_crystal_beam.png}。治疗期间把最近一块水晶的 beamTarget 指到龙的身体中心
+ * （每 4 tick 更新一次），就得到和末影龙拉水晶一样的光束；不再自己撒"移动光点"。
+ * 结束、满血、水晶被拆/龙被移除时都会把 beamTarget 还原（不抢玩家预设的目标）。
  */
 public final class DragonCrystalHeal {
 
@@ -62,6 +71,24 @@ public final class DragonCrystalHeal {
     /** 最近一次判定看到的水晶数量（日志/展示用）。 */
     private int crystalCount;
 
+    // ---- 原版水晶光束 ----
+    /** 当前被我们"借用"来画原版水晶光束的水晶。 */
+    @Nullable
+    private EndCrystal beamCrystal;
+    /** 借用前它自己的 beamTarget（为 null 才允许借用；非 null 表示玩家/别人在用）。 */
+    @Nullable
+    private BlockPos beamOriginalTarget;
+    /** 这个 beamTarget 是不是我们写上去的（只有 true 才允许清掉）。 */
+    private boolean beamOwned;
+    /** 光束目标点更新节流（每 4 tick 更新一次，足够跟住龙）。 */
+    private int beamUpdateTicks;
+
+    // ---- 水晶护盾 ----
+    /** 护盾扫描节流。 */
+    private int guardScanTicks;
+    /** 最近一次扫描到的、32 格内存活水晶数量。 */
+    private int guardCrystals;
+
     /** 本轮判定是否通过。 */
     public boolean isActive() {
         return this.active;
@@ -70,6 +97,146 @@ public final class DragonCrystalHeal {
     /** 最近一次判定看到的水晶数量。 */
     public int crystalCount() {
         return this.crystalCount;
+    }
+
+    /** 最近一次护盾扫描看到的水晶数量（每 20 tick 更新一次）。 */
+    public int guardCrystals() {
+        return this.guardCrystals;
+    }
+
+    /**
+     * 把这块水晶的 {@code beamTarget} 指到龙身上，借用原版
+     * {@code EndCrystalRenderer} 的光束纹理（{@code end_crystal_beam.png}）。
+     *
+     * <p>这就是"参考末影龙特效"最省事也最准确的做法：不自己撒粒子，
+     * 直接让原版水晶渲染器从水晶向目标方块画那道光束。
+     *
+     * <p><b>不抢玩家的 beamTarget</b>：绑定前如果它已经有目标，就不改；
+     * 只有原本为 null 时才由我们接管，并在结束时还原成 null。
+     */
+    private void bindBeam(DragonGolemEntity dragon, EndCrystal crystal) {
+        if (crystal.isRemoved() || !crystal.isAlive()) {
+            this.clearBeam();
+            return;
+        }
+        // ★ 看不见就不画：龙在洞穴幽灵模式里经常在水晶背后的墙里/另一侧。
+        //   beamTarget 是纯实体数据，原版渲染器不会帮你做遮挡；不检查就会从水晶
+        //   隔着整面墙射向"玩家看不到龙"的方向。
+        if (!dragon.hasLineOfSight(crystal)) {
+            this.clearBeam();
+            return;
+        }
+        if (this.beamCrystal != crystal) {
+            this.clearBeam();
+            this.beamCrystal = crystal;
+            BlockPos original = crystal.getBeamTarget();
+            // 上次存档/崩溃前我们写进去的 beamTarget 会留在水晶 NBT 里；
+            // 目标还在龙附近就认为是我们上次的，接管并更新；否则不抢。
+            boolean ours = original == null || this.isTargetNearDragon(dragon, original);
+            if (ours && original != null) {
+                crystal.setBeamTarget(null);
+            }
+            this.beamOriginalTarget = ours ? null : original;
+            this.beamOwned = ours;
+            this.beamUpdateTicks = 0;
+        }
+        this.maintainBeam(dragon);
+    }
+
+    /**
+     * 每 tick 推进一次"水晶 → 龙"的光束目标（每 4 tick 真正写一次实体数据）。
+     *
+     * <p>不能只在回血那 10 tick 调一次：那样龙已经飞出 3~5 格，光束会明显滞后。
+     */
+    private void maintainBeam(DragonGolemEntity dragon) {
+        EndCrystal crystal = this.beamCrystal;
+        if (crystal == null) {
+            return;
+        }
+        if (crystal.isRemoved() || !crystal.isAlive()) {
+            this.clearBeam();
+            return;
+        }
+        if (!this.beamOwned) {
+            return;
+        }
+        if (--this.beamUpdateTicks > 0) {
+            return;
+        }
+        this.beamUpdateTicks = 4;
+        // 每 4 tick 才做一次视线检查：既不会每 tick 打一条 32 格射线，
+        // 也能在龙躲到墙后 0.2 秒内把光束收掉。
+        if (!dragon.hasLineOfSight(crystal)) {
+            this.clearBeam();
+            return;
+        }
+        BlockPos target = BlockPos.containing(dragon.getX(),
+                dragon.getY() + dragon.getBbHeight() * 0.5D, dragon.getZ());
+        if (!target.equals(crystal.getBeamTarget())) {
+            crystal.setBeamTarget(target);
+        }
+    }
+
+    /** 停止/结束治疗：把我们写进去的光束目标还原。 */
+    public void clearBeam() {
+        EndCrystal crystal = this.beamCrystal;
+        if (crystal != null && this.beamOwned && !crystal.isRemoved()) {
+            crystal.setBeamTarget(this.beamOriginalTarget);
+        }
+        this.beamCrystal = null;
+        this.beamOriginalTarget = null;
+        this.beamOwned = false;
+        this.beamUpdateTicks = 0;
+    }
+
+    /** 这个 beamTarget 是否还在"当前这条龙"身上（判断它是不是我们上次写的）。 */
+    private boolean isTargetNearDragon(DragonGolemEntity dragon, BlockPos target) {
+        return dragon.getBoundingBox().inflate(3.0D).contains(Vec3.atCenterOf(target));
+    }
+
+    /** 这个 beamTarget 附近是否还有任意一条活着的龙。 */
+    private boolean hasAnyDragonNear(DragonGolemEntity dragon, BlockPos target) {
+        AABB box = new AABB(target.getX(), target.getY(), target.getZ(),
+                target.getX() + 1, target.getY() + 1, target.getZ() + 1).inflate(3.0D);
+        return !dragon.level().getEntitiesOfClass(DragonGolemEntity.class, box,
+                d -> d.isAlive()).isEmpty();
+    }
+
+    /**
+     * 清理"存档/崩溃前留下的旧 beamTarget"。
+     *
+     * <p>原版水晶的 beamTarget 会写进 NBT；如果存档时正好在回血，下次进游戏时
+     * 龙这边的 {@code beamCrystal} 是空的，没人会去改它，于是那道光束会永远指向
+     * 上次的位置。这里在龙第一次 tick 时扫一次 32 格内的水晶：目标附近没有活龙 → 清掉。
+     */
+    public void cleanupStaleBeams(DragonGolemEntity dragon) {
+        if (dragon.level().isClientSide()) {
+            return;
+        }
+        List<EndCrystal> crystals = dragon.level().getEntitiesOfClass(EndCrystal.class,
+                dragon.getBoundingBox().inflate(RADIUS));
+        for (EndCrystal crystal : crystals) {
+            BlockPos target = crystal.getBeamTarget();
+            if (target == null) {
+                continue;
+            }
+            // 目标就在这条龙身上（大概率是我们上次写的）或者附近根本没有活龙 → 旧目标
+            if (this.isTargetNearDragon(dragon, target) || !this.hasAnyDragonNear(dragon, target)) {
+                crystal.setBeamTarget(null);
+                if (Dragon_golems.LOGGER.isDebugEnabled()) {
+                    Dragon_golems.LOGGER.debug("[crystal] cleaned stale beam at {}", target);
+                }
+            }
+        }
+    }
+
+    /** 每 20 tick 数一次附近的水晶，给实体加护甲/韧性。 */
+    private void tickGuard(DragonGolemEntity dragon) {
+        if (--this.guardScanTicks > 0) {
+            return;
+        }
+        this.guardScanTicks = 20;
+        this.guardCrystals = this.countLiveCrystals(dragon);
     }
 
     /**
@@ -84,6 +251,12 @@ public final class DragonCrystalHeal {
         if (dragon.level().isClientSide()) {
             return null;
         }
+        if (!dragon.isAlive()) {
+            this.clearBeam();
+            return null;
+        }
+        // 护盾是"常驻光环"，和是否在回血无关：每 20 tick 数一次附近水晶
+        this.tickGuard(dragon);
         // 时钟一直在走：满血时不清零（见类注释的缺陷说明）
         if (this.ticksSinceCheck < CHECK_INTERVAL) {
             this.ticksSinceCheck++;
@@ -97,16 +270,27 @@ public final class DragonCrystalHeal {
 
         // ---- 判定没过：整轮不回 ----
         if (!this.active) {
+            this.clearBeam();
             return null;
         }
-        // ---- 回血节律：每 10 tick 一点，且不满血 ----
+        // 满血不显示治疗光束（和末影龙一致：只有受伤时才拉光束）
+        if (dragon.getHealth() >= dragon.getMaxHealth()) {
+            this.clearBeam();
+            return null;
+        }
+        // 每 tick 跟一下目标点；真正的水晶查找/绑定仍然只在回血节律那 10 tick 做
+        this.maintainBeam(dragon);
+        // ---- 回血节律：每 10 tick 一点 ----
         if (this.ticksSinceCheck % HEAL_INTERVAL != 0) {
             return null;
         }
-        if (dragon.getHealth() >= dragon.getMaxHealth()) {
+        EndCrystal crystal = this.findLiveCrystal(dragon);
+        if (crystal == null) {
             return null;
         }
-        return this.findLiveCrystal(dragon);
+        // 让水晶自己去画原版 end_crystal_beam（EndCrystalRenderer 的 beamTarget）
+        this.bindBeam(dragon, crystal);
+        return crystal;
     }
 
     /**
@@ -139,6 +323,7 @@ public final class DragonCrystalHeal {
         }
         this.active = false;
         this.crystalCount = 0;
+        this.clearBeam();
     }
 
     /** 找一块存活的水晶（用来发光效）；没有就返回 null。 */

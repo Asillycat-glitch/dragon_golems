@@ -1,6 +1,7 @@
 package a_silly_cat.dragon_golems.content.config;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import com.mojang.serialization.JsonOps;
 import dev.xkmc.l2serial.serialization.SerialClass;
@@ -124,6 +125,13 @@ public class DragonBodyEntry {
         ParticleOptions type;
         try {
             type = ParticleTypes.CODEC.parse(JsonOps.INSTANCE, new JsonPrimitive(raw)).result().orElse(null);
+            // 裸 id（"minecraft:flame"）在 PARTICLE_TYPE codec 里要写成 {"type":"minecraft:flame"}；
+            // 直接传字符串会 result=null，之前 flame/dragon_breath 就是这样被误判成"不存在"的。
+            if (type == null && !raw.startsWith("{")) {
+                JsonObject obj = new JsonObject();
+                obj.addProperty("type", raw);
+                type = ParticleTypes.CODEC.parse(JsonOps.INSTANCE, obj).result().orElse(null);
+            }
         } catch (Exception e) {
             Dragon_golems.LOGGER.warn("[dragon_bodies] {} 的粒子 '{}' 解析异常，回退到 {}：{}",
                     field, raw, fallback, e.toString());

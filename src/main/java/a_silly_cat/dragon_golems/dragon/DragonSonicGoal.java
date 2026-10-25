@@ -110,10 +110,16 @@ public class DragonSonicGoal extends Goal {
         if (!this.dragon.isMovable() || this.dragon.isInSittingPose()) {
             return false;
         }
+        // 幽灵模式（洞穴穿墙 / 脱困）允许继续开火：它要靠穿墙离开死角，
+        // 这里按"嵌在方块里"一刀切会让它永远不攻击。音波的线状判定本来就不看方块，
+        // 但起点仍从嘴部出，视觉上跟得上。
+        if (this.dragon.flightAssist().isEmbedded() && !this.dragon.isGhostFlight()) {
+            return false;
+        }
         if (this.dragon.getControllingPassenger() != null) {
             return false;
         }
-        LivingEntity target = this.dragon.getTarget();
+        LivingEntity target = this.dragon.dragonCurrentTarget();
         return target != null && target.isAlive();
     }
 
@@ -155,7 +161,7 @@ public class DragonSonicGoal extends Goal {
 
     @Override
     public void tick() {
-        LivingEntity target = this.dragon.getTarget();
+        LivingEntity target = this.dragon.dragonCurrentTarget();
         if (target == null || !target.isAlive()) {
             this.finish();
             return;
@@ -186,7 +192,10 @@ public class DragonSonicGoal extends Goal {
     /** 前摇：站住不动、转头、嘴里聚粒子，然后打出去。 */
     private void tickAim(LivingEntity target) {
         this.aim(target);
-        this.holdHover();
+        // 前摇可能在后撤，但朝向仍锁目标（否则会背对目标退）
+        this.dragon.setKeepAim(true);
+        // 洞穴里如果目标趁前摇贴近，保持站位（能退就退，退不了才悬停）
+        this.caveSpacing(target);
         if (this.phaseTicks == 1) {
             this.dragon.playSound(SoundEvents.WARDEN_SONIC_CHARGE, 3.0F, 1.0F);
         }
@@ -204,10 +213,47 @@ public class DragonSonicGoal extends Goal {
     }
 
     private void tickRecover() {
-        this.holdHover();
+        LivingEntity target = this.dragon.dragonCurrentTarget();
+        if (target != null) {
+            this.caveSpacing(target);
+        } else {
+            this.holdHover();
+        }
         if (this.phaseTicks >= RECOVER_TICKS) {
             this.finish();
         }
+    }
+
+    /**
+     * 洞穴里保持"近战够不到"的站位：只退不进。
+     *
+     * <p>音爆射程比龙息短，但 16 格仍然远大于近战；真正危险的是前摇/收尾那 22 tick
+     * 站桩，目标自己走过来就白挨打。
+     */
+    private void caveSpacing(LivingEntity target) {
+        if (!this.dragon.inCave()) {
+            this.holdHover();
+            return;
+        }
+        double dist = this.dragon.distanceTo(target);
+        double standoff = this.dragon.caveStandoff(target);
+        if (dist >= standoff - 0.5D) {
+            this.holdHover();
+            return;
+        }
+        Vec3 away = new Vec3(this.dragon.getX() - target.getX(), 0.0D,
+                this.dragon.getZ() - target.getZ());
+        if (away.horizontalDistance() < 1.0E-4D) {
+            Vec3 look = this.dragon.getLookAngle();
+            away = new Vec3(-look.x, 0.0D, -look.z);
+            if (away.horizontalDistance() < 1.0E-4D) {
+                away = new Vec3(1.0D, 0.0D, 0.0D);
+            }
+        }
+        Vec3 dir = this.dragon.flightAssist().retreatDirection(this.dragon, away);
+        double speed = CLOSE_SPEED * this.dragon.flightSpeedFactor();
+        Vec3 want = new Vec3(dir.x * speed, this.hoverDelta(), dir.z * speed);
+        this.dragon.setDiveVelocity(this.dragon.flightAssist().avoidance(this.dragon, want));
     }
 
     // ---- 开火 ----
@@ -298,7 +344,7 @@ public class DragonSonicGoal extends Goal {
 
     /** 目标是否已经在光束长度之内。 */
     private boolean inBeamRange() {
-        LivingEntity target = this.dragon.getTarget();
+        LivingEntity target = this.dragon.dragonCurrentTarget();
         return target != null && this.dragon.distanceTo(target) <= this.dragon.sonicBeamLength();
     }
 
@@ -316,17 +362,52 @@ public class DragonSonicGoal extends Goal {
 
     /** 朝目标飞（保持悬停高度）；转向交给实体的 faceMovement。 */
     private void moveToward(LivingEntity target, double speed) {
-        Vec3 delta = new Vec3(target.getX(), this.dragon.getY(), target.getZ())
+        boolean ghost = this.dragon.isGhostFlight();
+        // 撞墙立刻作废路线；没路线就原地悬停，别顶着墙飞
+        // ★ 幽灵模式不查这些：它本来就能穿墙，直线就是合法路线
+        if (!ghost && this.dragon.horizontalCollision) {
+            this.dragon.pathFollower().invalidate();
+        }
+        if (!ghost && this.dragon.pathFollower().noRoute()) {
+            // 停住，但每秒允许后台重算一次；算出来下一 tick 自动恢复
+            this.dragon.pathFollower().steer(
+                    new Vec3(target.getX(), this.dragon.getY(), target.getZ()), 1);
+            this.holdHover();
+            return;
+        }
+        // 和远程 goal 一样先问寻路跟随器（直飞干净时它直接返回目标点；幽灵时也直飞）
+        Vec3 steer = ghost
+                ? new Vec3(target.getX(), this.dragon.getY(), target.getZ())
+                : this.dragon.pathFollower().steer(
+                        new Vec3(target.getX(), this.dragon.getY(), target.getZ()), 1);
+        Vec3 delta = new Vec3(steer.x, this.dragon.getY(), steer.z)
                 .subtract(this.dragon.position());
         double len = delta.length();
         Vec3 velocity = len < 0.05D ? Vec3.ZERO : delta.scale(speed / len);
-        this.dragon.setDiveVelocity(new Vec3(velocity.x, this.hoverDelta(), velocity.z));
+        Vec3 want = new Vec3(velocity.x, this.hoverDelta(), velocity.z);
+        this.dragon.setDiveVelocity(this.dragon.flightAssist().avoidance(this.dragon, want));
     }
 
     /** 维持离地高度的竖直速度（上限跟着速度倍率放大，和远程/待机一致）。 */
     private double hoverDelta() {
+        // ★ 竖直优先级链 + 洞穴"只降不升" + 天花板前瞻（和远程 goal 同一套）
+        double wantY = this.dragon.combatAltitudeY();
+        // 同上：不再额外压到"目标脚底 + 3"，否则 combatAltitudeY 的
+        // "目标头顶 + attackHeight"会被抹掉。
         double cap = 0.18D * this.dragon.speedScale();
-        return Mth.clamp((this.dragon.hoverTargetY() - this.dragon.getY()) * 0.10D, -cap, cap);
+        double vy = Mth.clamp((wantY - this.dragon.getY()) * 0.10D, -cap, cap);
+        if (this.dragon.inCave() && !this.dragon.pathFollower().onRoute()) {
+            double headroom = this.dragon.ceilingFeetLimit() - this.dragon.getY();
+            double stepUp = this.dragon.horizontalCollision ? 3.0D : 1.0D;
+            double allow = Math.max(0.0D, Math.min(stepUp, headroom - 0.3D));
+            wantY = Math.min(wantY, this.dragon.getY() + allow);
+            vy = Mth.clamp((wantY - this.dragon.getY()) * 0.10D, -cap, cap);
+        }
+        double limit = this.dragon.noPhysics ? Double.MAX_VALUE : this.dragon.ceilingFeetLimit();
+        if (this.dragon.getY() + vy > limit) {
+            vy = Mth.clamp(limit - this.dragon.getY(), -cap, cap);
+        }
+        return vy;
     }
 
     private void enter(Phase next) {

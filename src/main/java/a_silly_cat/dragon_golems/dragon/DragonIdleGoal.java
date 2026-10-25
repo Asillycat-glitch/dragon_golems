@@ -170,7 +170,7 @@ public class DragonIdleGoal extends Goal {
                 this.softCenter.x, this.softCenter.z);
 
         // ---- 沉降：没有目标满 30 秒就地悬停待机；出现目标 / 又被打 / 主人跑出活动范围立刻唤醒 ----
-        if (this.dragon.getTarget() != null || this.dragon.hurtTime > 0) {
+        if (this.dragon.dragonCurrentTarget() != null || this.dragon.hurtTime > 0) {
             this.settled = false;
             this.settleTicks = 0;
         } else if (this.settled) {
@@ -189,9 +189,9 @@ public class DragonIdleGoal extends Goal {
             // "离地三格"是个给以后骑乘用的固定高度，上下浮动会让人站不稳；想要那点浮动的话
             // 把下面 wantY 末尾的 + this.bob() 加回来即可。
             this.waypoint = null;
-            // 用 hoverTargetY() 而不是自己再算一遍：那个方法会把目标压到"头顶天花板之下"
-            // （洞里的龙否则会朝世界地表高度一直爬，实测过：surface=70 / y=-6 → 目标 80）。
-            double settleY = this.dragon.hoverTargetY();
+            // 用 combatAltitudeY()：它会把目标压到"头顶天花板之下"，并且幽灵模式下
+            // 不会因为 ceilingFeetLimit 的 max(y) 而每 tick 往上棘轮（穿出洞顶）。
+            double settleY = this.dragon.combatAltitudeY();
             double settleVy = Mth.clamp((settleY - this.dragon.getY()) * VERTICAL_GAIN,
                     -VERTICAL_MAX * range, VERTICAL_MAX * range);
             this.dragon.setDiveVelocity(new Vec3(0.0D, settleVy, 0.0D));
@@ -256,11 +256,17 @@ public class DragonIdleGoal extends Goal {
         // 用 hoverTargetY() 而不是自己拼：它会 min(世界地表+悬停高度, 天花板下一格)。
         // 自己拼的话，洞里的龙会朝"世界地表 + 10"一直爬（实测 surface=70 / y=-6 → 目标 80），
         // 表现为无限向上飞直到被回位传送拽回来。
-        double wantY = this.dragon.hoverTargetY() + this.bob();
+        // ★ 竖直优先级链（悬停 / 天花板 / 航线）；洞穴里只降不升（见 verticalTargetY）
+        // 洞穴里不加"呼吸起伏"：那 1.5 格偏移正好能把贴着天花板的幽灵顶出洞顶。
+        double wantY = this.dragon.combatAltitudeY();
+        if (!this.dragon.inCave()) {
+            wantY += this.bob();
+        }
         double vy = Mth.clamp((wantY - this.dragon.getY()) * VERTICAL_GAIN,
                 -VERTICAL_MAX * range, VERTICAL_MAX * range);
-        // 蹭到方块就抬一点，免得贴着树、墙原地磨
-        if (this.dragon.horizontalCollision) {
+        // 撞墙才抬一点，但必须头顶真有空间（洞穴里无条件抬就是往顶上顶）
+        if (this.dragon.horizontalCollision
+                && this.dragon.ceilingFeetLimit() - this.dragon.getY() >= 1.5D) {
             vy = Math.max(vy, 0.15D);
         }
 

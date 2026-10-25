@@ -1,6 +1,7 @@
 package a_silly_cat.dragon_golems.content.config;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
+import net.minecraft.util.Mth;
 import net.minecraftforge.common.ForgeConfigSpec;
 import net.minecraftforge.fml.ModContainer;
 import net.minecraftforge.fml.ModLoadingContext;
@@ -66,7 +67,17 @@ public final class DragonGolemConfig {
      * 一次龙息的单体总量降到约 1.05 倍攻击力（默认 step 0.25 / 下限 0.25），群体覆盖不受影响。
      */
     public static boolean breathDiminishing() {
-        return bool(COMMON.breathDiminishing, true);
+        return bool(COMMON.breathDiminishing, false);
+    }
+
+    /**
+     * <b>龙息基值倍率</b>（默认 1.0，0.25~8）。
+     *
+     * <p>护甲高的整合包里，每跳固定伤害会被护甲吃掉很大一块（"伤害质量急剧下降"），
+     * 靠这个倍率直接补，不需要改代码重新打包。
+     */
+    public static double breathDamageMultiplier() {
+        return Mth.clamp(num(COMMON.breathDamageMultiplier, 1.0D), 0.25D, 8.0D);
     }
 
     /** 每多命中一次，伤害倍率下降多少（默认 0.25 = 第二跳 75%、第三跳 50%…）。 */
@@ -187,9 +198,239 @@ public final class DragonGolemConfig {
         return bool(COMMON.maxHealthCapFix, true);
     }
 
+
+    /**
+     * <b>龙的升级槽数量</b>（默认 5 = 5 个部件各占一槽，和本家默认一致）。
+     *
+     * <p>本家的做法是"每种傀儡类型各自读一个配置"（{@code largeGolemSlot} / {@code humanoidGolemSlot} /
+     * {@code dogGolemSlot}，见 {@code MetalGolemType#getUpgradeSlots}）。龙是自定义类型，
+     * 没有对应的本家键，所以这里给它自己一个。
+     */
+    public static double upgradeSlots() {
+        return Mth.clamp(num(COMMON.upgradeSlots, 5.0D), 0.0D, 100.0D);
+    }
+
     /** 内置属性修复时，最大生命的上限抬到多少（默认 10 万，够任何整合包用）。 */
     public static double maxHealthCap() {
         return num(COMMON.maxHealthCap, 100000.0D);
+    }
+
+    // ---- 洞穴模式（在 0.4 上追加，不动已有逻辑）----
+
+    /** 洞穴模式总开关（默认开）。关掉 = 恢复到 0.4 的纯开阔地行为。 */
+    public static boolean caveMode() {
+        return bool(COMMON.caveEnabled, true);
+    }
+
+    /**
+     * 头顶可用空间小于这个值就算"洞穴"（格，含身体高度之外还要的余量）。
+     * 默认 14：0.4 的绕圈半径对 1 倍体型约 22 格，天花板低于 14 格时绕圈必然贴顶。
+     */
+    public static double caveCeilingRoom() {
+        return Math.max(0.0D, num(COMMON.caveCeilingRoom, 14.0D));
+    }
+
+    /**
+     * 水平净空小于 {@code orbitRadius() × 这个系数} 也算"洞穴"。默认 0.9。
+     * 用中位数（8 方向各探一次），所以贴着一面墙不会误判。
+     */
+    public static double caveSideRoomFactor() {
+        return Math.max(0.0D, num(COMMON.caveSideRoomFactor, 0.9D));
+    }
+
+    /** 洞穴"引导式喷息"（默认开）：命中不依赖喷流几何，只看射程 + 同层。 */
+    public static boolean caveGuidedDamage() {
+        // 本版强制走几何判定（喷流打到才有伤害）：旧配置文件里 guidedDamage 可能还是 true。
+        return false;
+    }
+
+    /** 引导喷息的射程（格，默认 24）。 */
+    public static double caveGuideRange() {
+        return Mth.clamp(num(COMMON.caveGuideRange, 24.0D), 4.0D, 48.0D);
+    }
+
+    /** 引导喷息允许的高度差（Y，默认 8）。 */
+    public static double caveGuideYTolerance() {
+        return Mth.clamp(num(COMMON.caveGuideYTolerance, 8.0D), 1.0D, 32.0D);
+    }
+
+    /** 洞穴闪避（默认开）：投射物飞来 / 刚挨打时做一次侧向脱离。 */
+    public static boolean caveDodge() {
+        return bool(COMMON.caveDodge, true);
+    }
+
+    /**
+     * 洞穴里是否允许 AI 走"幽灵模式"（{@code noPhysics}，直接穿墙；默认开）。
+     *
+     * <p>只在<b>没有骑手</b>且 {@code DragonGolemEntity.inCave()} 判定成立时生效。洞里 2.6 格宽的判定箱
+     * 物理上就塞不进矿道；与其让它贴着墙磨、反复触发脱困，不如明确允许穿墙，
+     * 由 {@code DragonGolemEntity.caveStandoff(...)} 保证它仍然停在敌人的近战范围之外。
+     *
+     * <p>关掉之后一切交回 {@code DragonFlightAssist} 的自动脱困 / 常驻幽灵。
+     */
+    public static boolean caveGhost() {
+        return bool(COMMON.caveGhost, true);
+    }
+
+    /**
+     * 洞穴里脚底离<b>岩浆液面</b>至少留多少格（默认 3.0）。
+     *
+     * <p>水体只用默认的 1.5 格兜底；岩浆要更宽，因为龙的模型比判定箱更宽，
+     * 贴着液面飞时翅膀/尾巴会"蹭"进液面（不掉血但很难看）。
+     */
+    public static double caveLavaClearance() {
+        return Mth.clamp(num(COMMON.caveLavaClearance, 3.0D), 0.0D, 16.0D);
+    }
+
+    /** 天花板余量（默认 1.5 格）：允许探头到天花板之上一点，但不允许飞出房间。 */
+    public static double caveCeilingSlack() {
+        return Mth.clamp(num(COMMON.caveCeilingSlack, 1.5D), 0.0D, 6.0D);
+    }
+
+    /** 喷息时保持在目标上方多少格（默认 4.0）：地面近战够不到这个高度。 */
+    public static double caveAttackHeight() {
+        return Mth.clamp(num(COMMON.caveAttackHeight, 4.0D), 0.0D, 16.0D);
+    }
+
+
+
+    /** 站位倍率（默认 1.0）：调大 = 站得更远。 */
+    public static double caveStandoffFactor() {
+        return Mth.clamp(num(COMMON.caveStandoffFactor, 1.0D), 0.5D, 3.0D);
+    }
+
+
+
+
+    /** 洞穴里俯冲改"冲刺"（默认开：不做高度前摇，直接朝目标方向冲）。 */
+    public static boolean caveDash() {
+        // 冲刺分支暂不启用（洞穴里改成"追杀 + 站位"；旧配置文件里可能是 true）
+        return false;
+    }
+
+    /** 洞穴里是否禁止抽俯冲（默认开：大弧度动作在狭小场地只会贴墙）。 */
+    public static boolean caveNoDive() {
+        return bool(COMMON.caveNoDive, true);
+    }
+
+    /** 洞穴里喷息是否站桩（默认开：不绕圈、不压弯，只动头）。 */
+    public static boolean caveHoldBreath() {
+        return bool(COMMON.caveHoldBreath, true);
+    }
+
+    /**
+     * <b>绕圈喷息时的倾斜角（度）</b>，默认 20。0 = 不压弯。
+     *
+     * <p>脚本圆是"先有轨迹、再叠姿态"：轨迹决定位置，这个角度只决定机身往圆心内倾多少；
+     * 正负由绕行方向自动决定（顺时针/逆时针都往圆心倾）。
+     */
+    public static double breathOrbitBank() {
+        return num(COMMON.breathOrbitBank, 20.0D);
+    }
+
+    /**
+     * <b>平原龙息转圈的线速度</b>（格/tick，基准值，会再乘速度倍率）。默认 0.55。
+     *
+     * <p>这是动画参数：角速度 = 线速度 / 半径。调大转得更快、观感更"急"。
+     */
+    public static double breathOrbitSpeed() {
+        return Mth.clamp(num(COMMON.breathOrbitSpeed, 0.55D), 0.05D, 3.0D);
+    }
+
+    // ---- 寻路（0.4 追加：体型感知 + 自算航点）----
+
+    /**
+     * 寻路总开关（默认开）。关掉退回"直飞目标"。
+     *
+     * <p>★ 这一条<b>不再是硬编码 false</b>。以前的 A* 会在矿道里把主线程卡死，
+     * 所以被临时强制关闭；现在每一层都有性能护栏：
+     * <ul>
+     *   <li>直飞路径（身体盒 + 液体都干净）时<b>根本不跑 A*</b>，见 {@code DragonPathFollower.steer}；</li>
+     *   <li>幽灵模式（{@code noPhysics}）直接穿墙飞，也不跑 A*；</li>
+     *   <li>单次搜索节点数、单 tick 全服搜索次数、单次耗时超限后的冷却都封了顶。</li>
+     * </ul>
+     * 真出问题时在 TOML 里把 {@code pathfinding.enabled} 设成 false 即可退回直飞。
+     */
+    public static boolean pathEnabled() {
+        return bool(COMMON.pathEnabled, true);
+    }
+
+    /** 每隔多少 tick 重算路线（默认 20 = 每秒最多一次）。 */
+    public static int pathRepathTicks() {
+        return Math.max(20, (int) num(COMMON.pathRepathTicks, 20.0D));
+    }
+
+    /** 寻路节点是否按"整条龙的身体盒子"判定（默认开）。 */
+    public static boolean pathBodyClearance() {
+        return bool(COMMON.pathBodyClearance, true);
+    }
+
+    /** 寻路节点给身体留的额外余量（格，默认 0.6）。 */
+    public static double pathBodyMargin() {
+        return Mth.clamp(num(COMMON.pathBodyMargin, 0.60D), 0.0D, 2.0D);
+    }
+
+    /**
+     * 寻路节点与岩浆之间额外留的余量（格，默认 0.6）。
+     *
+     * <p>岩浆没有碰撞箱，旧版评估器只检查"有没有碰撞形状"，于是会把航路点放在
+     * 岩浆湖边缘一格的位置 —— 判定箱过得去，但龙的模型（翅膀/尾巴比判定箱宽）
+     * 会蹭进液面。这个余量同时用在节点评估和路线拉直上。
+     */
+    public static double pathLavaMargin() {
+        return Mth.clamp(num(COMMON.pathLavaMargin, 0.60D), 0.0D, 4.0D);
+    }
+
+    /** 路线拉直的前瞻节点数（默认 6，0 = 关闭）。 */
+    public static int pathSmoothingLookahead() {
+        return (int) Mth.clamp(num(COMMON.pathSmoothingLookahead, 6.0D), 0.0D, 24.0D);
+    }
+
+    /** 移动/寻路诊断日志（默认关）。 */
+    public static boolean flightLog() {
+        return bool(COMMON.flightLog, false);
+    }
+
+    /** 航线诊断日志（默认开：排查"不绕柱子 / 判定能过其实进不去"时必看）。 */
+    public static boolean pathLog() {
+        return bool(COMMON.pathLog, true);
+    }
+
+    /** 液体判定：流水（瀑布/水渠）算不算支撑面（默认 false = 忽略，只认静水）。 */
+    public static boolean flowingFluidIsFloor() {
+        return bool(COMMON.flowingFluidIsFloor, false);
+    }
+
+    // ---- 末地水晶护盾（0.4 追加）----
+
+    /** 是否免疫"末地水晶自爆"（只针对 EndCrystal 直接来源，不是所有爆炸）。 */
+    public static boolean crystalExplosionImmune() {
+        return bool(COMMON.crystalExplosionImmune, false);
+    }
+
+    /** 水晶护盾总开关（默认开）。关掉后附近水晶只回血，不再加护甲/韧性。 */
+    public static boolean crystalGuard() {
+        return bool(COMMON.crystalGuard, true);
+    }
+
+    /** 每块存活水晶提供多少护甲（默认 4）。 */
+    public static double crystalArmorPerCrystal() {
+        return Mth.clamp(num(COMMON.crystalArmorPerCrystal, 4.0D), 0.0D, 30.0D);
+    }
+
+    /** 水晶护盾的护甲上限（默认 16）。 */
+    public static double crystalArmorCap() {
+        return Mth.clamp(num(COMMON.crystalArmorCap, 16.0D), 0.0D, 60.0D);
+    }
+
+    /** 每块存活水晶提供多少护甲韧性（默认 2）。 */
+    public static double crystalToughnessPerCrystal() {
+        return Mth.clamp(num(COMMON.crystalToughnessPerCrystal, 2.0D), 0.0D, 20.0D);
+    }
+
+    /** 水晶护盾的韧性上限（默认 8）。 */
+    public static double crystalToughnessCap() {
+        return Mth.clamp(num(COMMON.crystalToughnessCap, 8.0D), 0.0D, 40.0D);
     }
 
     // ---- 兜底读取 ----
@@ -214,6 +455,7 @@ public final class DragonGolemConfig {
     public static class Common {
 
         public final ForgeConfigSpec.BooleanValue breathDiminishing;
+        public final ForgeConfigSpec.DoubleValue breathDamageMultiplier;
         public final ForgeConfigSpec.DoubleValue breathDiminishingStep;
         public final ForgeConfigSpec.DoubleValue breathDiminishingMin;
 
@@ -225,22 +467,100 @@ public final class DragonGolemConfig {
         public final ForgeConfigSpec.BooleanValue nativeSkillGoals;
         public final ForgeConfigSpec.BooleanValue diveTriggersMelee;
 
+        public final ForgeConfigSpec.DoubleValue upgradeSlots;
         public final ForgeConfigSpec.BooleanValue logAttributeOverflow;
         public final ForgeConfigSpec.BooleanValue maxHealthCapFix;
         public final ForgeConfigSpec.DoubleValue maxHealthCap;
 
+        public final ForgeConfigSpec.BooleanValue caveEnabled;
+        public final ForgeConfigSpec.DoubleValue caveCeilingRoom;
+        public final ForgeConfigSpec.DoubleValue caveSideRoomFactor;
+        public final ForgeConfigSpec.BooleanValue caveNoDive;
+        public final ForgeConfigSpec.BooleanValue caveDash;
+        public final ForgeConfigSpec.BooleanValue caveGuidedDamage;
+        public final ForgeConfigSpec.DoubleValue caveGuideRange;
+        public final ForgeConfigSpec.DoubleValue caveGuideYTolerance;
+        public final ForgeConfigSpec.BooleanValue caveDodge;
+        public final ForgeConfigSpec.BooleanValue caveGhost;
+        public final ForgeConfigSpec.DoubleValue caveLavaClearance;
+        public final ForgeConfigSpec.DoubleValue caveCeilingSlack;
+        public final ForgeConfigSpec.DoubleValue caveAttackHeight;
+        public final ForgeConfigSpec.DoubleValue caveStandoffFactor;
+        public final ForgeConfigSpec.BooleanValue caveHoldBreath;
+
+        public final ForgeConfigSpec.BooleanValue crystalGuard;
+        public final ForgeConfigSpec.BooleanValue crystalExplosionImmune;
+        public final ForgeConfigSpec.DoubleValue crystalArmorPerCrystal;
+        public final ForgeConfigSpec.DoubleValue crystalArmorCap;
+        public final ForgeConfigSpec.DoubleValue crystalToughnessPerCrystal;
+        public final ForgeConfigSpec.DoubleValue crystalToughnessCap;
+
+        public final ForgeConfigSpec.DoubleValue breathOrbitBank;
+        public final ForgeConfigSpec.BooleanValue pathEnabled;
+        public final ForgeConfigSpec.DoubleValue pathRepathTicks;
+        public final ForgeConfigSpec.BooleanValue pathBodyClearance;
+        public final ForgeConfigSpec.DoubleValue pathBodyMargin;
+        public final ForgeConfigSpec.DoubleValue pathLavaMargin;
+        public final ForgeConfigSpec.DoubleValue pathSmoothingLookahead;
+        public final ForgeConfigSpec.BooleanValue flightLog;
+        public final ForgeConfigSpec.BooleanValue pathLog;
+        public final ForgeConfigSpec.BooleanValue flowingFluidIsFloor;
+        public final ForgeConfigSpec.DoubleValue breathOrbitSpeed;
+
         Common(ForgeConfigSpec.Builder builder) {
+            this.flowingFluidIsFloor = builder
+                    .comment("流水（瀑布/水渠）算不算支撑面（默认 false = 忽略，只认静水）",
+                            "开着时龙会顺着瀑布往上爬 —— 真机反馈『冲不过瀑布 / 在瀑布里抽搐』",
+                            "注意：流动岩浆永远算支撑面（岩浆不能像流水一样忽略）")
+                    .define("flowingFluidIsFloor", false);
+            builder.comment("末地水晶：治疗光束 + 护盾（附近每块存活水晶给龙加护甲/韧性）").push("crystal");
+            this.crystalExplosionImmune = builder
+                    .comment("免疫末地水晶自爆（默认 false，和原版末影龙一致：水晶自爆会对龙造成伤害）",
+                            "只针对 EndCrystal 作为直接来源的爆炸；TNT/苦力怕/火球仍然正常结算，",
+                            "打开后也不会和爆炸免疫/海绵升级冲突，但水晶会变成纯增益")
+                    .define("explosionImmune", false);
+            this.crystalGuard = builder
+                    .comment("水晶护盾总开关（默认 true）",
+                            "附近每有一块存活水晶，给龙加 crystal.armorPerCrystal 点护甲、crystal.toughnessPerCrystal 点韧性；",
+                            "水晶被拆掉后 1 秒内自动回落到原值")
+                    .define("guard", true);
+            this.crystalArmorPerCrystal = builder
+                    .comment("每块水晶提供的护甲（默认 4）")
+                    .defineInRange("armorPerCrystal", 4.0D, 0.0D, 30.0D);
+            this.crystalArmorCap = builder
+                    .comment("水晶护盾的护甲上限（默认 16）")
+                    .defineInRange("armorCap", 16.0D, 0.0D, 60.0D);
+            this.crystalToughnessPerCrystal = builder
+                    .comment("每块水晶提供的护甲韧性（默认 2）")
+                    .defineInRange("toughnessPerCrystal", 2.0D, 0.0D, 20.0D);
+            this.crystalToughnessCap = builder
+                    .comment("水晶护盾的韧性上限（默认 8）")
+                    .defineInRange("toughnessCap", 8.0D, 0.0D, 40.0D);
+            builder.pop();
             builder.comment("龙息（唯一没有冷却的常态攻击）").push("breath");
             this.breathDiminishing = builder
-                    .comment("同一次龙息里，对同一个目标的后续命中是否递减伤害",
-                            "一次龙息 60 tick、每 10 tick 结算一次 = 单体 6 跳；不开递减时单体总量约 2.1 倍攻击力")
-                    .define("diminishing", true);
+                    .comment("同一次龙息里，对同一个目标的后续命中是否递减伤害（默认 false）",
+                            "默认关：护甲高的整合包里递减会让总伤害低到没意义；需要时再打开",
+                            "开着时一次龙息单体总量约 1.05 倍攻击力；关着时约 2.1 倍")
+                    .define("diminishing", false);
+            this.breathDamageMultiplier = builder
+                    .comment("龙息基值倍率（默认 1.0，0.25~8）",
+                            "护甲会把每跳伤害吃掉很多，用这个直接补，不需要改代码")
+                    .defineInRange("damageMultiplier", 1.0D, 0.25D, 8.0D);
             this.breathDiminishingStep = builder
                     .comment("每多命中一次，伤害倍率下降多少（0.25 = 第二跳 75%、第三跳 50%…）")
                     .defineInRange("diminishingStep", 0.25D, 0.0D, 1.0D);
             this.breathDiminishingMin = builder
                     .comment("递减的下限倍率（0.25 = 再怎么挨打也保留 25% 伤害）")
                     .defineInRange("diminishingMin", 0.25D, 0.0D, 1.0D);
+            this.breathOrbitBank = builder
+                    .comment("绕圈喷息时的倾斜角（度，默认 20）；0 = 不压弯",
+                            "脚本圆决定位置，这个角度只决定机身往圆心内倾多少；正负由绕行方向自动决定")
+                    .defineInRange("orbitBank", 20.0D, 0.0D, 60.0D);
+            this.breathOrbitSpeed = builder
+                    .comment("平原龙息转圈的线速度（格/tick，基准值，再乘速度倍率），默认 0.55",
+                            "角速度 = 线速度 / 绕圈半径；调大转得更急")
+                    .defineInRange("orbitSpeed", 0.55D, 0.05D, 3.0D);
             builder.pop();
 
             builder.comment("骑乘").push("mount");
@@ -284,9 +604,105 @@ public final class DragonGolemConfig {
                             "只放宽最大生命：护甲上限放宽没有实际收益（原版内部封顶 80% 减伤），其余属性离上限都很远",
                             "装了真正的 AttributeFix 也不冲突（只升不降）；不想动原版上限就设 false")
                     .define("maxHealthCapFix", true);
+            this.upgradeSlots = builder
+                    .comment("龙的升级槽数量（默认 5 = 每个部件一槽）",
+                            "和本家的 largeGolemSlot / humanoidGolemSlot / dogGolemSlot 是同一类东西")
+                    .defineInRange("upgradeSlots", 5.0D, 0.0D, 100.0D);
+
             this.maxHealthCap = builder
                     .comment("内置属性修复时最大生命的上限值")
                     .defineInRange("maxHealthCap", 100000.0D, 1024.0D, 100000000.0D);
+            builder.pop();
+
+            builder.comment("寻路（体型感知 + 自算航点）").push("pathfinding");
+            this.pathEnabled = builder
+                    .comment("寻路总开关（默认 true）；关掉退回『直飞目标』",
+                            "直飞路径干净时不会跑 A*；幽灵模式也不跑 A*；单 tick 搜索次数与节点数都有硬上限")
+                    .define("enabled", true);
+            this.pathRepathTicks = builder
+                    .comment("每隔多少 tick 重算路线（默认 20 = 每秒最多一次；代码会把小于 20 的值夹到 20）")
+                    .defineInRange("repathTicks", 20.0D, 4.0D, 200.0D);
+            this.pathBodyClearance = builder
+                    .comment("寻路节点是否按『整条龙的身体盒子』判定（默认 true）",
+                            "原版飞行评估器只看方块格、不看实体尺寸，2.6 格宽的龙会被规划进 1 格缝")
+                    .define("bodyClearance", true);
+            this.pathBodyMargin = builder
+                    .comment("寻路节点给身体留的额外余量（格，默认 0.6）")
+                    .defineInRange("bodyMargin", 0.60D, 0.0D, 2.0D);
+            this.pathLavaMargin = builder
+                    .comment("寻路节点与岩浆额外保持的距离（格，默认 0.6）",
+                            "岩浆没有碰撞箱，只按身体盒判定会贴着液面走；这个余量让航点离岩浆更远")
+                    .defineInRange("lavaMargin", 0.60D, 0.0D, 4.0D);
+            this.pathSmoothingLookahead = builder
+                    .comment("路线拉直的前瞻节点数（默认 6；0 = 关闭）")
+                    .defineInRange("smoothingLookahead", 6.0D, 0.0D, 24.0D);
+            builder.pop();
+
+            builder.comment("诊断").push("debug");
+            this.flightLog = builder
+                    .comment("移动/寻路诊断日志（默认 false）")
+                    .define("flightLog", false);
+            this.pathLog = builder
+                    .comment("航线诊断日志 [path]（默认 true：排查『不绕柱子 / 判定能过其实进不去』必看）")
+                    .define("pathLog", true);
+            builder.pop();
+            builder.comment("洞穴模式（狭小场地：废弃工厂 / 矿洞 / 室内）").push("cave");
+            this.caveEnabled = builder
+                    .comment("洞穴模式总开关（默认开）",
+                            "关掉 = 完全恢复 0.4 的开阔地行为（绕圈喷息、照常抽俯冲）")
+                    .define("enabled", true);
+            this.caveCeilingRoom = builder
+                    .comment("头顶可用空间小于这个值就算洞穴（格）",
+                            "0.4 的绕圈半径 1 倍体型约 22 格；天花板低于 14 格时绕圈必然贴顶")
+                    .defineInRange("ceilingRoom", 14.0D, 0.0D, 128.0D);
+            this.caveSideRoomFactor = builder
+                    .comment("水平净空小于『绕圈半径 × 这个系数』也算洞穴（默认 0.9）",
+                            "净空取 8 个方向『整条龙塞得下』的最远距离的中位数，贴一面墙不会误判")
+                    .defineInRange("sideRoomFactor", 0.9D, 0.0D, 4.0D);
+            this.caveNoDive = builder
+                    .comment("洞穴里不抽俯冲（默认开）")
+                    .define("noDive", true);
+            this.caveDash = builder
+                    .comment("洞穴里俯冲改成『冲刺』（默认开）",
+                            "不做『飞到目标后方 16 格 + 爬 12 格高』的前摇，直接从当前位置朝目标方向冲")
+                    .define("caveDash", false);
+            this.caveGuidedDamage = builder
+                    .comment("洞穴『引导式喷息』（默认 true）",
+                            "洞里塞不下/穿模都是必然，所以命中不再依赖喷流几何：只要射程内 + 同层，每 10 tick 结算一跳")
+                    .define("guidedDamage", false);
+            this.caveGuideRange = builder
+                    .comment("引导喷息的射程（格，默认 24）")
+                    .defineInRange("guideRange", 24.0D, 4.0D, 48.0D);
+            this.caveGuideYTolerance = builder
+                    .comment("引导喷息允许的高度差（默认 8）")
+                    .defineInRange("guideYTolerance", 8.0D, 1.0D, 32.0D);
+            this.caveAttackHeight = builder
+                    .comment("喷息时保持在目标上方多少格（默认 4.0）",
+                            "地面近战够不到这个高度；它先在下方爬升，再开火")
+                    .defineInRange("attackHeight", 4.0D, 0.0D, 16.0D);
+            this.caveCeilingSlack = builder
+                    .comment("天花板余量（默认 1.5 格）",
+                            "幽灵模式允许探头到天花板之上一点；调大 = 更容易被近战够到但不会飞出房间")
+                    .defineInRange("ceilingSlack", 1.5D, 0.0D, 6.0D);
+            this.caveStandoffFactor = builder
+                    .comment("站位倍率（默认 1.0，越大站得越远）")
+                    .defineInRange("standoffFactor", 1.0D, 0.5D, 3.0D);
+            this.caveDodge = builder
+                    .comment("洞穴闪避（默认 true）",
+                            "投射物朝它飞来、或刚挨近战 → 侧向脱离 8 tick；只挑『整条龙塞得下』的方向，塞不下就不闪")
+                    .define("dodge", true);
+            this.caveGhost = builder
+                    .comment("洞穴里允许 AI 走『幽灵模式』（noPhysics，直接穿墙；默认 true）",
+                            "只在没有骑手、且洞穴判定成立时生效；幽灵状态下移动不再走 A*，也不会因为『没路线』站桩",
+                            "关掉则交回飞行辅助的自动脱困 / 常驻幽灵")
+                    .define("ghost", true);
+            this.caveLavaClearance = builder
+                    .comment("洞穴战斗时脚底离岩浆液面至少留多少格（默认 3.0）",
+                            "水体只保留 1.5 格兜底；岩浆要更宽，避免模型翅膀/尾巴蹭进液面")
+                    .defineInRange("lavaClearance", 3.0D, 0.0D, 16.0D);
+            this.caveHoldBreath = builder
+                    .comment("洞穴里喷息站桩（不绕圈、不压弯，只动头；默认开）")
+                    .define("holdBreath", true);
             builder.pop();
         }
     }
