@@ -153,6 +153,7 @@ config/l2_configs/dragon_golems-common.toml
 6. **龙息逐目标遮挡**：每个候选目标单独做"嘴 → 目标"的方块射线，隔着地板/墙角的上面那只不再掉血；
 7. **命令手杖右键锁定**：新增 `DragonCommandWandHandler`，右键敌人可让范围内的龙锁定它
    （之前本家把龙当自己的傀儡处理，根本不会调 `resetTarget`）；
+   **创造模式右键敌对傀儡仍然交还本家**，打开装备栏/轮盘，不会被误当成标记目标；
 8. **水晶治疗光束**：把水晶的 `beamTarget` 指到龙身上，交给原版 `EndCrystalRenderer` 画
    `end_crystal_beam.png`；带视线门控，龙躲到墙后 0.2 秒内收掉；读档后清理旧 beamTarget；
    **不再叠加任何 `END_ROD` 粒子**（之前卡顿追帧会堆成满房间白色星点）；

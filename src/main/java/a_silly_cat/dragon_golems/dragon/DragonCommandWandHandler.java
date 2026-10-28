@@ -79,6 +79,14 @@ public final class DragonCommandWandHandler {
         if (living instanceof OwnableEntity ownable && ownable.getOwner() == player) {
             return;
         }
+        // ★ 创造模式例外：本家对创造玩家放行 canWandModify，右键敌对傀儡是
+        //   “打开装备栏/轮盘”，不是“标记敌人”。这里必须交还给本家，
+        //   否则我们的兜底会把傀儡地牢里的敌对傀儡也当成标记目标。
+        if (player.isCreative()
+                && living instanceof AbstractGolemEntity<?, ?> golem
+                && golem.canWandModify(player)) {
+            return;
+        }
         // 客户端只回成功，真正的扫描/写 forcedTarget 在服务端
         if (player.level().isClientSide()) {
             event.setCancellationResult(InteractionResult.SUCCESS);
