@@ -49,7 +49,7 @@ public class DragonGolemModel extends HierarchicalModel<DragonGolemEntity>
      * 整体缩放。原版龙模型是像素单位，直接放会偏小，这里放大到傀儡体型。
      *
      * <p>它只影响"模型"这一层：判定箱由 {@code DragonGolemItems} 的
-     * {@code .sized(2.4F, 2.6F)} 决定，再乘本家 {@code getScale()}
+     * {@code .sized(2.6F, 2.2F)} 决定，再乘本家 {@code getScale()}
      * （= GOLEM_SIZE / 默认 GOLEM_SIZE，见 {@code DragonGolemEntity.createAttributes} 的注释）。
      * 所以想让龙看起来小一点就调这里，想让它的碰撞箱一起变小就调 {@code sized(...)}。
      */
@@ -417,7 +417,7 @@ public class DragonGolemModel extends HierarchicalModel<DragonGolemEntity>
         float yaw = (float) Math.toRadians(Mth.clamp(netHeadYawDeg, -60.0F, 60.0F));
         float pitch = (float) Math.toRadians(Mth.clamp(headPitchDeg, -40.0F, 40.0F)) * 0.5F;
         // 前颈起点（模型像素，模型空间里 +y 是"向下"）。这是整条脖子+头的动画基准高度，不要拿它
-        // 去对判定箱：判定箱的高度换算见 DragonGolemEntity.partUp()（那里要把 MODEL_LIFT 和
+        // 去对判定箱：判定箱的高度换算见 DragonGolemEntity.rotateAndLift() / placePart()（那里要把 MODEL_LIFT 和
         // 本家渲染器的 translate(0,-1.501,0) 一起算进去）。
         float x = 0.0F;
         float y = NECK_BASE_Y_PX;
@@ -548,6 +548,194 @@ public class DragonGolemModel extends HierarchicalModel<DragonGolemEntity>
             this.neck.zRot = 0.0F;
             this.neck.render(pose, vc, light, overlay, r, g, b, a);
         }
+    }
+
+    // ---- 挂在模型上的 RenderLayer（披风/背旗）用的挂点 ----
+
+    /**
+     * 把姿势栈推到"世界渲染时模型根"的位置。
+     *
+     * <p>和 {@link #renderToBufferInternal} 的<b>实体</b>分支完全同一套变换
+     * （抬高 → 朝向 → 俯仰 → 侧倾 → 缩放）。任何挂在模型上的 RenderLayer 都必须先调它，
+     * 否则画出来的东西会按 1:1 世界比例、贴着脚，和龙差 {@link #MODEL_SCALE} 倍还差一截高度。
+     *
+     * <p>预览那两个分支（{@code previewFactor}/{@code holderPreview}）不在这里处理：
+     * 它们只用于物品图标，不会走实体 RenderLayer。
+     */
+    public void applyRootTransform(PoseStack pose) {
+        pose.translate(0.0F, -MODEL_LIFT, 0.0F);
+        pose.mulPose(Axis.YP.rotationDegrees(MODEL_YAW));
+        if (Math.abs(this.current.bodyPitch) > 0.05F) {
+            pose.mulPose(Axis.XP.rotationDegrees(BODY_PITCH_SIGN * this.current.bodyPitch));
+        }
+        if (Math.abs(this.current.bodyRoll) > 0.05F) {
+            pose.mulPose(Axis.ZP.rotationDegrees(BODY_ROLL_SIGN * this.current.bodyRoll));
+        }
+        pose.scale(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
+    }
+
+    /**
+     * 从模型根推到"背脊挂点"：body 部件中心 → 再往上抬 {@code upPx} 像素 → 往尾巴方向挪
+     * {@code backPx} 像素。
+     *
+     * <p>坐标单位是模型像素（1 格 = 16），内部除以 16 交给 PoseStack。
+     * 挂点在模型空间里，所以龙俯仰/侧倾/拍翅时披风会自动跟着动，不需要另外取样实体姿态。
+     *
+     * <p>{@code upPx} 的量级参考：body 盒子是 24×24×48，顶面在枢轴上方 12 像素，
+     * 所以 12~16 正好落在背脊顶面；再大就浮空，再小会陷进身体。
+     */
+    public void translateToBackAnchor(PoseStack pose, float upPx, float backPx) {
+        this.translateToBodyAnchor(pose);
+        pose.translate(0.0F, -upPx / 16.0F, backPx / 16.0F);
+    }
+
+    /**
+     * 从模型根推到"躯干"（body 组件本身）。
+     *
+     * <p>给装甲/装饰层用：先 {@link #applyRootTransform}，再调它，就站在 body 的枢轴上，
+     * 之后按模型像素（除以 16）往里挪即可。body 的枢轴是 (0, 4, 8)、盒子 24×24×64。
+     */
+    public void translateToBodyAnchor(PoseStack pose) {
+        this.body.setPos(0.0F, 4.0F, 8.0F);
+        this.body.translateAndRotate(pose);
+    }
+
+    /**
+     * 从模型根推到头部（head 组件；下颌是它的子部件，会一起动）。
+     *
+     * <p>头部每帧都会被 {@code pose()} 用 {@code setPos(headX/Y/Z)} 挪到脖子末端，
+     * 这里重复设一次，保证装甲层单独调用时也与模型一致。
+     */
+    public void translateToHeadAnchor(PoseStack pose) {
+        this.head.setPos(this.headX, this.headY, this.headZ);
+        this.head.translateAndRotate(pose);
+    }
+
+    /** 从模型根推到某只翅膀的翼根：{@code left=true} 左翼、{@code false} 右翼。 */
+    public void translateToWingAnchor(PoseStack pose, boolean left) {
+        (left ? this.leftWing : this.rightWing).translateAndRotate(pose);
+    }
+
+    /**
+     * 从模型根推到某条腿的枢轴。
+     *
+     * @param index 0 = 左前、1 = 右前、2 = 左后、3 = 右后
+     */
+    public void translateToLegAnchor(PoseStack pose, int index) {
+        switch (Math.floorMod(index, 4)) {
+            case 0 -> this.leftFrontLeg.translateAndRotate(pose);
+            case 1 -> this.rightFrontLeg.translateAndRotate(pose);
+            case 2 -> this.leftRearLeg.translateAndRotate(pose);
+            default -> this.rightRearLeg.translateAndRotate(pose);
+        }
+    }
+
+    /**
+     * 从模型根推到第 {@code index} 段前颈（0 = 最靠近身体的那段）。
+     *
+     * <p>前颈/尾巴不是独立的 {@code ModelPart}——它们是同一个 {@code neck} 部件逐段摆出来的。
+     * 这里不改那个共享部件，直接按 {@code frontSeg[index]} 的 {x,y,z,yRot,xRot} 复刻
+     * {@code ModelPart.translateAndRotate} 的顺序（平移 → Z → Y → X）。
+     */
+    public void translateToNeckAnchor(PoseStack pose, int index) {
+        translateToSegment(pose, this.frontSeg, index);
+    }
+
+    /** 同 {@link #translateToNeckAnchor}，但取尾巴段（0 = 最靠近身体的那段）。 */
+    public void translateToTailAnchor(PoseStack pose, int index) {
+        translateToSegment(pose, this.tailSeg, index);
+    }
+
+    private static void translateToSegment(PoseStack pose, float[][] segments, int index) {
+        if (segments.length == 0) {
+            return;
+        }
+        float[] seg = segments[Math.floorMod(index, segments.length)];
+        pose.translate(seg[0] / 16.0F, seg[1] / 16.0F, seg[2] / 16.0F);
+        pose.mulPose(Axis.YP.rotation(seg[3]));
+        pose.mulPose(Axis.XP.rotation(seg[4]));
+    }
+
+    // ---- 龙铠 ----
+
+    /**
+     * 把当前姿势拷到龙铠模型上。
+     *
+     * <p>两套模型的骨骼是同一副（末影龙网格 + 装甲板），差别只在脖子/尾巴：
+     * 本体是"一个 neck 部件逐段绝对摆位"，龙铠是"neck→neck2→…"的<b>嵌套链</b>。
+     * 所以这里对链上的子骨给的是<b>相对旋转</b>（后一段角减前一段角），根骨给绝对位置/角度；
+     * 其余部位（头、下颌、翅膀、四条腿）直接抄本体的角度。
+     *
+     * <p>尾巴根不抄 {@code tailSeg} 的 yaw（本体那是 π，用来让 12 段往 +Z 走）；
+     * 龙铠的链本身就是 +Z、每段偏移 +10，所以 yaw 保持 0，只抄 pitch（摆动）。
+     */
+    public void applyArmorPose(DragonArmorModel armor) {
+        // 前颈：根绝对摆位，后面按段给相对角
+        float[] s0 = this.frontSeg[0];
+        armor.neck.setPos(s0[0], s0[1], s0[2]);
+        armor.neck.yRot = s0[3];
+        armor.neck.xRot = s0[4];
+        armor.neck.zRot = 0.0F;
+        for (int i = 1; i < FRONT_NECK; i++) {
+            ModelPart seg = armor.neckChain[i];
+            seg.setPos(0.0F, 0.0F, -NECK_STEP);
+            seg.yRot = this.frontSeg[i][3] - this.frontSeg[i - 1][3];
+            seg.xRot = this.frontSeg[i][4] - this.frontSeg[i - 1][4];
+            seg.zRot = 0.0F;
+        }
+        // 头是 neck5 的子骨：世界角 = 头的绝对角 → 局部角 = 头角 - 第 5 段角
+        armor.head.setPos(0.0F, 0.0F, -NECK_STEP);
+        armor.head.yRot = this.head.yRot - this.frontSeg[FRONT_NECK - 1][3];
+        armor.head.xRot = this.head.xRot - this.frontSeg[FRONT_NECK - 1][4];
+        armor.head.zRot = 0.0F;
+        if (armor.jaw != null && this.jaw != null) {
+            armor.jaw.xRot = this.jaw.xRot;
+        }
+
+        // 翅膀：wing = 右翼（-12）、wing1 = 左翼（+12）
+        copyRot(this.rightWing, armor.wing);
+        copyRot(this.leftWing, armor.wing1);
+        armor.wingtip.zRot = this.rightWing.getChild("right_wing_tip").zRot;
+        armor.wingtip1.zRot = this.leftWing.getChild("left_wing_tip").zRot;
+
+        // 四条腿：frontleg = 右前、frontleg1 = 左前、rearleg = 右后、rearleg1 = 左后
+        copyLeg(this.rightFrontLeg, this.rightFrontTip, this.rightFrontFoot,
+                armor.frontleg, armor.frontlegtip, armor.frontfoot);
+        copyLeg(this.leftFrontLeg, this.leftFrontTip, this.leftFrontFoot,
+                armor.frontleg1, armor.frontlegtip1, armor.frontfoot1);
+        copyLeg(this.rightRearLeg, this.rightRearTip, this.rightRearFoot,
+                armor.rearleg, armor.rearlegtip, armor.rearfoot);
+        copyLeg(this.leftRearLeg, this.leftRearTip, this.leftRearFoot,
+                armor.rearleg1, armor.rearlegtip1, armor.rearfoot1);
+
+        // 尾巴：根只抄 pitch（链本身朝 +Z），子段给相对 pitch。
+        // 注意 xRot 取负：导出模型的尾链子骨偏移是 +10（朝 +Z），旋转 +pitch 会把下一段往上抬；
+        // 本体的 tailSeg 是"y += sin(pitch)*10"，所以要反号，装甲尾骨的走向才和本体尾巴重合。
+        float[] t0 = this.tailSeg[0];
+        armor.tail.setPos(t0[0], t0[1], t0[2]);
+        armor.tail.yRot = 0.0F;
+        armor.tail.xRot = -t0[4];
+        armor.tail.zRot = 0.0F;
+        for (int j = 1; j < TAIL; j++) {
+            ModelPart seg = armor.tailChain[j];
+            seg.setPos(0.0F, 0.0F, NECK_STEP);
+            seg.yRot = 0.0F;
+            seg.xRot = -(this.tailSeg[j][4] - this.tailSeg[j - 1][4]);
+            seg.zRot = 0.0F;
+        }
+    }
+
+    private static void copyRot(ModelPart from, ModelPart to) {
+        to.xRot = from.xRot;
+        to.yRot = from.yRot;
+        to.zRot = from.zRot;
+    }
+
+    private static void copyLeg(ModelPart baseLeg, ModelPart baseTip, ModelPart baseFoot,
+                                ModelPart leg, ModelPart tip, ModelPart foot) {
+        copyRot(baseLeg, leg);
+        copyRot(baseTip, tip);
+        copyRot(baseFoot, foot);
     }
 
     // ---- 预览摆位实测（背包 / 手持 / 展示框）----

@@ -10,7 +10,7 @@
 | 成品 + 修复材料 → 满耐久成品 | 铁砧 | 同上（遍历所有 `GolemType`，含龙） |
 | 成品 + 升级物品 | 铁砧 | 同上（`UpgradeItem.LIST` × 所有 `GolemType`，含龙） |
 
-依据（对着 `modulargolems-2.7.3.jar` 与 sources 核过）：
+依据（对着 `modulargolems-2.7.5.jar` 与 2.7.5+3 构建核过）：
 
 - `dev.xkmc.modulargolems.compat.jei.GolemJEIPlugin#registerRecipes` →
   `addPartCraftRecipes` / `addRepairRecipes` / `addUpgradeRecipes` → `registration.addRecipes(RecipeTypes.ANVIL, ...)`
@@ -18,13 +18,13 @@
   `getCraftingCategory().addCategoryExtension(GolemAssembleRecipe.class, GolemAssemblyExtension::new)`
   （按**类**注册，所以任何 mod 的 `golem_assemble` 配方都吃到这套展开逻辑）
 - `GolemPart.LIST` 是全局静态列表，`GolemPart` 构造时就把自己加进去；我们的 5 个部件走的是同一个构造函数
-- `GolemMaterialConfig.getAllMaterials()` 合并所有数据包里 `modulargolems_config/materials/*.json` 的材料，
-  我们的 `data/dragon_golems/modulargolems_config/materials/dragon.json` 在里面
+- `GolemMaterialConfig.getAllMaterials()` 合并所有数据包里 `modulargolems_config/materials/*.json` 的材料；
+  龙没有新增材料条目，而是用 `parts/dragon.json` 的 `filters` / `templates` 把龙部件接入本家材料表
 - 装配配方为什么算"工作台"：l2library 的 `AbstractShapedRecipe extends ShapedRecipe`，
   `getType()` 就是 `minecraft:crafting`
 
-**所以部件的铁砧页连"要几个材料"都是自动算对的**（本家用 `GolemPart.count` 生成材料数量，
-五个部件现在都是 64 = 一组）。
+**所以部件的铁砧页连"要几个材料"都是自动算对的**（本家用 `GolemPart.count` 生成材料数量；
+龙的五个部件读 `craft.partMaterialCost`，默认 64，可在 9~64 之间配置）。
 
 ## 二、我们加了什么
 
@@ -33,7 +33,7 @@
 
 - 胚料：怎么在切石机里切成五个部件。
 - 部件：铁砧上怎么铸材料、一次要给够几个、本模组材料只允许装在龙部件上、属性公式、本部件的权重。
-- 成品：装配图案 `H / LBR / G`、装备界面是犬型两格、放出来离地 3 格悬停。
+- 成品：装配图案 `W / HBT / L`、装备界面七格（四件龙甲 + 旗帜/皮肤/巡逻手册）、放出来离地 3 格悬停。
 
 一个容易踩的坑：**部件的说明页要按材料变体登记**。本家给 `GolemPart.LIST` 全体注册了 subtype 解释器
 （subtype = 材料 id），只登记"裸部件"的话，点"已经铸进铁的龙头"是翻不到说明的。
@@ -47,9 +47,9 @@
    `modulargolems:special_crafting_material` 这个标签确实能让本家跳过生成，但它在
    `CraftEventListeners.onAnvilCraft` 里同时参与玩法判断（进这个标签的材料在铁砧上直接不能用），
    **不要**拿它当 JEI 开关。
-2. **同一个部件会出现"铁锭版"和"铁块版"两页、外观一模一样**：因为本家在 `vanilla.json` 里定义的
-   `modulargolems:iron` 用的是铁锭、数值与我们 `dragon_golems:iron`（铁块）完全相同，而本家材料
-   没有 partLimitation，所以两种都能铸进龙部件。这是设计取舍（龙专属材料只锁部件、不锁数值），不是 bug。
+2. **本家铁/金/铜/下界合金/幽匿材料没有 `partLimitation` 时，会自动出现在我们的龙部件页上**：
+   龙用的是本家材料键（`modulargolems:iron` 等），没有独立的 `dragon_golems:iron`；
+   所以铁锭版和铁块版这种“双份”只会在整合包自己另加材料时出现，不是本模组自带行为。
 
 ## 四、以后想扩展
 

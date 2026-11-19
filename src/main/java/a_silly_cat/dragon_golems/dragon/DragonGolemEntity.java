@@ -18,6 +18,7 @@ import dev.xkmc.modulargolems.content.entity.mode.GolemModes;
 import dev.xkmc.modulargolems.content.item.upgrade.IUpgradeItem;
 import dev.xkmc.modulargolems.content.modifier.base.GolemModifier;
 import dev.xkmc.modulargolems.content.modifier.special.BaseRangedAttackGoal;
+import dev.xkmc.modulargolems.content.modifier.special.ChargeHelper;
 import dev.xkmc.modulargolems.content.modifier.special.EarthquakeHelper;
 import dev.xkmc.modulargolems.content.modifier.special.SonicAttackGoal;
 import dev.xkmc.modulargolems.init.registrate.GolemTypes;
@@ -36,6 +37,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.tags.FluidTags;
@@ -2100,6 +2102,31 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         return this.riderCombat || super.canBeSeenAsEnemy();
     }
 
+    /**
+     * 死亡音效。
+     *
+     * <p><b>必须非空</b>：原版 {@code LivingEntity.getDeathSound()} 默认返回 {@code null}，
+     * 而有些模组会直接 {@code Objects.requireNonNull(entity.getDeathSound())} 再播放——
+     * ArcaneVortex 的 {@code EntityKillerHelp.kill} 就是这么写的（它在 `132` 行附近），
+     * 龙一被它杀掉就是 NPE。本家三种傀儡也没有覆写这个方法，所以这里自己补一个。
+     */
+    @Override
+    protected SoundEvent getDeathSound() {
+        return SoundEvents.ENDER_DRAGON_DEATH;
+    }
+
+    /** 受伤音效：同样是因为原版默认 null，顺手补上，免得别的模组/附属读它时踩空。 */
+    @Override
+    protected SoundEvent getHurtSound(DamageSource source) {
+        return SoundEvents.ENDER_DRAGON_HURT;
+    }
+
+    /** 体型大，音量给足一点（原版默认 1.0）。 */
+    @Override
+    protected float getSoundVolume() {
+        return 2.0F;
+    }
+
     @Override
     protected void registerGoals() {
         super.registerGoals();
@@ -2114,6 +2141,10 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
         this.goalSelector.addGoal(2, new DragonDiveGoal(this));
         // 远程：优先级 3（低于俯冲、高于待机）。俯冲冷却那 30 秒就是它的开火窗口。
         this.goalSelector.addGoal(3, new DragonRangedGoal(this));
+        // 飞行巡逻：优先级 3，只有 ROUTE 模式、且没有战斗目标时接管。
+        // 本家的 ROUTE 推进只挂在 FollowOwnerGoal 上（已被 stripNativeGoals 摘掉），
+        // 而且要求落地/入水，所以这里自己飞、自己推进阶段（目标点会抬到飞行高度）。
+        this.goalSelector.addGoal(3, new DragonPatrolGoal(this));
         // 音爆：优先级 2，和俯冲并列 —— 都是"被骰子抽中才上"的大招。
         // 必须比远程（3）高：这一轮抽中的是音爆时，要把 MOVE 从龙息/靠拢那里抢过来。
         // 同一优先级不会打架：whose canUse() 只看 wantsSkill(自己的技能)，而 pendingSkill 只有一个值。
@@ -2988,7 +3019,9 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                     // 这两个会把 MOVE 通道占死，或者对悬停的龙没有意义，交给 DragonIdleGoal
                     || goal instanceof FollowOwnerGoal
                     || goal instanceof GolemRandomStrollGoal
-                    || (!keepSkillGoals && isForeignRangedGoal(goal))) {
+                    // 我们自己补挂的技能 goal（音波）不算"本家远程 goal"：它已经在 updateAttributes 里
+                    // 按龙的实际情况放行过，别让这里每 20 tick 的兜底把它又摘掉。
+                    || (!keepSkillGoals && isForeignRangedGoal(goal) && !this.sonicGoals.contains(goal))) {
                 this.goalSelector.removeGoal(goal);
             }
         }
@@ -3372,22 +3405,38 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
      * 两者都尊重各自 modifier 的冷却。
      *
      * @param target 这一下撞到的目标（触发一次即可，调用方负责"一轮只调一次"）
-     * @return 这一下有没有真的放出地震 / 跳劈
+     * @return 这一下有没有真的放出地震 / 跳劈 / 冲锋
      */
     public boolean triggerMeleeUpgradesOnDive(LivingEntity target) {
         if (this.level().isClientSide() || !DragonGolemConfig.diveTriggersMelee() || target == null) {
             return false;
         }
+        boolean fired = false;
         EarthquakeHelper.Instance instance = EarthquakeHelper.findInstance(this, target, this.distanceToSqr(target));
         if (instance == null && this.getPassengers().isEmpty()) {
             instance = EarthquakeHelper.findMountInstance(this);
         }
-        if (instance == null) {
-            return false;
+        if (instance != null) {
+            instance.modifier().performEarthQuake(this, instance.lv());
+            instance.addCD();
+            fired = true;
         }
-        instance.modifier().performEarthQuake(this, instance.lv());
-        instance.addCD();
-        return true;
+        // 冲锋族（ChargeHelper.Modifier：Ignis / Harbinger / Maledictus / 远古遗魂 / Scylla…）：
+        // 本家只在"冲过去撞人"的 BaseChargeGoal 里触发，龙飞在天上没有地面支撑，goal 永远不会放。
+        // 这里把俯冲当作冲锋：不跑冲锋自己的动作（不播冲锋音效/粒子、不 setCharging、不做冲刺位移），
+        // 只把"撞到目标"这一下的伤害和命中附加效果打出去 —— 俯冲本身仍是龙自己的动作。
+        ChargeHelper.Instance charge = ChargeHelper.findInstance(this);
+        if (charge != null && charge.modifier().canCharge(this, charge.lv())) {
+            float damage = charge.modifier().chargeDamage(charge, target);
+            boolean hurt = damage > 0.0F
+                    && this.dealSkillDamage(target, this.damageSources().mobAttack(this), damage, 0.0D);
+            if (hurt) {
+                charge.modifier().onChargeTouch(charge, target);
+            }
+            charge.addCD();
+            fired = true;
+        }
+        return fired;
     }
 
     /**
@@ -4115,7 +4164,7 @@ public class DragonGolemEntity extends SweepGolemEntity<DragonGolemEntity, Drago
                 .add(ForgeMod.ENTITY_REACH.get(), 1.5D)
                 .add(GolemTypes.GOLEM_JUMP.get(), 0.5D)
                 // 尺寸基准档位：5。判定箱与模型在 size = 5 时就是"一倍"，
-                // 也就是 DragonGolemItems 里 .sized(2.4F, 2.6F) 与 DragonGolemModel 的 MODEL_SCALE。
+                // 也就是 DragonGolemItems 里 .sized(2.6F, 2.2F) 与 DragonGolemModel 的 MODEL_SCALE。
                 .add(GolemTypes.GOLEM_SIZE.get(), 5.0D)
                 // 必须有这一条：本家 SweepGolemEntity.performRangedDamage 第一行就读
                 // getAttributeValue(GOLEM_SWEEP)，属性表里没有它会直接抛

@@ -38,5 +38,10 @@
   },
   "magnifiers": {
     "dragon_golems:dragon_golem": {}
+  },
+  "templates": {
+    "dragon_golems:dragon_golem": {
+      "item": "dragon_golems:dragon_golem_template"
+    }
   }
 }

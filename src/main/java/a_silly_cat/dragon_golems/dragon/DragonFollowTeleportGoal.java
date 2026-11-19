@@ -1,5 +1,7 @@
 package a_silly_cat.dragon_golems.dragon;
 
+import dev.xkmc.modulargolems.content.capability.PathConfig;
+import dev.xkmc.modulargolems.content.entity.mode.GolemModes;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.ai.goal.Goal;
@@ -79,6 +81,16 @@ public class DragonFollowTeleportGoal extends Goal {
         }
         if (this.dragon.getControllingPassenger() instanceof Player) {
             return false;
+        }
+        // ★ 巡逻（ROUTE）时"家"是路线点，不是主人：这个 goal 会把龙传送回主人身边，
+        //   路线一长就会把巡逻打断。路线本身由 DragonPatrolGoal 负责飞过去；
+        //   哪个点实在到不了，它会超时跳点，不需要回主人重新出发。
+        //   注意只在"真的有路线"时让路：ROUTE 模式下没放手册时保持原来的回位行为。
+        if (this.dragon.getMode() == GolemModes.ROUTE && !this.dragon.isFreeWander()) {
+            var path = PathConfig.getPath(this.dragon);
+            if (path != null && !path.isEmpty()) {
+                return false;
+            }
         }
         // ★ 骑手冲锋（按 R）期间绝不回位：那几秒龙"离开主人"正是设计要求的。
         //   必须用这个明确的标志，不能只靠下面那条 DIVE_PHASE 判断 ——

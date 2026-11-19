@@ -8,12 +8,13 @@ package a_silly_cat.dragon_golems.dragon;
  * 光看代码推不出来，所以留这个开关：打开后客户端发包、服务端收包、骑乘 tick
  * 都会各打一行带 {@code [ride]} 前缀的日志，直接看日志就能定位断在哪一环。
  *
- * <p><b>定位完请改回 {@code false}</b>——正式版不该刷这些日志。
+ * <p><b>默认全部关闭</b>。排查时把对应开关改成 {@code true}，定位完再改回 false；
+ * 这些日志是高频诊断，正式游玩时开着会持续刷日志。
  */
 public final class DragonDebug {
 
     /** 打开后输出 {@code [ride]} 系列日志。 */
-    public static final boolean RIDE = true;
+    public static final boolean RIDE = false;
 
     /**
      * 打开后，每次 {@code updateAttributes} 都打一行 {@code [render]}：<b>服务端 / 客户端各自的
@@ -24,17 +25,19 @@ public final class DragonDebug {
      * {@code writeSpawnData / readSpawnData} → {@code updateAttributes} 填出来的，
      * <b>不走</b> {@code SynchedEntityData}。两行日志一比就知道是"客户端表里没有"还是"表里有但画不出来"。
      *
-     * <p><b>定位完请改回 {@code false}</b>。
+     * <p><b>默认关闭</b>；排查时再打开。
      */
-    public static final boolean RENDER = true;
+    public static final boolean RENDER = false;
 
     /**
      * 打开后，数据包每次重载完都会打一行 {@code [dragon_bodies]}：合并后的身体主题表里有哪几条。
      *
      * <p>整合包作者加完 {@code modulargolems_config/dragon_bodies/*.json} 之后，看这行就知道
      * 自己的条目有没有被读进来、有没有被别的包顶掉。
+     *
+     * <p><b>默认关闭</b>；排查数据包时再打开。
      */
-    public static final boolean CONFIG = true;
+    public static final boolean CONFIG = false;
 
     private DragonDebug() {
     }

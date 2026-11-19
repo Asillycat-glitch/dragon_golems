@@ -8,7 +8,7 @@
 | 依赖 | 用途 |
 |---|---|
 | Minecraft 1.20.1 + Forge 47.x | |
-| `modulargolems` ≥ 2.7.3 | `GolemType` / `GolemPart` / `AbstractGolemRenderer` / `SweepGolemEntity` / `EquipmentsMenu` / `modulargolems` 标签 |
+| `modulargolems` 2.7.6（目标版本；`libs/modulargolems-2.7.6.jar`） | `GolemType` / `GolemPart` / `AbstractGolemRenderer` / `SweepGolemEntity` / `EquipmentsMenu` / `modulargolems` 标签；新版装配页（`GolemAssembleMenu`）与数据包 `templates` 配置也来自这一版 |
 | `l2library` ≥ 2.5.3 | `L2Registrate`（注册入口）、`MenuLayoutConfig`（装备界面渲染） |
 
 运行时 `l2serial`、`mob_weapon_api`、`l2damagetracker` 这些由本家 jarjar 提供，不用单独装；
@@ -24,7 +24,8 @@
 | `content/config/DragonGolemConfig.java` | 纯 Forge `ForgeConfigSpec`（**不经过 l2library**），注册路径照抄本家 `MGConfig` 的 `l2_configs/<modid>-common.toml` |
 | `dragon/DragonGolemPartType.java` | 本家 `IGolemPart` / `GolemSlot`；物品预览变换要调客户端模型 |
 | `dragon/DragonGolemType.java` | 本家 `GolemType` 的菜单 / 悬浮 / 图标三个扩展点 |
-| `dragon/DragonGolemMenuControl.java` | 本家 `SweepGolemMenuControl`、`EquipmentsMenu.DOG_SLOTS` |
+| `dragon/DragonGolemMenuControl.java` | 本家 `SweepGolemMenuControl`、`EquipmentsMenu`、`GolemInvManager.View` 的 `getBannerSlot`/`getSkinSlot`/`getRouteSlot`/`getWrapperOfHand`、`MGTagGen.CURIO_SKIN`/`CURIO_PATH` |
+| `dragon/DragonGolemEquipHandler.java` | 本家 `GolemEquipItemEvent`、`IGolemEquipmentItem`（只补本家漏掉的龙甲 `isFor` 分支） |
 | `client/DragonGolemModel.java` | 本家 `IGolemModel`、原版末影龙网格（`ModelLayers.ENDER_DRAGON`） |
 | `client/DragonGolemRenderer.java` | 本家 `AbstractGolemRenderer` |
 | `client/DragonGolemScreenControl.java` | l2library `MenuLayoutConfig.ScreenRenderer`、本家 `GolemScreenControl` |

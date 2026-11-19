@@ -313,13 +313,14 @@ public final class DragonFlightAssist {
             }
         }
 
-        // noPhysics 的唯一写入口：自由飞行 / 自动脱困 / 正嵌在方块里 / 常驻幽灵。
+        // noPhysics 的飞行辅助写入口：自由飞行 / 自动脱困 / 正嵌在方块里 / 常驻幽灵。
+        // 注意它不是全模组唯一写入口：DragonGolemEntity.setFreeFlight() 和洞穴幽灵也会直接写。
         //
         // ★ 第三条是这次真机踩出来的必需品：嵌在方块里时如果 noPhysics 为 false，
         //   碰撞解算会每个 tick 把实体猛推出去（实测 dy 达到 +17~+26 格/tick），
         //   骑手的高度输入被彻底淹没 —— "骑着在矿洞里一直往上飞、Ctrl 压不下来"。
         // ★ 第四条是用户要求的策略：矿洞里反复撞墙就认账常驻穿墙，别再循环脱困。
-        //   这四条都是"穿过方块"，所以统一在这里表达，不要另开写入口。
+        //   这四条都是"穿过方块"，所以统一在这里表达。
         dragon.noPhysics = this.freeFlight || this.rescueTicks >= 0 || noRoom || this.stickyGhost;
     }
 

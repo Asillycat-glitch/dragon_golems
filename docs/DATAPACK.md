@@ -102,8 +102,8 @@ data/<你的命名空间>/modulargolems_config/dragon_bodies/<随便什么名字
 2. **粒子写错不会崩**：解析失败会打一行 `[dragon_bodies] ... 回退到 ...` 警告并退回默认粒子。
 3. **贴图路径写错也不会崩**：找不到就退回"按材料路径推"的约定，再退回基础龙贴图，并且只警告一次。
 4. **效果 id 必须真实存在**：不存在的效果会被**跳过**（只影响这一条），日志里不会额外提示。
-5. **改完 `/reload` 生效**：重载完成后日志里会有一行
-   `[dragon_bodies] 合并完成，共 N 条：...`（由 `DragonDebug.CONFIG` 控制），
+5. **改完 `/reload` 生效**：默认不打日志；把代码里的 `DragonDebug.CONFIG` 打开后，
+   重载完成会有一行 `[dragon_bodies] 合并完成，共 N 条：...`，
    一眼就能确认自己的条目有没有被读进来、有没有被顶掉。
 
 ## 七、还没做的（第二刀）
@@ -113,3 +113,42 @@ data/<你的命名空间>/modulargolems_config/dragon_bodies/<随便什么名字
 - `skills`：这条龙能用哪几个技能槽（现在"音爆大招"仍然只给幽匿身体）；
 - `grantModifier`：身体是这个材料时补挂哪条本家 modifier（现在写死 `modulargolems:sonic_boom`）；
 - `isSonicBody()` / `isNetherBody()` 这两个判断本身也会跟着数据化，届时"音波系"不再是材料 id 的硬编码。
+
+## 八、装配台胚料：把「龙胚料」登记给龙傀儡
+
+本家 2.7.6 的装配台（「制作和组装」页）顶部那个 **放入傀儡胚料** 槽，认的是**数据包**：
+
+```
+data/<命名空间>/modulargolems_config/parts/<随便什么名字>.json   ← 顶层 "templates" 字段
+```
+
+结构是「**傀儡种类 id → 胚料 Ingredient**」。本仓库在
+`data/dragon_golems/modulargolems_config/parts/dragon.json` 里登记了：
+
+```json
+"templates": {
+  "dragon_golems:dragon_golem": { "item": "dragon_golems:dragon_golem_template" }
+}
+```
+
+- 键是**傀儡种类**的注册名（`golem_type`，不是部件、也不是物品）；
+- 值是任意合法 Ingredient：`{"item": ...}`、`{"tag": ...}` 都行；
+- **没登记的种类回退到本家胚料** `modulargolems:metal_golem_template`
+  （`GolemType.isTemplate` 在 Ingredient 为空时的兜底），所以别的附属不写也能玩；
+  我们登记之后，龙**只认龙胚料**，本家胚料放进去会提示「傀儡胚料数量不足」。
+- 合并规则是**逐键覆盖**（`MAP_OVERWRITE` → `BaseConfig.overrideMap`）：同一个种类 id 只有一份生效，
+  不同种类互不影响，加自己的种类不会顶掉本家的三条。
+
+装配页里的消耗规则（`GolemAssembleMenu$ResultSlot`）：
+
+| 玩法 | 放什么 | 出什么 | 胚料消耗 |
+|---|---|---|---|
+| 单件 | 某个部件槽放 N 个材料（N = `craft.partMaterialCost`，默认 64） | 1 个该材料铸好的龙部件 | 1 个龙胚料 |
+| 整条龙 | 五个槽各放 N 个材料 | 整只巨龙傀儡（材料全部铸好） | 5 个龙胚料（= 放了材料的槽数） |
+| 用现成部件 | 五个槽放已经铸好材料的龙部件 | 整只巨龙傀儡 | **0**（等同于老的五件套装配） |
+
+> `N` 的合法范围是 9~64（上限就是原版一栈，保证一格放得下）。
+
+> 切石机那 5 条配方不受影响：1 个龙胚料仍能切出 1 个裸部件；切石机路线 + 铁砧铸材料
+> 依旧是最省胚料的走法（整条龙 1 个胚料，而装配页的材料直达是 5 个）。
+> 老的五件套配方 `assemble_holder`（W / HBT / L）也保留，原版工作台/装配页的「工作台」页仍可用。

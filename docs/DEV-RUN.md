@@ -25,7 +25,7 @@ Mixin apply failed l2library.mixins.json:AbstractArrowMixin -> net.minecraft.wor
 
 | 文件 | 为什么是它 |
 |---|---|
-| `modulargolems-2.7.3.jar` | 本家。与整合包里那份完全相同 |
+| `modulargolems-2.7.6.jar` | 本家。目标版本 2.7.6（2026-11-19 从整合包取，`libs/` 里已换成这份） |
 | `l2library-2.5.3-slim.jar` | **必须用 slim 版**。整合包里那个完整版 jarjar 了 `Registrate-MC1.20-1.3.11.jar`，会和 `build.gradle` 里 implementation 的 Registrate 撞成两个同名模块，启动直接 `ResolutionException: Module Registrate contains package com.tterrag.registrate.util.entry` |
 | `mixinextras-forge-0.2.0-beta.8.jar` | slim 版不带它，而本家/l2 的 mixin 用了 MixinExtras 的 `@WrapOperation`，缺了就 `ClassMetadataNotFoundException: ...wrapinjector.Operation`。这份是从整合包 l2library 里解出来的 |
 

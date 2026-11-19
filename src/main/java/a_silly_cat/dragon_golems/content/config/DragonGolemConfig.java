@@ -56,6 +56,25 @@ public final class DragonGolemConfig {
         Dragon_golems.LOGGER.info("[config] 配置文件：config/{}（和傀儡装配的配置放在同一个 l2_configs 目录）", path);
     }
 
+    /**
+     * 每个龙部件在铁砧 / 装配台上需要的材料数量（默认 64，范围 9~64）。
+     *
+     * <p>五个部件各自消耗这个数量，所以整条龙的铸材料消耗 = 5 × 此值；
+     * 它同时决定 JEI 铁砧页显示的数量和本家的“重铸基数”。
+     *
+     * <p><b>改完需要重启游戏</b>：这个值在物品注册时被写进 {@code GolemPart.count}，
+     * 不是每 tick 读取的运行时开关。
+     *
+     * <p><b>原版堆叠上限是 64</b>：上限也压到 64，避免配置成放不进一格的数值。
+     */
+    public static int partMaterialCost() {
+        try {
+            return Mth.clamp(COMMON.partMaterialCost.get(), 9, 64);
+        } catch (Throwable e) {
+            return 64;
+        }
+    }
+
     // ---- 龙息递减（问题：一次龙息总伤害过高）----
 
     /**
@@ -75,6 +94,8 @@ public final class DragonGolemConfig {
      *
      * <p>护甲高的整合包里，每跳固定伤害会被护甲吃掉很大一块（"伤害质量急剧下降"），
      * 靠这个倍率直接补，不需要改代码重新打包。
+     *
+     * <p><b>当前尚未接入伤害计算</b>：只有 getter，改这个值不会影响龙息。
      */
     public static double breathDamageMultiplier() {
         return Mth.clamp(num(COMMON.breathDamageMultiplier, 1.0D), 0.25D, 8.0D);
@@ -391,9 +412,9 @@ public final class DragonGolemConfig {
         return bool(COMMON.flightLog, false);
     }
 
-    /** 航线诊断日志（默认开：排查"不绕柱子 / 判定能过其实进不去"时必看）。 */
+    /** 航线/索敌诊断日志（默认关）。 */
     public static boolean pathLog() {
-        return bool(COMMON.pathLog, true);
+        return bool(COMMON.pathLog, false);
     }
 
     /** 液体判定：流水（瀑布/水渠）算不算支撑面（默认 false = 忽略，只认静水）。 */
@@ -459,6 +480,8 @@ public final class DragonGolemConfig {
         public final ForgeConfigSpec.DoubleValue breathDiminishingStep;
         public final ForgeConfigSpec.DoubleValue breathDiminishingMin;
 
+        public final ForgeConfigSpec.IntValue partMaterialCost;
+
         public final ForgeConfigSpec.BooleanValue mountUpgradeForDragon;
 
         public final ForgeConfigSpec.DoubleValue pickRadius;
@@ -508,6 +531,13 @@ public final class DragonGolemConfig {
         public final ForgeConfigSpec.DoubleValue breathOrbitSpeed;
 
         Common(ForgeConfigSpec.Builder builder) {
+            builder.comment("合成 / 铁砧：龙部件需要多少材料").push("craft");
+            this.partMaterialCost = builder
+                    .comment("每个龙部件在铁砧 / 装配台上需要的材料数量（默认 64，范围 9~64）",
+                            "五个部件合计 = 5 × 此值；同时影响 JEI 铁砧页和本家重铸基数",
+                            "改完需要重启游戏；上限 64 = 原版一栈，保证一格放得下")
+                    .defineInRange("partMaterialCost", 64, 9, 64);
+            builder.pop();
             this.flowingFluidIsFloor = builder
                     .comment("流水（瀑布/水渠）算不算支撑面（默认 false = 忽略，只认静水）",
                             "开着时龙会顺着瀑布往上爬 —— 真机反馈『冲不过瀑布 / 在瀑布里抽搐』",
@@ -545,7 +575,8 @@ public final class DragonGolemConfig {
                     .define("diminishing", false);
             this.breathDamageMultiplier = builder
                     .comment("龙息基值倍率（默认 1.0，0.25~8）",
-                            "护甲会把每跳伤害吃掉很多，用这个直接补，不需要改代码")
+                            "护甲会把每跳伤害吃掉很多，用这个直接补，不需要改代码",
+                            "注意：当前代码只提供了 getter，尚未接入 breathDamage 的伤害计算")
                     .defineInRange("damageMultiplier", 1.0D, 0.25D, 8.0D);
             this.breathDiminishingStep = builder
                     .comment("每多命中一次，伤害倍率下降多少（0.25 = 第二跳 75%、第三跳 50%…）")
@@ -643,8 +674,9 @@ public final class DragonGolemConfig {
                     .comment("移动/寻路诊断日志（默认 false）")
                     .define("flightLog", false);
             this.pathLog = builder
-                    .comment("航线诊断日志 [path]（默认 true：排查『不绕柱子 / 判定能过其实进不去』必看）")
-                    .define("pathLog", true);
+                    .comment("航线/索敌诊断日志（默认 false）",
+                            "排查『不绕柱子 / 判定能过其实进不去 / 不攻击』时再打开；会持续刷 [path] / [atk] / [target]")
+                    .define("pathLog", false);
             builder.pop();
             builder.comment("洞穴模式（狭小场地：废弃工厂 / 矿洞 / 室内）").push("cave");
             this.caveEnabled = builder
@@ -663,11 +695,11 @@ public final class DragonGolemConfig {
                     .comment("洞穴里不抽俯冲（默认开）")
                     .define("noDive", true);
             this.caveDash = builder
-                    .comment("洞穴里俯冲改成『冲刺』（默认开）",
+                    .comment("洞穴里俯冲改成『冲刺』（默认关）",
                             "不做『飞到目标后方 16 格 + 爬 12 格高』的前摇，直接从当前位置朝目标方向冲")
                     .define("caveDash", false);
             this.caveGuidedDamage = builder
-                    .comment("洞穴『引导式喷息』（默认 true）",
+                    .comment("洞穴『引导式喷息』（配置项保留；当前 getter 固定返回 false，改这里不生效）",
                             "洞里塞不下/穿模都是必然，所以命中不再依赖喷流几何：只要射程内 + 同层，每 10 tick 结算一跳")
                     .define("guidedDamage", false);
             this.caveGuideRange = builder

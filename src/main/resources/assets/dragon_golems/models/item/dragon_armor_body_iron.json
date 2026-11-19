@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "dragon_golems:item/dragon_armor_body_iron"
+  }
+}

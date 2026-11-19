@@ -1,6 +1,7 @@
 package a_silly_cat.dragon_golems.init;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
+import a_silly_cat.dragon_golems.dragon.DragonArmorItem;
 import a_silly_cat.dragon_golems.dragon.DragonGolemEntity;
 import a_silly_cat.dragon_golems.dragon.DragonGolemItems;
 import a_silly_cat.dragon_golems.dragon.DragonGolemPartType;
@@ -80,6 +81,10 @@ public final class ModCreativeTabs {
                         var holder = DragonGolemItems.HOLDER.get();
                         for (ResourceLocation material : usableMaterials(m -> GolemMaterialConfig.mayApply(holder, m))) {
                             output.accept(holder.withUniformMaterial(material));
+                        }
+                        // 龙铠：四件 × 三档材质
+                        for (ItemEntry<DragonArmorItem> armor : DragonGolemItems.ARMOR_ITEMS) {
+                            output.accept(armor.get());
                         }
                     })
                     .build());

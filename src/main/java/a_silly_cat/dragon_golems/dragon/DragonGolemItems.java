@@ -4,6 +4,7 @@ import a_silly_cat.dragon_golems.Dragon_golems;
 import a_silly_cat.dragon_golems.client.DragonGolemFireballRenderer;
 import a_silly_cat.dragon_golems.client.DragonGolemModel;
 import a_silly_cat.dragon_golems.client.DragonGolemRenderer;
+import a_silly_cat.dragon_golems.content.config.DragonGolemConfig;
 import com.tterrag.registrate.util.entry.EntityEntry;
 import com.tterrag.registrate.util.entry.ItemEntry;
 import com.tterrag.registrate.util.entry.RegistryEntry;
@@ -13,17 +14,20 @@ import dev.xkmc.modulargolems.content.item.golem.GolemHolder;
 import dev.xkmc.modulargolems.content.item.golem.GolemPart;
 import dev.xkmc.modulargolems.init.data.MGTagGen;
 import dev.xkmc.modulargolems.init.registrate.GolemTypes;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.item.Item;
 
 /**
- * 傀儡龙的全部注册点：实体、傀儡种类、四个部件物品、成品、胚料。
+ * 傀儡龙的全部注册点：实体、傀儡种类、五个部件物品、成品、胚料、龙铠。
  *
  * <p>这里用的是 Registrate（本家也是走 Registrate），原因是 {@code GolemType} 的构造函数必须拿到
  * 一个 {@code EntityEntry}，普通 {@code DeferredRegister} 给不出来。
  *
  * <p>铁砧消耗量写在 {@link GolemPart} 构造函数的第 4 个参数（count）里：五个部件统一
- * <b>64（一组）</b>，也就是铸满一整只龙要 5 × 64 = 320 个材料。这个数字同时决定 JEI 铁砧页上
+ * <b>默认 64（一组）</b>（`craft.partMaterialCost` 可调 9~64），也就是默认铸满一整只龙要 5 × 64 = 320 个材料。
+ * 这个数字同时决定 JEI 铁砧页上
  * 写的材料数量，并参与本家的"重铸基数"（= 五个部件消耗之和）。
  */
 public final class DragonGolemItems {
@@ -81,42 +85,45 @@ public final class DragonGolemItems {
             .defaultLang()
             .register();
 
-    // 铁砧消耗（GolemPart 构造函数的第 4 个参数）：五个部件统一 64（一组）。
-    // 注意这个数字还参与本家的"重铸基数"（= 五个部件消耗之和 320），也决定 JEI 铁砧页上
-    // 写的材料数量。改这里要同步 docs/MOUNT.md 的重铸基数表与 docs/RENDERING.md 的缩放公式说明。
+    // 铁砧消耗（GolemPart 构造函数的第 4 个参数）：五个部件统一读 `craft.partMaterialCost`
+    // （默认 64，范围 9~64；五个部件合计 = 5 × 此值）。
+    // 注意这个数字还参与本家的"重铸基数"（= 五个部件消耗之和），也决定 JEI 铁砧页上
+    // 写的材料数量。配置在物品注册时求值，改完要重启游戏。
+    // 这里用 lambda 而不是静态常量：Registrate 的 item factory 在 RegisterEvent 时才执行，
+    // 那时 config 已经加载；不要提前在静态初始化里取值。
 
-    /** 双翼：装配表第一行，铁砧消耗 64（一组）。 */
+    /** 双翼：装配表第一行，铁砧消耗由 `craft.partMaterialCost` 决定（默认 64）。 */
     public static final ItemEntry<GolemPart<DragonGolemEntity, DragonGolemPartType>> WINGS =
             REG.<GolemPart<DragonGolemEntity, DragonGolemPartType>>item("dragon_golem_wings",
-                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.WINGS, 64))
+                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.WINGS, DragonGolemConfig.partMaterialCost()))
                     .properties(p -> p.stacksTo(16))
                     .register();
 
-    /** 头部（含脖颈）：装配表第二行左侧，铁砧消耗 64（一组）。 */
+    /** 头部（含脖颈）：装配表第二行左侧，铁砧消耗由 `craft.partMaterialCost` 决定（默认 64）。 */
     public static final ItemEntry<GolemPart<DragonGolemEntity, DragonGolemPartType>> HEAD =
             REG.<GolemPart<DragonGolemEntity, DragonGolemPartType>>item("dragon_golem_head",
-                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.HEAD, 64))
+                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.HEAD, DragonGolemConfig.partMaterialCost()))
                     .properties(p -> p.stacksTo(16))
                     .register();
 
-    /** 身体（重心那一块）：装配表正中，铁砧消耗 64（一组）。 */
+    /** 身体（重心那一块）：装配表正中，铁砧消耗由 `craft.partMaterialCost` 决定（默认 64）。 */
     public static final ItemEntry<GolemPart<DragonGolemEntity, DragonGolemPartType>> BODY =
             REG.<GolemPart<DragonGolemEntity, DragonGolemPartType>>item("dragon_golem_body",
-                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.BODY, 64))
+                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.BODY, DragonGolemConfig.partMaterialCost()))
                     .properties(p -> p.stacksTo(16))
                     .register();
 
-    /** 尾巴：装配表第二行右侧，铁砧消耗 64（一组）。 */
+    /** 尾巴：装配表第二行右侧，铁砧消耗由 `craft.partMaterialCost` 决定（默认 64）。 */
     public static final ItemEntry<GolemPart<DragonGolemEntity, DragonGolemPartType>> TAIL =
             REG.<GolemPart<DragonGolemEntity, DragonGolemPartType>>item("dragon_golem_tail",
-                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.TAIL, 64))
+                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.TAIL, DragonGolemConfig.partMaterialCost()))
                     .properties(p -> p.stacksTo(16))
                     .register();
 
-    /** 四肢：装配表第三行，铁砧消耗 64（一组）。 */
+    /** 四肢：装配表第三行，铁砧消耗由 `craft.partMaterialCost` 决定（默认 64）。 */
     public static final ItemEntry<GolemPart<DragonGolemEntity, DragonGolemPartType>> LEG =
             REG.<GolemPart<DragonGolemEntity, DragonGolemPartType>>item("dragon_golem_limb",
-                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.LEG, 64))
+                            p -> new GolemPart<>(p, TYPE, DragonGolemPartType.LEG, DragonGolemConfig.partMaterialCost()))
                     .properties(p -> p.stacksTo(16))
                     .register();
 
@@ -126,9 +133,69 @@ public final class DragonGolemItems {
                             p -> new GolemHolder<>(p, TYPE))
                     .register();
 
-    /** 大傀儡胚料：切石机切成上面五个部件（贴图暂时用本家的傀儡胚料占位）。 */
+    /** 大傀儡胚料：切石机切成上面五个部件；图标暂借 `modulargolems:metal_golem_template`。 */
     public static final ItemEntry<Item> TEMPLATE =
             REG.item("dragon_golem_template", Item::new).register();
+
+    // ---- 龙铠：四件 × 三档材质（铁 / 钻石 / 下界合金）----
+    // 槽位约定：龙头 HEAD、龙身 CHEST、四肢 LEGS、龙尾 FEET，和 DragonGolemMenuControl 的四个甲槽对应。
+    // 贴图：物品图标 textures/item/dragon_armor_<件>_<材质>.png；
+    // 穿在龙身上的 512×512 整龙图集在 textures/entity/dragon/armor/<材质>.png。
+
+    private static ItemEntry<DragonArmorItem> armor(String id, EquipmentSlot slot, DragonArmorMaterial material,
+                                                   ResourceLocation modelPath) {
+        // 龙甲是装备，不叠放：和本家大型傀儡甲一致（它们的注册里也是 stacksTo(1)）。
+        // 之前漏了这一行，默认堆到 64。
+        return REG.<DragonArmorItem>item(id,
+                p -> new DragonArmorItem(p.stacksTo(1), slot, material, modelPath)).register();
+    }
+
+    public static final ItemEntry<DragonArmorItem> ARMOR_HEAD_IRON =
+            armor("dragon_armor_head_iron", EquipmentSlot.HEAD, DragonArmorMaterial.IRON,
+                    DragonArmorItem.PATH_HEAD);
+    public static final ItemEntry<DragonArmorItem> ARMOR_HEAD_DIAMOND =
+            armor("dragon_armor_head_diamond", EquipmentSlot.HEAD, DragonArmorMaterial.DIAMOND,
+                    DragonArmorItem.PATH_HEAD);
+    public static final ItemEntry<DragonArmorItem> ARMOR_HEAD_NETHERITE =
+            armor("dragon_armor_head_netherite", EquipmentSlot.HEAD, DragonArmorMaterial.NETHERITE,
+                    DragonArmorItem.PATH_HEAD);
+
+    public static final ItemEntry<DragonArmorItem> ARMOR_BODY_IRON =
+            armor("dragon_armor_body_iron", EquipmentSlot.CHEST, DragonArmorMaterial.IRON,
+                    DragonArmorItem.PATH_BODY);
+    public static final ItemEntry<DragonArmorItem> ARMOR_BODY_DIAMOND =
+            armor("dragon_armor_body_diamond", EquipmentSlot.CHEST, DragonArmorMaterial.DIAMOND,
+                    DragonArmorItem.PATH_BODY);
+    public static final ItemEntry<DragonArmorItem> ARMOR_BODY_NETHERITE =
+            armor("dragon_armor_body_netherite", EquipmentSlot.CHEST, DragonArmorMaterial.NETHERITE,
+                    DragonArmorItem.PATH_BODY);
+
+    public static final ItemEntry<DragonArmorItem> ARMOR_LIMBS_IRON =
+            armor("dragon_armor_limbs_iron", EquipmentSlot.LEGS, DragonArmorMaterial.IRON,
+                    DragonArmorItem.PATH_LIMBS);
+    public static final ItemEntry<DragonArmorItem> ARMOR_LIMBS_DIAMOND =
+            armor("dragon_armor_limbs_diamond", EquipmentSlot.LEGS, DragonArmorMaterial.DIAMOND,
+                    DragonArmorItem.PATH_LIMBS);
+    public static final ItemEntry<DragonArmorItem> ARMOR_LIMBS_NETHERITE =
+            armor("dragon_armor_limbs_netherite", EquipmentSlot.LEGS, DragonArmorMaterial.NETHERITE,
+                    DragonArmorItem.PATH_LIMBS);
+
+    public static final ItemEntry<DragonArmorItem> ARMOR_TAIL_IRON =
+            armor("dragon_armor_tail_iron", EquipmentSlot.FEET, DragonArmorMaterial.IRON,
+                    DragonArmorItem.PATH_TAIL);
+    public static final ItemEntry<DragonArmorItem> ARMOR_TAIL_DIAMOND =
+            armor("dragon_armor_tail_diamond", EquipmentSlot.FEET, DragonArmorMaterial.DIAMOND,
+                    DragonArmorItem.PATH_TAIL);
+    public static final ItemEntry<DragonArmorItem> ARMOR_TAIL_NETHERITE =
+            armor("dragon_armor_tail_netherite", EquipmentSlot.FEET, DragonArmorMaterial.NETHERITE,
+                    DragonArmorItem.PATH_TAIL);
+
+    /** 创造栏用：四件 × 三档材质，顺序 = 头/身/四肢/尾，每件铁→钻石→下界合金。 */
+    public static final java.util.List<ItemEntry<DragonArmorItem>> ARMOR_ITEMS = java.util.List.of(
+            ARMOR_HEAD_IRON, ARMOR_HEAD_DIAMOND, ARMOR_HEAD_NETHERITE,
+            ARMOR_BODY_IRON, ARMOR_BODY_DIAMOND, ARMOR_BODY_NETHERITE,
+            ARMOR_LIMBS_IRON, ARMOR_LIMBS_DIAMOND, ARMOR_LIMBS_NETHERITE,
+            ARMOR_TAIL_IRON, ARMOR_TAIL_DIAMOND, ARMOR_TAIL_NETHERITE);
 
     private DragonGolemItems() {
     }

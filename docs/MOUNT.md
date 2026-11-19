@@ -1,9 +1,13 @@
 # 升级 / 坐骑 / 载客：现状与可行性
 
+> **注意（2026-11-14）**：本文最初写于“载客还没落地”时，第一~六节的反查结论
+> （“龙不能载客”“手杖入口写死狗”）已经过时；0.6 已实现一名玩家骑乘和驾驶。
+> 当前状态以 README、CONFIG 和代码为准，本文保留历史推导与公式，不再逐段重写。
+
 这份是"龙能不能用犬型升级、能不能当坐骑、最多坐几个"的反查结果。依据是
-`libs/modulargolems-2.7.3.jar`（javap 反查，也就是 `gradle.properties` 里
-`modulargolems_version = 2.7.3` 实际加载的那一份）+ `dev/xkmc/modulargolems-2.6.34-sources`（源码，**仅供对照，
-数字以 2.7.3 的字节码为准**）+ Minecraft 1.20.1 Forge 源码。
+`libs/modulargolems-2.7.5.jar`（javap 反查，也就是 `gradle.properties` 里
+`modulargolems_version = 2.7.5` 实际加载的那一份）+ `dev/xkmc/modulargolems-2.6.34-sources`（源码，**仅供对照，
+数字以 2.7.5 的字节码为准**）+ Minecraft 1.20.1 Forge 源码。
 
 > **2026 更新：第五节的 C + C′ + 飞行驾驶已经落地。** 龙现在可以被"骑乘手杖"点名、
 > 载一个玩家，并用 **空格上升 / Shift 下降 / WASD 前后左右 / 鼠标决定机头朝向与俯仰**
@@ -27,7 +31,7 @@ UpgradeItem.fitsOn(type)                       → 遍历自己带的 modifier�
 GolemModifier.fitsOn(type)                     → 默认 true
 ```
 
-2.7.3 里**只有 `RideUpgrade` 覆写 `fitsOn`**（整包扫 `fitsOn` 只命中 5 个类：定义处、两个调用处、
+2.7.5 里**只有 `RideUpgrade` 覆写 `fitsOn`**（整包扫 `fitsOn` 只命中 5 个类：定义处、两个调用处、
 `UpgradeItem`、`RideUpgrade`）：
 
 ```java
@@ -49,7 +53,7 @@ public boolean fitsOn(GolemType<?, ?> type) {
 
 ## 二、升级槽：龙是 5，比狗（2）还多
 
-`GolemHolder.getRemaining(mats, upgrades)` 决定"还能装几条升级"（下面是 2.7.3 的实际实现）：
+`GolemHolder.getRemaining(mats, upgrades)` 决定"还能装几条升级"（下面是 2.7.5 的实际实现）：
 
 ```java
 int base = getEntityType().getUpgradeSlots();                     // 基准槽位
@@ -63,7 +67,7 @@ return base;
   改成配置项：金属 `largeGolemSlot`（默认 4）、类人 `humanoidGolemSlot`（3）、狗 `dogGolemSlot`（2），
   都在 `MGConfig.COMMON` 里可调。
 - 龙没有覆写它 → 走默认实现，`base = 部件数` = **5 槽**。
-- 注意 2.7.3 里"这条升级占不占槽"是由 `IUpgradeItem.consumesSlot()` 回答的，
+- 注意 2.7.5 里"这条升级占不占槽"是由 `IUpgradeItem.consumesSlot()` 回答的，
   不再是 `instanceof UpgradeItem`（这段判定现在只写在 `getRemaining` 一处，凡走它的路都一样）。
 - 所以"龙用不上升级"不是槽位问题——龙反而比狗宽松
 
@@ -87,7 +91,7 @@ MOUNT_UPGRADE = new RideUpgrade(1,                       // 只有 1 级，占 1
 
 ## 四、载客能力真正的出处（狗）
 
-`DogGolemEntity`（2.7.3 里方法名是 SRG）覆写了 **6 个**载客相关方法：
+`DogGolemEntity`（2.7.5 里方法名是 SRG）覆写了 **6 个**载客相关方法：
 
 | 方法（SRG） | 作用 |
 |---|---|
@@ -98,7 +102,7 @@ MOUNT_UPGRADE = new RideUpgrade(1,                       // 只有 1 级，占 1
 | `m_7340_` = `onPassengerTurned` | 非驾驶座乘客强制跟随身体朝向（`clampRotation`，相对机头夹在 ±160°） |
 | `m_20348_` = `addPassenger` | 上人时先 `setInSittingPose(false)`，再走父类 |
 
-（这张表以前把 `addPassenger` 写成了 `m_7332_`；2.7.3 里被覆写的是 `m_20348_`，`m_7332_` 根本没出现。
+（这张表以前把 `addPassenger` 写成了 `m_7332_`；2.7.5 里被覆写的是 `m_20348_`，`m_7332_` 根本没出现。
 `positionRider` 的排座偏移还有个细节：第 0 位是 0.7，后面每位再加"驾驶者是不是玩家"的 1.7 / 1.2。）
 
 除这 6 个之外，狗还覆写了几个"驾驶"用的：`getRiddenRotation`、`executeRidersJump`、
@@ -122,8 +126,8 @@ return count <= Math.min(size * 2 - 1, 3) && total <= getBbWidth() + 1e-3;
 |---|---|---|
 | 默认 `GOLEM_SIZE` | **1**（`dog_golem` 注册属性时写死） | **5.0**（我们 `createAttributes` 里写的） |
 | 默认体积 | 0.9 × 0.9 | **2.6 × 2.2**（`DragonGolemItems` 的 `.sized(2.6F, 2.2F)`） |
-| 重铸基数 | 各部件铁砧消耗之和 | 64 × 5 = **320** |
-| 现在能不能载客 | 能（自带上面那 6 个覆写），骑乘杖 / 傀儡 `checkRide` 都认狗 | **不能**：龙一个载客方法都没覆写；而且三个"上龙"入口全写死了狗 |
+| 重铸基数 | 各部件铁砧消耗之和 | `craft.partMaterialCost`（默认 64）× 5 = **320** |
+| 现在能不能载客 | 能（自带上面那 6 个覆写），骑乘杖 / 傀儡 `checkRide` 都认狗 | **能**：载一名玩家，驾驶/骑手技能见 `DragonRideHandler` / `DragonRiderControl` |
 
 不过龙的 AI **已经给"玩家驾驶"让好路了**：`DragonIdleGoal.movable()`、`DragonRangedGoal.canUse()`、
 `DragonDiveGoal.canUse()`、`DragonSonicGoal.canUse()` 都会在 `getControllingPassenger()` 是玩家时收手，

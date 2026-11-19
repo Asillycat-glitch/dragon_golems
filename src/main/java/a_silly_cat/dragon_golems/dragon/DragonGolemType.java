@@ -15,8 +15,8 @@ import java.util.function.Supplier;
 /**
  * 龙傀儡的种类定义。
  *
- * <p>升级槽保持默认（{@code GolemType.getUpgradeSlots()} 返回部件数量，也就是 5 个），
- * 不额外覆盖：现有升级能装上去，只是有些需要特定 AI 的行为暂时不会触发。
+ * <p>升级槽数量由 {@link #getUpgradeSlots()} 读配置（默认 5，等于五个部件各一槽）。
+ * 旧注释写“不额外覆盖、走基类默认”，和当前覆盖实现不一致。
  */
 public class DragonGolemType extends GolemType<DragonGolemEntity, DragonGolemPartType> {
 

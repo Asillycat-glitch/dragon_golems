@@ -49,6 +49,11 @@ public class DragonGolemRenderer
 
     public DragonGolemRenderer(EntityRendererProvider.Context ctx) {
         super(ctx, new DragonGolemModel(ctx.getModelSet()), 1.2F, DragonGolemPartType::values);
+        // 龙铠：四件甲各画本体的一组，被盖住的本体组由模型的 armorMask 跳掉。
+        // 先挂装甲、后挂披风 —— 披风要盖在背甲上面。
+        this.addLayer(new DragonArmorLayer(this, ctx.getModelSet()));
+        // 披风：把旗帜槽里的横幅当布料披在背上（骑乘时换一组更靠后的参数，见 DragonCapeLayer）。
+        this.addLayer(new DragonCapeLayer(this, ctx.getModelSet()));
     }
 
     @Override

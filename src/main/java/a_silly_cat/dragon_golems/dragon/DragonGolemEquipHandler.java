@@ -1,37 +1,42 @@
 package a_silly_cat.dragon_golems.dragon;
 
 import a_silly_cat.dragon_golems.Dragon_golems;
+import dev.xkmc.modulargolems.content.item.equipments.IGolemEquipmentItem;
 import dev.xkmc.modulargolems.events.event.GolemEquipItemEvent;
-import net.minecraft.world.entity.EquipmentSlot;
-import net.minecraft.world.item.BannerItem;
+import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
 /**
- * 龙的装备槽"收什么"的判定。
+ * 龙的"这件装备该进哪个 {@code EquipmentSlot}"判定。
  *
- * <p><b>为什么必须我们自己接管：</b>本家决定一件物品能进哪个槽的是
- * {@code GolemEventListeners.onEquip(GolemEquipItemEvent)}，而它里面只有
- * <b>人形 / 大型金属 / 犬型</b>三种傀儡的分支（2.7.3 字节码逐条 {@code instanceof} 确认过），
- * <b>没有兜底</b>。谁没被那个事件设过槽位，{@code GolemMenuControl.getSlotForItem} 最后就
- * {@code return Set.of();} —— 于是
- * {@link DragonGolemMenuControl} 注册的那两格（{@code isValid(HEAD)} / {@code isValid(CHEST)}）
- * 谓词恒为 false，<b>连头盔和旗帜都放不进去</b>。
+ * <p><b>为什么还要这一个类：</b>本家 {@code GolemEventListeners.onEquip} 对
+ * {@code IGolemEquipmentItem} 的分支是按傀儡类型写的——大型 / 人形 / 犬型各一段
+ * {@code instanceof}，<b>没有兜底</b>。龙的 {@code DragonGolemEntity} 不在任何一段里，
+ * 所以哪怕有一个 {@code isFor(龙的实体类型)} 的龙甲，装备事件也不会把它的
+ * {@code getSlot()}（HEAD / CHEST / LEGS / FEET）报给菜单，{@link DragonGolemMenuControl} 里
+ * {@code isValid(EquipmentSlot.X, stack)} 就会一直是 false。
  *
- * <p>现在只放<b>旗帜 → 头部槽</b>，和本家对那三种傀儡的做法一致
- * （{@code BannerItem → EquipmentSlot.HEAD}）。护甲等有设计之后再往这里加分支。
+ * <p>这里只补"本家对别的傀儡会做、但对龙没做"的那一条：物品是
+ * {@link IGolemEquipmentItem} 且 {@code isFor(龙的实体类型)} 为真时，按它自己的
+ * {@code getSlot()} 报上去。旗帜/皮肤/巡逻手册三个槽不经过这里——它们在
+ * {@code DragonGolemMenuControl.fillMenu()} 里是用物品/标签直接判的。
+ *
+ * <p>龙甲四件的槽位约定：<b>龙头 = HEAD、龙身 = CHEST、四肢 = LEGS、龙尾 = FEET</b>。
+ * 12 件龙甲（`DragonArmorItem`）都已注册，并实现 {@code IGolemEquipmentItem} /
+ * {@code isFor(龙)}，所以对应的槽会自动接受它们。
  */
 @Mod.EventBusSubscriber(modid = Dragon_golems.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class DragonGolemEquipHandler {
 
     @SubscribeEvent
     public static void onGolemEquip(GolemEquipItemEvent event) {
-        if (!(event.getEntity() instanceof DragonGolemEntity)) {
+        if (!(event.getEntity() instanceof DragonGolemEntity dragon)) {
             return;
         }
-        if (event.getStack().getItem() instanceof BannerItem) {
-            // 1 个就够（旗帜不叠），给头部槽
-            event.setSlot(1, EquipmentSlot.HEAD);
+        ItemStack stack = event.getStack();
+        if (stack.getItem() instanceof IGolemEquipmentItem item && item.isFor(dragon.getType())) {
+            event.setSlot(1, item.getSlot());
         }
     }
 

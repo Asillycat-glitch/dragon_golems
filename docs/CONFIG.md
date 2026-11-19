@@ -30,9 +30,10 @@ ModLoadingContext.get().registerConfig(type, COMMON_SPEC, path);
 
 | 配置项 | 默认 | 作用 |
 |---|---|---|
-| `breath.diminishing` | `true` | 同一次龙息里对同一个目标是否递减伤害 |
+| `breath.diminishing` | `false` | 同一次龙息里对同一个目标是否递减伤害（默认关） |
 | `breath.diminishingStep` | `0.25` | 每多命中一次降多少（第二跳 75%、第三跳 50%…） |
 | `breath.diminishingMin` | `0.25` | 递减下限倍率 |
+| `breath.damageMultiplier` | `1.0` | 龙息基值倍率；**当前代码只定义了 getter，没有接入伤害计算** |
 | `mount.mountUpgradeOnDragon` | `true` | 本家坐骑升级能不能装到龙身上 |
 | `selection.pickRadius` | `1.0` | 头/颈/躯干/尾/双翼子箱的额外拾取半径（格） |
 | `selection.bodyPickRadius` | `0.5` | 本体判定箱的额外拾取半径（格） |
@@ -42,17 +43,28 @@ ModLoadingContext.get().registerConfig(type, COMMON_SPEC, path);
 | `attributes.maxHealthCapFix` | `true` | 内置版 AttributeFix：放宽**最大生命**上限 |
 | `attributes.maxHealthCap` | `100000` | 上面那条放宽到多少 |
 | `cave.ghost` | `true` | 洞穴里 AI 直接穿墙（无骑手时）；关闭后交回自动脱困 |
+| `cave.dash` | `false` | 洞穴俯冲改成短距离冲刺 |
+| `cave.guidedDamage` | `false` | 引导式喷息；**当前 getter 硬编码 false，改配置不会生效** |
 | `cave.lavaClearance` | `3.0` | 洞穴战斗时脚底离岩浆液面的最小高度（格） |
 | `cave.attackHeight` | `4.0` | 洞穴战斗时站在目标头顶上方多少格 |
 | `cave.standoffFactor` | `1.0` | 洞穴站位倍率（调大 = 站得更远） |
 | `pathfinding.enabled` | `true` | 寻路总开关；直飞干净时不跑 A* |
+| `pathfinding.repathTicks` | `20` | 同一只龙两次 A* 的最小间隔（tick） |
+| `pathfinding.smoothingLookahead` | `6` | 路线拉直的前瞻节点数 |
 | `pathfinding.lavaMargin` | `0.6` | 航点与岩浆额外保持的距离（格） |
+| `debug.flightLog` | `false` | 移动/寻路诊断日志；排查时再开 |
+| `debug.pathLog` | `false` | `[path]` / `[atk]` / `[target]` 诊断日志；排查时再开 |
 | `crystal.guard` | `true` | 附近水晶是否给龙加护甲/韧性 |
 | `crystal.explosionImmune` | `false` | 是否免疫"末地水晶自爆"（只限水晶直接来源，不是全爆炸免疫；默认关，和原版一致） |
 | `crystal.armorPerCrystal` | `4.0` | 每块存活水晶提供的护甲 |
 | `crystal.armorCap` | `16.0` | 水晶护盾的护甲上限 |
 | `crystal.toughnessPerCrystal` | `2.0` | 每块存活水晶提供的护甲韧性 |
 | `crystal.toughnessCap` | `8.0` | 水晶护盾的韧性上限 |
+| `craft.partMaterialCost` | `64` | 每个龙部件在铁砧/装配台上需要的材料数量（9~64）；五个部件合计 = 5 × 此值，改完需重启 |
+
+> 这只是常用项。完整键以 `content/config/DragonGolemConfig.java` 为准
+> （共 46 个 key；`pathfinding.*`、`cave.*`、`crystal.*` 还有若干细分项）。
+> 调试日志默认关闭；要排查时再打开 `debug.pathLog` / `debug.flightLog` 或代码里的 `DragonDebug`。
 
 ## 二、龙息递减（"一次龙息总伤害过高"）
 
@@ -60,7 +72,7 @@ ModLoadingContext.get().registerConfig(type, COMMON_SPEC, path);
 每跳 `0.35 × 攻击力`，六跳全中就是 **2.1 倍攻击力**，比 30 秒一次的俯冲还高，
 而它是随时可用的常态输出。
 
-现在改成"同一轮里越打越轻"：
+代码支持"同一轮里越打越轻"，但**默认关闭**（`breath.diminishing = false`）。打开后：
 
 | 跳数 | 1 | 2 | 3 | 4 | 5 | 6 | 合计 |
 |---|---|---|---|---|---|---|---|
@@ -71,7 +83,7 @@ ModLoadingContext.get().registerConfig(type, COMMON_SPEC, path);
 - **一轮一清**：`beginBreathVolley()` 在进前摇时清空计数（AI 版 `DragonRangedGoal`、
   骑手版 `DragonRiderSkillGoal` 各一处），`endBreathVolley()` 在 goal 收工时清；
 - 递减只乘在**龙息锥**上，龙弹 / 俯冲 / 音爆不受影响（它们各自有冷却）；
-- 想关掉：`breath.diminishing = false`；想更狠：调小 `diminishingMin`、调大 `diminishingStep`。
+- 想打开：`breath.diminishing = true`；想更狠：调小 `diminishingMin`、调大 `diminishingStep`。
 
 ## 三、坐骑升级（"骑乘升级装不到龙身上"）
 
@@ -290,7 +302,7 @@ public boolean dealSkillDamage(LivingEntity target, @Nullable DamageSource sourc
 
 | 不想要的效果 | 怎么办 |
 |---|---|
-| 龙息递减 | `breath.diminishing = false` |
+| 打开龙息递减 | `breath.diminishing = true` |
 | 坐骑升级能装龙 | `mount.mountUpgradeOnDragon = false` |
 | 拾取半径变大 | `selection.pickRadius = 0` / `bodyPickRadius = 0` |
 | 回收手杖认子箱 | 暂时没有单独开关（它只在本家选不中时才接管） |
@@ -299,7 +311,7 @@ public boolean dealSkillDamage(LivingEntity target, @Nullable DamageSource sourc
 | 让 `*AttackGoal`（goal 族）回来 | `skills.nativeSkillGoals = true` |
 | 俯冲不再触发地震/跳劈 | `skills.diveTriggersMelee = false` |
 
-## 九、洞穴战斗 / 寻路 / 岩浆（0.4 追加）
+## 九、洞穴战斗 / 寻路 / 岩浆（0.4 起，0.5 收尾）
 
 ### 洞穴站位（"贴上去挨揍"）
 
@@ -341,7 +353,7 @@ A* 不是每 tick 跑，而是：
 - **算不出路线就原地停**：goal 每 tick 只做一次廉价检查，真正的重算等到下一秒；
   找到路线后下一 tick 自动恢复。
 
-日志：`[path] A* ok/null nodes=... ms=...`、`[path] noRoute → hold ...`。
+日志默认关闭；要排查 A* 时打开 `debug.pathLog`（会打 `[path]` / `[atk]` / `[target]`）。
 如果某次 A* 的 `ms` 仍然很大，或者你只想要最省性能：`pathfinding.enabled = false`（退回直飞，
 移动层的岩浆规避仍然生效）。
 
@@ -378,7 +390,7 @@ A* 不是每 tick 跑，而是：
 - **护盾**：附近每有一块存活水晶，给龙加 `crystal.armorPerCrystal` 点护甲 /
   `crystal.toughnessPerCrystal` 点韧性，按 `crystal.armorCap` / `crystal.toughnessCap` 封顶。
   这是常驻光环（和"受伤后才回血"无关），水晶拆掉后 1 秒内属性回落。
-  日志：`[crystal] guard crystals=... armor=... toughness=...`；
+  日志：`[crystal] guard crystals=... armor=... toughness=...`（`debug.pathLog` 打开时）；
   水晶实际数量变化时才会打。
 - **水晶自爆免疫**（`crystal.explosionImmune`，默认 **关**）：
   只拦截"直接来源是 `EndCrystal` 的爆炸"（原版水晶被非爆炸伤害打掉时产生的自爆）。
@@ -400,6 +412,6 @@ A* 不是每 tick 跑，而是：
 - 命令手杖的 `forcedTarget` 不走这条过滤，并且**所有攻击 goal、技能调度、洞穴战斗高度**
   都统一读 `dragonCurrentTarget()`（先 forcedTarget，再本家目标槽）。
   这样"用手杖锁了下面的，却喷上面的"不会再出现两边目标不一致。
-- 日志：`[target] ... forced=true/false patrolValid=...`。
+- 日志：`[target] ... forced=true/false patrolValid=...`（`debug.pathLog` 打开时）。
 - 龙息伤害现在对**每个候选目标**单独做"嘴 → 目标"的方块遮挡检查；
   隔着地板/墙角的上层目标不会再掉血（同一锥体里、视线通畅的目标仍然吃 AoE）。

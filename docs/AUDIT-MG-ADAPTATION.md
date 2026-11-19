@@ -1,5 +1,26 @@
 # 龙 × 傀儡装配：适配审计
 
+> **历史文档（归档）**：本文写于 2026-11-05，正文混用了 2.7.3 / 2.7.5 两套结论，
+> 且龙甲、七格装备栏、`DragonPatrolGoal` 等在后续版本已经落地；文中“仍缺/未做”的段落
+> 不代表当前代码。**当前状态以 README、[UNCLEAR.md](UNCLEAR.md) 和代码为准**，
+> 本文只保留为当时的设计/反查记录。
+
+> **2026-11-19 更新**：本家目标是 **2.7.6**（`libs/modulargolems-2.7.6.jar`）；
+> 下面的正文仍是 2.7.5+3 时代写的，结论未变（装配页 / 数据包 `templates` / 装备栏等）。
+> 这一版新增了两样与本仓库直接相关的东西：
+>
+> 1. **装配页重构**：`GolemAssembleMenu`（顶部胚料槽 + 5 个 `GolemSlot` 部件/材料槽 + 类型页签
+>    `GolemTypeTab` + 批量开关）。胚料不再写死为本家物品，而是读数据包；
+> 2. **数据包 `templates`**：`GolemPartConfig.templates` 把「傀儡种类 → 胚料 Ingredient」做成
+>    数据包字段，见 `data/<ns>/modulargolems_config/parts/*.json` 顶层的 `"templates"`。
+>    本仓库已在 `data/dragon_golems/modulargolems_config/parts/dragon.json` 里把
+>    `dragon_golems:dragon_golem` 映射到 `dragon_golems:dragon_golem_template`。
+>
+> 还发现新版**犬型装备栏从 2 格扩成了 7 格**（`right_hand`/`legs`/`backup`/`feet`/`arrow_1`/
+> `arrow_2`/`chest`），本仓库 §4 里"照抄犬型两格"的写法已经过时，待重新对照后再改。
+> 下面基于 2.7.3 的结论仍然成立的部分不再逐条改写；凡是涉及装备栏、装配链、JEI 装配页的段落，
+> 以本节和 2.7.5+3 的字节码为准。
+
 > 审计对象：本仓库 `src/main/java/a_silly_cat/dragon_golems/**`（龙的全部 Java 代码）
 > 与 **Modular Golems 2.7.3**（`libs/modulargolems-2.7.3.jar`，另用
 > `dev/xkmc/modulargolems-2.6.34-sources` 交叉对照）。
@@ -185,8 +206,22 @@
 `DefaultFilterCard` 的默认敌我判定**（`TargetManager.java:43-84`）。
 
 模式（`GolemModes`）：FOLLOW / GUARD / STAND / FREE_WANDER / SQUAD / ROUTE。
-`PatrolMode.tick()` 负责推进 ROUTE 的路径点，而它**只从 `FollowOwnerGoal` 里被调用**
-（`FollowOwnerGoal.java:44-46, 86`）。
+
+**ROUTE（2.7.5+3 复核，2026-11-05）**：
+
+- 数据侧是通的：`PathConfig.getPath(golem)` 会先看 `getRouteSlot()`，里面是 `PathRecordCard`
+  就直接取它记录的路径点（否则退回配置卡的 `pathConfig`）；
+  `getTargetPos()` 在 `getMode() == GolemModes.ROUTE` 时返回 `path[min(stage, size-1)]`
+  （维度不同则返回自己脚下）；
+- 但 `GolemMode.tick()`（也就是 `PatrolMode.tick()`）**只被 `FollowOwnerGoal` 调用**
+  （`FollowOwnerGoal` 的 `tick`/`stop`），而我们在 `stripNativeGoals()` 里把
+  `FollowOwnerGoal` 摘了；
+- 就算把它放回去，`PatrolMode.tick` 开头还有一道判断：**既不在水里、也不在落地状态就直接
+  `return`**，飞在天上的龙永远不满足 → 阶段不会推进；
+- 结果：龙在 ROUTE 模式里会把 `path[0]` 当成 `DragonIdleGoal` 的"软中心"绕着飞，
+  但**永远停在第 0 个点**。
+- **2026-11-05 已补**：新增 `DragonPatrolGoal`（自己飞 + 到点推进阶段，目标点会被抬到飞行高度，
+  见 §4.3）；本家 `PatrolMode` 继续不用，所以不存在"落地时被本家推一次阶段"的双推进问题。
 
 ### 2.2 龙接了什么
 
@@ -446,75 +481,205 @@ if (stack.getItem() instanceof BannerItem) event.setSlot(1, EquipmentSlot.HEAD);
 `getModifiersExtended()`、`hurtArmor`、装备掉落也都是通用的。真正要新写的只有
 「物品 + 槽位入口 + 渲染」。
 
-## 4. 护甲槽：**只抄了犬型的两个槽，且第二个是死的**
+## 4. 装备槽：**七格——左列龙甲（头/身/四肢/尾），右列旗帜/皮肤/巡逻手册**
 
-### 4.1 本家的槽位对比
+> 2026-11-05 按 2.7.5+3 的装备体系重写，2026-11-07 按"大傀儡排列"扩成七格（补了四肢甲槽）。
+> 下面 4.1 是新版的槽位全貌，4.2 是龙现在的写法，4.3 只列仍然存在的缺口。
 
-| 种类 | `getSlotDefinition()` | 实际能放 |
-|---|---|---|
-| 金属 | `EquipmentsMenu.SLOTS` = MAINHAND/OFFHAND/HEAD/CHEST/LEGS/FEET | 6 + 肩部 2（`MetalGolemMenuControl.fillMenu`） |
-| 类人 | 同上 6 | 6 + 皮肤/女仆模型按钮；原版护甲、鞘翅、手持物 |
-| 犬型 | `DOG_SLOTS` = HEAD/CHEST | 2；CHEST 放 `DogGolemArmorItem`，HEAD 放旗帜 |
+### 4.1 本家的槽位对比（2.7.5+3）
 
-### 4.2 龙
+装备槽的**存储**不再是 `EquipmentSlot[]`，而是 `GolemInvManager$View` 的 `ItemWrapper`：
+`getBannerSlot()` / `getSkinSlot()` / `getRouteSlot()` / `getWrapperOfHand(EquipmentSlot.X)` /
+`getBackupHand()`。`addSlot(name, 包装器Supplier, 允许Shift快速移入, 谓词[, 优先级])` 的第二个参数
+就是它——传 `ItemWrapper.EMPTY` 会"看起来能放、实际吞物品"。
 
-`DragonGolemMenuControl`：
+| 种类 | 实际注册的槽 |
+|---|---|
+| 金属 | `SweepGolemMenuControl.fillMenu()` 的 12 格（right_hand / left_hand / head / chest / legs / feet / backup / arrow_1 / arrow_2 / banner / skin / route）+ 左右肩（肩炮 `IGenericShoulderWeapon`） |
+| 类人 | 12 格（肩位改画旗帜/皮肤，`test` 画巡逻手册）；原版护甲、手持物、皮肤、巡逻手册 |
+| 犬型 | right_hand（旗帜）/ legs（狼铠）/ backup（皮肤）/ feet（巡逻手册）/ arrow_1 / arrow_2 / chest（肩炮），共 7 格 |
+| 龙 | **七格**：head / chest / legs / feet（四件龙甲）+ banner / skin / route（右列），不做肩炮/箭矢/副手 |
+
+空槽底图（`slotbg_*`）按槽位各自画：`altas_*` 用偏移 (0,0)，`slotbg_*` 用 (-1,-1)。
+
+### 4.2 龙（2026-11-07 改成七格，左列四件龙甲 + 右列挂件）
 
 ```java
-public class DragonGolemMenuControl extends SweepGolemMenuControl<DragonGolemEntity> {
-    public void fillMenu() {
-        this.menu.addSlot("chest", stack -> isValid(EquipmentSlot.HEAD, stack));
-        this.menu.addSlot("legs",  stack -> isValid(EquipmentSlot.CHEST, stack));
-    }
-    public EquipmentSlot[] getSlotDefinition() { return EquipmentsMenu.DOG_SLOTS; }
-}
+// 左列：龙甲。语义约定：龙头 = HEAD、龙身 = CHEST、四肢 = LEGS、龙尾 = FEET。
+addSlot("head",  () -> golem.getWrapperOfHand(EquipmentSlot.HEAD),  true,
+        stack -> isValid(EquipmentSlot.HEAD, stack));
+addSlot("chest", () -> golem.getWrapperOfHand(EquipmentSlot.CHEST), true,
+        stack -> isValid(EquipmentSlot.CHEST, stack));
+addSlot("legs",  () -> golem.getWrapperOfHand(EquipmentSlot.LEGS),  true,
+        stack -> isValid(EquipmentSlot.LEGS, stack));
+addSlot("feet",  () -> golem.getWrapperOfHand(EquipmentSlot.FEET),  true,
+        stack -> isValid(EquipmentSlot.FEET, stack));
+// 右列（紧贴 x=98）：旗帜（披风来源）/ 皮肤 / 巡逻手册。
+addSlot("left_shoulder", golem::getBannerSlot, true,
+        stack -> stack.getItem() instanceof BannerItem, 1);
+addSlot("left_hand", golem::getSkinSlot, true, stack -> stack.is(MGTagGen.CURIO_SKIN), 1);
+addSlot("arrow_1", golem::getRouteSlot, true, stack -> stack.is(MGTagGen.CURIO_PATH));
 ```
 
-（`DragonGolemMenuControl.java:18-34`）
+排列：左列用本家中心列 `head(80,17) / chest(80,35) / legs(80,53) / feet(80,71)`，
+右列用 **x=98** 的 `left_shoulder(98,17) / left_hand(98,35) / arrow_1(98,53)`——和左列只隔 18 像素，是紧贴的。
+（**不要**用 x=116 的 `banner/skin/route`：那组和中心列隔着一整列，界面上会多出一条空档。）
+`DragonGolemScreenControl` 只负责铺底板和底图：
+`altas_helmet` / `altas_chestplate` / `altas_leggings` / `altas_boots` / `slotbg_banner` / `slotbg_skin` / `slotbg_route`。
 
-也就是**槽名/底图/索引都照犬型，但只映射了 HEAD/CHEST 两项**。
+`DragonGolemEquipHandler` 只补"本家漏掉的龙甲分支"：`IGolemEquipmentItem.isFor(龙类型)`
+→ 按它自己的 `getSlot()` 报给菜单（龙头 HEAD / 龙身 CHEST / 四肢 LEGS / 龙尾 FEET）。
 
 ### 4.3 缺口
 
-#### P0：第二个槽（`legs`，实际是 CHEST）没有任何物品能进去
+#### 已修（2026-11-05）：旧的两格方案
 
-`getSlotForItem` 的来源只有 `GolemEquipItemEvent`；`DragonGolemEquipHandler`
-只 `setSlot(HEAD)`。没有任何事件给 `CHEST`，所以：
+旧的 `chest`(HEAD)/`legs`(CHEST) 两格已经删除；2026-11-07 又按大傀儡排列扩成七格，
+七个槽各自有自己的谓词和存储，不再依赖 `DragonGolemEquipHandler` 去给 HEAD 发槽位。
 
-- `chest` 槽（HEAD）只能放旗帜；
-- `legs` 槽（CHEST）永远 `isValid=false`，连原版胸甲都放不进去；
-- 护甲槽在 UI 上存在，但功能上是**一个半**。
+#### 已接（2026-11-07）：四件龙甲（物品 + 模型 + 渲染层）
 
-#### P0：`SweepGolemMenuControl.handleQuickMove` 的箭头逻辑会越界
+- **物品**：`DragonArmorItem`（继承本家 `GolemEquipmentItem`，实现 `GolemModelItem`），
+  四件 × 铁/钻石/下界合金 = 12 个，在 `DragonGolemItems.ARMOR_*` 注册、进创造栏；
+  `isFor` 指向龙、`getSlot()` = HEAD / CHEST / LEGS / FEET（龙头 / 龙身 / 四肢 / 龙尾）；
+  `getModelPath()` / `getModelTexture()` 让渲染层完全数据驱动。
+- **渲染**（路线 A，照本家金属傀儡的**多护甲**写法）：`DragonArmorModel` 里用本家的
+  `GolemModelPath` 注册四张路径表（`DragonArmorItem.PATH_HEAD/BODY/LIMBS/TAIL`），
+  每条链从模型根的子骨写到甲片（`neck→…→head→head1`、`tail→…→Tail_shield12`）；
+  `DragonArmorLayer` 取 path → 按 `path.models()` 缓存/烘护甲模型（等价于
+  `GolemEquipmentRenderer.map`）→ 绑定物品图集 → 沿链把祖先 `translateAndRotate` 压栈、
+  只画链尾甲片。**本体照常画**，所以是穿甲不是换皮。
+  导出模型里那条复制整条龙的骨架方块在构建时剥掉了（省顶点，路径本来就不画它们）。
+  每件绑定自己物品的 512×512 图集，四件混材质各显示各的；换整套模型只需换 path 的 `models()`。
+- **姿势**：`DragonGolemModel.applyArmorPose()` 每帧把本体姿势拷到装甲骨架
+  （脖子/尾巴按段给相对旋转，头/下颌/翅膀/腿直接抄角度），甲片挂在这些骨下面，
+  所以和本体完全同步。
 
-`DragonGolemMenuControl` 继承的是 `SweepGolemMenuControl`，而它的
-`handleQuickMove` 写死了 8 槽布局的索引 43/44：
+> 参考实现：本家金属傀儡 `GolemEquipmentRenderer` 按 `GolemModelItem.getModelPath()` /
+> `getModelTexture()` 画独立护甲模型（`GolemModelPath` 指定链尾甲片，
+> `MetalGolemModel.copyFrom` 同步姿势）；匠魂大型傀儡甲同这套；
+> 犬型 `DogArmorRenderer` + `DOG_ARMOR` 是更省事的整层版本。我们按前者做，
+> 因为龙有**四件甲、还会继续加套**，路径/模型层分离更好扩展。
 
-```java
-if (stack.getItem() instanceof ArrowItem) {
-    this.menu.moveItemStackTo(stack, 43, 44, false);
-}
+#### 已补（2026-11-07）：龙甲的配方与数值
+
+- **数值**：直接对齐本家大型傀儡甲三档（2.7.5+3）——roman_guard（铁）头 8 / 胸 10 / 腿 6 / 靴 4、
+  韧性 4；wind_spirit（钻石）11/14/8/6、韧性 6；barbaric_vanguard（下界合金）14/18/10/10、
+  韧性 8 + 击退抗性 0.2。龙的四件按"头甲←头盔、身甲←胸甲、四肢←护腿、尾甲←靴子"取值。
+- **名称**：跟着大型傀儡甲的三档叫——**罗马龙傀** / **风行龙傀** / **蛮荒龙傀**，
+  四件分别是 头盔 / 胸甲 / 护腿 / 靴子（蛮荒的靴子沿用本家译名"镣铐"）。
+- **配方**（2026-11-09 改为**有序**，直接照本家大型傀儡甲的四种形状）：
+  - 龙头：` B / III / IAI` → 5 个原版头盔 + 1 宝石 + `metal_golem_template`；
+  - 龙身：`IAI / III / BIB` → 6 个原版胸甲 + 2 宝石 + 模板；
+  - 四肢：`BIB / A / I I` → 4 个原版护腿 + 2 宝石 + 模板；
+  - 龙尾：`I I / BAB` → 2 个原版靴子 + 2 宝石 + 模板。
+  - `I` 按档取原版护甲：铁套 `iron_*`、钻石套 `diamond_*`、下界合金套 `netherite_*`；
+    `B` 对应罗马=红石、风行=青金石、蛮荒=石英（和本家一致）。
+  JSON 在 `data/dragon_golems/recipes/armor/`，由 `build/_inspect/make_armor_recipes.py` 生成。
+
+物品侧的约定：`IGolemEquipmentItem`、`isFor(龙的实体类型)`、`getSlot()` 返回
+HEAD/CHEST/LEGS/FEET 之一，槽位就会自动接受它——`DragonGolemEquipHandler` 已经把
+"本家漏掉的龙类型分支"补上了。
+
+#### 已接（2026-11-05）：旗帜 = 披风（布料模型，无旗杆）
+
+`getBannerSlot()` 现在由 `DragonCapeLayer` 画在**背脊**上：
+
+- **不用 banner 物品**（物品带旗杆/横杆，实机是"一根杆挑着一块板"）；改用原版横幅的
+  `flag` 模型（`ModelLayers.BANNER` 的 `flag`，20×40 像素的布面）+ `BannerRenderer.renderPatterns`
+  画底色和图案层，和方块横幅/盾牌同源，染什么色、加什么图案都会原样出现；
+- 挂点：`DragonGolemModel.applyRootTransform()` + `translateToBackAnchor(upPx, backPx)`；
+- 姿态：布面绕 X 转 90° 铺在背上（从肩膀盖向尾巴），尾端略垂 + 轻微摆动
+  （`CAPE_LAY_DEG` / `CAPE_SWAY` / `CAPE_SCALE` 都在层顶部）；
+- **骑乘适配**：有玩家控制时整体往后挪（`RIDDEN_BACK_PX`，从骑手身后开始盖）、收小；
+  本地玩家正骑着且第一人称时不画（防近裁剪穿模/挡视野）。
+
+#### 已修（2026-11-05，2026-11-07 扩成七格）：法杖指向时的装备浮窗（`DragonGolemOverlayControl`）
+
+旧实现照犬型只画了 2 格（`HEAD` 的 `altas_helmet` + `CHEST` 的 `slotbg_dog_armor`）。
+现在和装备界面一致，**2 列 × 4 行**（左列四件龙甲、右列挂件，逐行对齐）：
+
+```text
+head  (0, 0)   banner (18, 0)
+chest (0,18)   skin   (18,18)
+legs  (0,36)   route  (18,36)
+feet  (0,54)
 ```
 
-（`build/_mg273src/.../SweepGolemMenuControl.java:24-27`）
+空槽图标 `altas_helmet`/`altas_chestplate`/`altas_leggings`/`altas_boots`/`slotbg_banner`/`slotbg_skin`/`slotbg_route`，
+读取同一组 `ItemWrapper`（`getWrapperOfHand(HEAD/CHEST/LEGS/FEET)`/`getBannerSlot`/`getSkinSlot`/`getRouteSlot`），
+浮窗尺寸 `36 × 74`（右列比左列少一行，底右留空，和装备界面一致）。
 
-龙的菜单只有 36 个玩家背包槽 + 2 个装备槽（最大索引 37）。
-在龙的装备界面里 Shift 点击箭矢，会走到不存在的 43/44 槽——
-这是从犬型菜单抄结构时多带的父类，Dog 自己继承的是 `GolemMenuControl`，
-不是 `SweepGolemMenuControl`。建议改成和 Dog 一样直接继承 `GolemMenuControl`，
-或覆写 `handleQuickMove`。
+#### 皮肤：**已经能用**，而且不影响龙息
 
-#### P1：没有 LEGS/FEET/主手/副手/肩部
+`AbstractGolemRenderer.renderAllParts` 会先看 `getSkinSlot()`：里面是 `GolemFacade` 就把
+**所有部件**的渲染材料换成皮肤材料（`GolemMaterialConfig.mayApply` 逐个部件过一遍），
+然后把材料 id 交给 `IGolemModel.getTextureLocationInternal(material)` 取贴图。
 
-如果龙要走「四件套护甲」，需要把 `getSlotDefinition` 扩到 `EquipmentsMenu.SLOTS`
-（或自定义 4 格），并在 `fillMenu` 里加槽、在 `getSlotForItem` 里映射；
-`EquipmentsContainer.getWrapper` 目前对 `index < 6` 用 `equipmentSlots[index]`，
-扩到 6 以内是安全的，超过 6 要改容器。
+`DragonGolemModel.getTextureLocationInternal` 已经按这个约定处理：
+`textures/entity/dragon/<材料路径>.png` 存在就用它；不存在就退回**身体部件**的贴图
+（所以"没画过的皮肤"对龙等于没生效，不会变成紫黑格）。也就是说皮肤换贴图这条路
+**不需要再改代码**；唯一的小副作用是：混装材料（身体铁、翅膀金）的龙套一张没画过的皮肤时，
+所有部件都会退回身体那份贴图，看起来会变成单色。
 
-#### P2：没有龙专用的槽底图/提示
+龙息/龙弹/音波的粒子、伤害类型、附加效果全部来自 `bodyEntry()` → `getMaterials()` 里
+**身体部件**那份材料，和 `getSkinSlot()` 无关。所以：
 
-`DragonGolemScreenControl` 直接复用狗的 `altas_helmet`/`slotbg_dog_armor`。
-如果龙用龙甲，应该有自己的图标；否则玩家会以为「龙能穿狗甲」。
+- **皮肤不会影响龙息**（现在不会；以后只要皮肤仍然只是"换渲染材料"也不会）；
+- 反过来说，皮肤可以造成**看着不像**：铁身体 + 幽匿皮肤 = 吐火但长着幽匿样子，
+  幽匿身体 + 铁皮肤 = 吐音波但看着是铁。如果不想出现这种错位，要么在皮肤 tooltip 里写清
+  "只换外观"，要么让 `bodyEntry()` 也看皮肤材料（等于用外观改玩法，不建议）。
+
+#### 已接（2026-11-05）：巡逻手册的"飞行巡逻"
+
+新增 `DragonPatrolGoal`（优先级 3，低于战斗、高于待机），不再依赖本家的 `PatrolMode`：
+
+- 数据：`PathConfig.getPath(this)`（会优先读 `getRouteSlot()` 里的 `PathRecordCard`），
+  每 20 tick 或物品变化时刷新缓存；
+- **抬高转化**：`raiseToFlightLevel(pos, dim)` ——
+  `y = 点.y + 8 + 4 × (体型 - 1)`，再用 `localFloorY() + 4` / `ceilingFeetLimit() - 1` 夹住，
+  所以"点在地上、龙在天上"不会再让龙往地面扎；洞穴/矿道里也不会为了抬高而顶穿岩层；
+- 飞行：`setDiveVelocity` + `DragonFlightAssist.avoidance`（和待机/战斗同一条管线），
+  不碰 `PathNavigation`（那条按三维距离判定到达，抬 Y 会卡死在第一个点）；
+- 到达：水平 ≤ 3.5 × 体型、垂直 ≤ 3 → 悬停 20 tick → `advancePatrolStage()`；
+  单点超时 400 tick 自动跳点（防卡墙/卡树）；维度不匹配的点直接跳过；
+- 战斗：`dragonCurrentTarget() != null` 时本 goal 停，打完回到**原来那个点**继续；
+- 回位传送：`DragonFollowTeleportGoal` 在"ROUTE + 有路线"时让路，避免把巡逻中的龙拽回主人身边
+  （没放手册时保持原行为）。
+
+可调参数都在 `DragonPatrolGoal` 顶部：`RAISE_BASE`/`RAISE_PER_SCALE`（抬高）、
+`ARRIVE_RADIUS`/`ARRIVE_VERTICAL`（到点判定）、`DWELL_TICKS`（停留）、
+`STAGE_TIMEOUT`（单点超时）、`CRUISE_SPEED`/`HORIZONTAL_GAIN`/`VERTICAL_GAIN`（手感）。
+
+这三条都是"槽先占住、表现后补"，不影响七格本身的工作。
+
+#### 已修：`SweepGolemMenuControl.handleQuickMove` 的箭头越界
+
+2.7.3 里父类的 `handleQuickMove` 写死了 8 槽布局的 43/44；
+2.7.5+3 的 `EquipmentsMenu.quickMoveStack` 改成**按 `slotNames` 顺序**逐个尝试，
+不再用固定索引，龙只有 6 个装备槽也不会越界。
+
+#### 已修：旧版 `EquipmentsContainer.getWrapper(index)` 的 6 槽假设
+
+新版容器是 `getWrapperAt(i)` → 槽名 → `ItemWrapper`，槽数由 `fillMenu` 注册多少算多少，
+和 `getSlotDefinition()` 返回的数组没关系（整包已经没有任何地方读它）。
+
+#### 仍缺：龙专用的空槽底图
+
+现在六格用的是本家现成的图标：`altas_helmet` / `altas_chestplate` / `altas_leggings` /
+`slotbg_banner` / `slotbg_skin` / `slotbg_route`，和大型/人形傀儡看到的是同一套。
+等三件龙甲做出来，再考虑要不要单独画一套（届时要么改本家的 `equipments.png` 布局，
+要么在 `DragonGolemScreenControl` 里换成自己的贴图）。
+
+#### 不做：箭矢/主手/副手/肩炮
+
+七格是当前的设计边界：肩炮（`IGenericShoulderWeapon`）暂时不做，所以 `chest` 槽不接肩炮，
+也没有 `arrow_1/arrow_2`、`left_hand/right_hand`、`backup`。将来要加，直接照 4.2 的写法
+加 `addSlot` 并给龙补对应的 `ItemWrapper` 即可（同名的 comp 布局里都有）。
+
+#### 不做：龙专用槽底图/提示
+
+现在七格用的是本家现成的图标（见上一节）。等龙甲/龙皮肤的设计定了，再考虑单独画一套。
 
 ## 5. 升级槽：**5 格本身是通的，扩充配方已补，「有效升级」仍缺**
 
@@ -766,6 +931,24 @@ JEI 预览会把材料配错。改配方时留意这一点。
   现在由 `cave.ghost` 控制，离开洞穴会恢复碰撞；幽灵时移动层也明确按"直线可穿墙"处理。
 
 这些不是「缺少适配」，但会直接影响你实测时对上面几条的判断，所以单列。
+
+### 9.1 跨模组坑：`getDeathSound()` 默认是 `null`
+
+原版 `LivingEntity.getDeathSound()` 默认返回 `null`，本家三种傀儡也都没覆写；
+而 **ArcaneVortex**（`com.erchien.arcanevortex.Help.EntityKillerHelp.kill`，约 `132` 行）
+在击杀实体时会 `Objects.requireNonNull(entity.getDeathSound())` 再播放 →
+龙一旦被它杀掉（比如右键蓄力释放的那一下）就是 **NPE**。
+
+2026-11-06 已在 `DragonGolemEntity` 覆写：
+
+```java
+protected SoundEvent getDeathSound() { return SoundEvents.ENDER_DRAGON_DEATH; }
+protected SoundEvent getHurtSound(DamageSource source) { return SoundEvents.ENDER_DRAGON_HURT; }
+protected float getSoundVolume() { return 2.0F; }
+```
+
+`getHurtSound` 一并补上是因为原版默认同样是 `null`，别的模组读它时也会踩空。
+这不是本家的锅，属于"第三方默认假设 + 原版默认 null"的碰撞；我们这边给出非空值是最稳的修法。
 
 ---
 

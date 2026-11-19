@@ -77,9 +77,8 @@
 - 它还会进 `maxUpStep() * getScale()`、行走动画速度，以及（以后若搬狗的载客公式）`min(size*2-1, 3)`。
 - 重铸也参与：`AbstractGolemEntity.getScaleImpl() = GOLEM_SIZE × ((重铸基数 − 重铸次数) / 重铸基数)^(1/3)`，
   而重铸基数 = `getReforgeBase()` = 五个部件的铁砧消耗之和（`GolemPart.count`）。龙现在是
-  五个部件各 64 = **320**，所以每次重铸缩 `((320−n)/320)^(1/3)`。
-  （改这个数字时记得同步三处：`DragonGolemItems` 的类注释与部件注释、`docs/MOUNT.md` 的重铸基数表、
-  `docs/JEI.md` 里"要几个材料"那句。）
+  五个部件各 `craft.partMaterialCost`（默认 64）= **320**，所以每次重铸缩 `((320−n)/320)^(1/3)`。
+  改这个配置时重铸基数会一起变，不需要改代码；但 **改完要重启**，因为 `GolemPart.count` 在物品注册时固化。
 - `MODEL_LIFT / MODEL_SCALE` 现在是 1.36 / 1.7 = 0.8（= 原点到脚底的模型单位数）。改 `MODEL_SCALE` 时按同一比例改
   `MODEL_LIFT`，就纯粹是"整体等比缩小"，龙站的位置和姿态都不动。
 - 物品预览那一套是**另一组旋钮**，和上面三个无关：部件用 `PREVIEW_TARGET_PX`（按部件分档的数组）、
@@ -154,12 +153,15 @@
 
 ### 物品模型 json
 
-- `assets/dragon_golems/models/item/` 下的六个（五个部件 + `dragon_golem_holder`）都是
+- `assets/dragon_golems/models/item/` 下五个部件 + `dragon_golem_holder` 都是
   `"parent": "minecraft:builtin/entity"`，只给一个 `particle` 贴图占位；显示变换全部由
   `setupItemRender` 在代码里做。
-- `dragon_golem_template.json` 是**唯一的特例**：`item/generated` + 借用本家胚料贴图，并手写了全套
-  `display`（`gui` 缩放 1.5、`firstperson` 1.7、`thirdperson` 4.25，照抄暮色巨型锭那一套）。
+- `dragon_golem_template.json` 是 `item/generated` + 借用本家胚料贴图，并手写了全套
+  `display`（`gui` 缩放 1.5、`firstperson` 1.7、`thirdperson` 4.25）。
   它没有 BEWLR，所以只能在 json 里调。
+- 12 件龙甲（`dragon_armor_{head,body,limbs,tail}_{iron,diamond,netherite}.json`）也是
+  `item/generated`，贴图在 `textures/item/`；穿在龙身上的 512×512 图集在
+  `textures/entity/dragon/armor/<材质>.png`。
 
 ## 三、界面
 
@@ -168,30 +170,33 @@
 | 装备界面（打开龙身上的 GUI） | `dragon/DragonGolemMenuControl` | `GolemType.menuControl(menu, golem)`；`fillMenu()` 决定槽位与收物规则 |
 | 装备界面的槽位底图 | `client/DragonGolemScreenControl` | `EquipmentsScreen.renderBg` → `menu.ctrl.getScreenProvider()` → `render(...)` |
 | 悬浮查看傀儡时的装备小图标 | `client/DragonGolemOverlayControl` | `GolemStatusOverlay$GolemEquipmentTooltip` → `GolemType.overlayControl(golem)` → `getWidth/getHeight/renderImage` |
+| 龙铠渲染 | `client/DragonArmorLayer` + `client/DragonArmorModel` | `DragonGolemRenderer` 构造里 `addLayer`；`GolemModelPath` 按物品的 path 画甲片 |
+| 披风（旗帜当布料） | `client/DragonCapeLayer` | 同上；用原版 banner 的 `flag` 模型 + `BannerRenderer.renderPatterns` |
 | 装备界面的菜单图标 | `dragon/DragonGolemType.getMenuIcon` | 本家标签页取用 |
 | 创造栏那一页 | `init/ModCreativeTabs` | 我们自己的创造栏注册；另外用 `BuildCreativeModeTabContentsEvent` 往本家 `modulargolems:golems` 页补上五个部件（本体 + 每种材料一份）与成品（每种材料一条） |
 
 细节：
 
-- **槽名两边必须一致**：`fillMenu()` 里 `addSlot("chest", ...)` / `addSlot("legs", ...)`，
-  `DragonGolemScreenControl` 里就 `renderer.draw(g, "chest", "slot", -1, -1)`，悬浮图标里也是
-  `renderSlot(..., "altas_helmet")` / `slotbg_dog_armor`（这两个是本家的贴图名，直接沿用犬型那套）。
+- **槽名两边必须一致**：`fillMenu()` 里是七个槽：
+  `head` / `chest` / `legs` / `feet`（四件龙甲）+ `left_shoulder`（旗帜/披风）/
+  `left_hand`（皮肤）/ `arrow_1`（巡逻手册）。
+  `DragonGolemScreenControl` 用同一组名字铺 `altas_helmet` / `altas_chestplate` /
+  `altas_leggings` / `altas_boots` / `slotbg_banner` / `slotbg_skin` / `slotbg_route`；
+  悬浮图标 `DragonGolemOverlayControl` 也读同一组 `ItemWrapper`。
   名字对不上 = 框画了但没槽，或者反过来。
-- 装备界面里龙本体的 3D 预览走的是本家的 `EquipmentsScreen.renderPreview`：它不再按 `instanceof` 取数，
-  而是问 `AbstractGolemEntity.getPreviewScale()`（默认 **18**，金属覆写成 20 / 类人 24 / 犬 32），
-  再除以 `golem.getScale()`。龙没有覆写它 → 落进默认的 18。置换/分解界面
-  （`GolemDisinegrateScreen.renderPreview`）同样用 `getPreviewScale()`，但不除 `getScale()`。
-  也就是说装备界面那条除完还是"每格 18 像素"，置换/分解那条是 `18 × 展示实体的 getScale`
-  （默认 1.0）。对我们这条 26 格长的龙来说两者都糊满界面 —— 修正见第四节。
+- 装备界面里龙本体的 3D 预览走本家的 `GolemPreviewUtil.render(...)`：它问
+  `AbstractGolemEntity.getPreviewScale()`（默认 **18**，金属 20 / 类人 24 / 犬 32），
+  再除以 `golem.getScale()`。龙没有覆写 `getPreviewScale()` → 落进默认的 18。
+  置换/分解界面也走 `GolemPreviewUtil`，但换算路径不同。
 - 想给槽位加悬浮说明，覆写 `GolemScreenControl.addSlotTooltip(Slot)`（父类默认空实现）。
 - `getScreenProvider()` 每次开界面都会 new 一个 ScreenControl（本家就是这么用的），别在里面缓存状态。
 
 ## 四、本家 GUI 里那条悬浮 3D 预览（置换/分解、装备界面）
 
-本家的置换/分解界面（`GolemDisinegrateScreen.renderPreview`）和装备界面
-（`EquipmentsScreen.renderPreview`）都用原版 `InventoryScreen.renderEntityInInventoryFollowsAngle`
-画一个会跟着鼠标转的 3D 预览。它给的比例是"**每格多少像素**"（`getPreviewScale()`：默认 18 /
-金属 20 / 类人 24 / 犬 32），而那条龙有 **26.6 格长** → `26.6 × 18 ≈ 479 px`，直接把整个界面糊满。
+本家的置换/分解界面和装备界面都用原版 `InventoryScreen.renderEntityInInventoryFollowsAngle`
+画一个会跟着鼠标转的 3D 预览（2.7.5 统一走 `GolemPreviewUtil`）。它给的比例是
+"**每格多少像素**"（`getPreviewScale()`：默认 18 / 金属 20 / 类人 24 / 犬 32），
+而那条龙有 **26.6 格长** → `26.6 × 18 ≈ 479 px`，直接把整个界面糊满。
 
 所以我们在 `client/DragonGolemRenderer.scale(...)` 里补了一个额外倍率：
 
@@ -244,6 +249,8 @@ DragonGolemRenderer.scale(entity, pose, partialTick)
 | 拍翅频率、脖子与尾巴的摆动、张嘴 | `client/DragonGolemModel.pose(...)`（下颌用 `JAW_OPEN_BREATH` / `JAW_LERP`） |
 | 贴图命名与回退 | `client/DragonGolemModel` 的 `TEXTURE_PREFIX` 与三个 `FALLBACK_*` |
 | 装备界面的槽位与底图 | `dragon/DragonGolemMenuControl.fillMenu()` + `client/DragonGolemScreenControl.render(...)` |
+| **披风**的位置、角度、大小 | `client/DragonCapeLayer` 顶部：`CAPE_UP_PX` / `CAPE_BACK_PX` / `CAPE_SCALE` / `CAPE_LAY_DEG` / `CAPE_SWAY`；骑乘时用 `RIDDEN_*` 那一组。布料用的是原版横幅 `ModelLayers.BANNER` 的 `flag` 模型（无旗杆），底色/图案走 `BannerRenderer.renderPatterns` |
+| 背旗挂点（模型空间） | `client/DragonGolemModel.translateToBackAnchor(upPx, backPx)`（body 部件中心 + 背顶偏移，单位是模型像素） |
 | 悬浮图标的大小 | `client/DragonGolemOverlayControl.getWidth/getHeight`（18 × 38） |
 | 龙弹图标的大小 | `client/DragonGolemFireballRenderer.SCALE`（2.0，原版值） |
 | 部件/成品的物品模型 | `assets/dragon_golems/models/item/*.json`（五个部件 + 成品这 6 个都是 `minecraft:builtin/entity`）；胚料模板单独一个 `dragon_golem_template.json`（`item/generated` + 全套 `display`） |
